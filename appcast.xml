@@ -1,6 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
     <channel>
-        <title>CardRunner Changelog</title>
-        </channel>
+        <title>CardRunner</title>
+        <link>https://raw.githubusercontent.com/Xtron6/-cardrunner-releases/refs/heads/main/appcast.xml</link>
+        <description>CardRunner release notes</description>
+        <language>en</language>
+
+        <item>
+            <title>Version 1.1</title>
+            <pubDate>Wed, 15 Apr 2026 22:56:59 +0000</pubDate>
+            <sparkle:version>1.1</sparkle:version>
+            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.1</sparkle:releaseNotesLink>
+            <description><![CDATA[Your update notes here]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.1/CardRunner-1.1.dmg"
+                sparkle:edSignature="Jh+IIgVebBpA/scma6x8xw4V89orn/ZxViV5vyy7ivV2EmRtfvf7dwOilbGzxFpyVWh+WbUryg+nqrdgacjJBQ=="
+                length="5323749"
+                type="application/octet-stream" />
+        </item>
+
+        <!-- ── Each new release gets one <item> block added here ── -->
+        <!-- The release.sh script does this automatically           -->
+
+    </channel>
 </rss>
