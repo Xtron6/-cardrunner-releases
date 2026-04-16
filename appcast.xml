@@ -20,6 +20,20 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.2</title>
+            <pubDate>Thu, 16 Apr 2026 01:22:17 +0000</pubDate>
+            <sparkle:version>1.2</sparkle:version>
+            <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.2</sparkle:releaseNotesLink>
+            <description><![CDATA[Your release notes here]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.2/CardRunner-1.2.dmg"
+                sparkle:edSignature="gKq6Wx3dnT6uHggz9WwiLD7HxHhAjcaKQNeJyrJALu6GGeSaaY2AQc4dTMsQMNZPf/lLSIECmgIVUKb0BiFYAg=="
+                length="5338954"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
