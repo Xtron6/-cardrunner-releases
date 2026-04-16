@@ -34,6 +34,20 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.3</title>
+            <pubDate>Thu, 16 Apr 2026 22:45:45 +0000</pubDate>
+            <sparkle:version>1.3</sparkle:version>
+            <sparkle:shortVersionString>1.3</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.3</sparkle:releaseNotesLink>
+            <description><![CDATA[Custom Folder destination mode — pick any folder on your Mac (NAS, RAID, internal drive) instead of only connected SSDs. Date folders are still auto-created inside. | Light mode contrast overhaul — deeper blue and purple on all UI elements, ring, pills, and queue rows. | Smooth scrolling — all panels now use AppKit-backed momentum scrolling with elastic bounce. | Speed graph appears instantly when a transfer starts instead of after 10–15 seconds. | History panel now resets at the same broadcast-day cutoff as session stats instead of a fixed 24 hours. | Destination tabs (SSD / Custom Folder) now have a sliding pill animation, hover states, and full-area click targets. | Stale custom dest path detected on launch — orange warning shown if the chosen folder is missing or unmounted. | Several edge-case fixes: canIngest no longer does sync filesystem I/O on every render, SmoothScrollView now correctly tracks content height changes, card-detection scan excludes the custom destination volume.]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.3/CardRunner-1.3.dmg"
+                sparkle:edSignature="zI3XTD9YltTGiiHdLWYnIwBTObw0s0AQMDmlHL06XVmW6BppKg5TJLqGEHMXxly1aW56a/eIgEX4VL9LHKXZBQ=="
+                length="5526716"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
