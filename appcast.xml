@@ -48,6 +48,20 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4</title>
+            <pubDate>Mon, 20 Apr 2026 17:25:29 +0000</pubDate>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>1.4</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4</sparkle:releaseNotesLink>
+            <description><![CDATA[Sparkle auto-update now works — existing users will receive this and all future updates automatically. | Custom date filter — pick any specific date from a graphical calendar or type MM/DD/YYYY; the calendar opens on any click in the date field. | Debug mode — new toggle in Advanced settings reveals the Log panel and Dry Run toggle; both are hidden by default for a cleaner UI. | Daily log rotation — logs now roll over each day and are kept for 7 days (replaces size-based rotation). | Transfer speed fix — eliminated a near-100% hang caused by O(n²) manifest lookups during large card ingests. | History section moved to the left column below today's session summary. | Destination path preview updates dynamically — shows your actual chosen folder name and date format instead of a hardcoded placeholder. | Build plumbing: static Info.plist replaces generated one so Sparkle keys are always present in the bundle.]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4/CardRunner-1.4.dmg"
+                sparkle:edSignature="ZBol6LJ9GRAV56YyGLmoTo6hK4Sghb8bd+i5TGlUQKC3LfZfOq4yzJhKryalQe8xZ0DThQTy/eadG31SinIyCw=="
+                length="5600572"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
