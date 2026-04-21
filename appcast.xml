@@ -62,6 +62,20 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.1</title>
+            <pubDate>Tue, 21 Apr 2026 13:45:58 +0000</pubDate>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4.1</sparkle:releaseNotesLink>
+            <description><![CDATA[Project scaffold with customisable folder templates, date range filter for ingest, inline folder rename, new project folder popover with scaffold preview]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.1/CardRunner-1.4.1.dmg"
+                sparkle:edSignature="wdVTPbQdSk3uQyFV8h9V6jaxyYHysXDQqh3e5WPywQ4eJ/AFDaE/MlnmaROYhIZ1pSyLc2dSnHB/ql+bNGwYAw=="
+                length="5734028"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
