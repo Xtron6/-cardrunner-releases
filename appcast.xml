@@ -76,6 +76,20 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.2</title>
+            <pubDate>Thu, 23 Apr 2026 13:22:31 +0000</pubDate>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>1.4.2</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4.2</sparkle:releaseNotesLink>
+            <description><![CDATA[XMP sidecar files now transfer automatically in photo mode — color labels, ratings, and IPTC metadata set in Photo Mechanic, Lightroom Classic, or Capture One are preserved after offload. | Up to 30× faster transfer start on large photo cards — eliminated thousands of shell subprocess forks during the build phase by batching all file stats through a single Perl process and using in-memory manifest lookups. | Speed graph now appears immediately when copying starts instead of staying blank during large transfers. | Completion sound fixed — no more echo or stutter on large transfers; Hero + Glass chord now plays cleanly regardless of card size. | Phase timing added to logs — every run now records how long scanning, building, and copying each took, plus destination free space, making it far easier to diagnose any future issues.]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.2/CardRunner-1.4.2.dmg"
+                sparkle:edSignature="8ZqT0K0JtWq4zCmohpclOcpKnzrVeKnkImP0qZFUbLYakQ5eT7rAnmJGp5aPZCu8gy1JT9ucFG30yl5gWU9uAg=="
+                length="5769847"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
