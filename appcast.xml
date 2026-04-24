@@ -11,8 +11,7 @@
             <pubDate>Wed, 15 Apr 2026 22:56:59 +0000</pubDate>
             <sparkle:version>1.1</sparkle:version>
             <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.1</sparkle:releaseNotesLink>
-            <description><![CDATA[Your update notes here]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Initial release</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.1/CardRunner-1.1.dmg"
                 sparkle:edSignature="Jh+IIgVebBpA/scma6x8xw4V89orn/ZxViV5vyy7ivV2EmRtfvf7dwOilbGzxFpyVWh+WbUryg+nqrdgacjJBQ=="
@@ -25,8 +24,7 @@
             <pubDate>Thu, 16 Apr 2026 01:22:17 +0000</pubDate>
             <sparkle:version>1.2</sparkle:version>
             <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.2</sparkle:releaseNotesLink>
-            <description><![CDATA[Your release notes here]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Bug fixes and stability improvements</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.2/CardRunner-1.2.dmg"
                 sparkle:edSignature="gKq6Wx3dnT6uHggz9WwiLD7HxHhAjcaKQNeJyrJALu6GGeSaaY2AQc4dTMsQMNZPf/lLSIECmgIVUKb0BiFYAg=="
@@ -39,8 +37,7 @@
             <pubDate>Thu, 16 Apr 2026 22:45:45 +0000</pubDate>
             <sparkle:version>1.3</sparkle:version>
             <sparkle:shortVersionString>1.3</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.3</sparkle:releaseNotesLink>
-            <description><![CDATA[Custom Folder destination mode — pick any folder on your Mac (NAS, RAID, internal drive) instead of only connected SSDs. Date folders are still auto-created inside. | Light mode contrast overhaul — deeper blue and purple on all UI elements, ring, pills, and queue rows. | Smooth scrolling — all panels now use AppKit-backed momentum scrolling with elastic bounce. | Speed graph appears instantly when a transfer starts instead of after 10–15 seconds. | History panel now resets at the same broadcast-day cutoff as session stats instead of a fixed 24 hours. | Destination tabs (SSD / Custom Folder) now have a sliding pill animation, hover states, and full-area click targets. | Stale custom dest path detected on launch — orange warning shown if the chosen folder is missing or unmounted. | Several edge-case fixes: canIngest no longer does sync filesystem I/O on every render, SmoothScrollView now correctly tracks content height changes, card-detection scan excludes the custom destination volume.]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Custom Folder destination</b> — pick any folder on your Mac (NAS, RAID, internal drive); date folders still auto-created inside</li><li><b>Light mode contrast overhaul</b> — deeper blue and purple across all UI elements, ring, pills, and queue rows</li><li><b>Smooth scrolling</b> — all panels use AppKit-backed momentum scrolling with elastic bounce</li><li><b>Speed graph instant start</b> — appears when a transfer begins instead of after 10–15 seconds</li><li><b>History panel</b> now resets at the broadcast-day cutoff instead of a fixed 24 hours</li><li><b>Destination tabs</b> have a sliding pill animation, hover states, and full-area click targets</li><li><b>Stale path detection</b> — orange warning on launch if the chosen custom folder is missing or unmounted</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.3/CardRunner-1.3.dmg"
                 sparkle:edSignature="zI3XTD9YltTGiiHdLWYnIwBTObw0s0AQMDmlHL06XVmW6BppKg5TJLqGEHMXxly1aW56a/eIgEX4VL9LHKXZBQ=="
@@ -53,8 +50,7 @@
             <pubDate>Mon, 20 Apr 2026 17:25:29 +0000</pubDate>
             <sparkle:version>4</sparkle:version>
             <sparkle:shortVersionString>1.4</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4</sparkle:releaseNotesLink>
-            <description><![CDATA[Sparkle auto-update now works — existing users will receive this and all future updates automatically. | Custom date filter — pick any specific date from a graphical calendar or type MM/DD/YYYY; the calendar opens on any click in the date field. | Debug mode — new toggle in Advanced settings reveals the Log panel and Dry Run toggle; both are hidden by default for a cleaner UI. | Daily log rotation — logs now roll over each day and are kept for 7 days (replaces size-based rotation). | Transfer speed fix — eliminated a near-100% hang caused by O(n²) manifest lookups during large card ingests. | History section moved to the left column below today's session summary. | Destination path preview updates dynamically — shows your actual chosen folder name and date format instead of a hardcoded placeholder. | Build plumbing: static Info.plist replaces generated one so Sparkle keys are always present in the bundle.]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Sparkle auto-update</b> — existing users will receive this and all future updates automatically</li><li><b>Custom date filter</b> — pick any date from a graphical calendar or type MM/DD/YYYY</li><li><b>Debug mode</b> — new toggle in Advanced reveals the Log panel and Dry Run toggle</li><li><b>Daily log rotation</b> — logs roll over each day and are kept for 7 days</li><li><b>Transfer speed fix</b> — eliminated a near-100% hang on large card ingests</li><li><b>Destination path preview</b> updates dynamically with your actual folder name and date format</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4/CardRunner-1.4.dmg"
                 sparkle:edSignature="ZBol6LJ9GRAV56YyGLmoTo6hK4Sghb8bd+i5TGlUQKC3LfZfOq4yzJhKryalQe8xZ0DThQTy/eadG31SinIyCw=="
@@ -67,8 +63,7 @@
             <pubDate>Tue, 21 Apr 2026 13:45:58 +0000</pubDate>
             <sparkle:version>5</sparkle:version>
             <sparkle:shortVersionString>1.4.1</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4.1</sparkle:releaseNotesLink>
-            <description><![CDATA[Project scaffold with customisable folder templates, date range filter for ingest, inline folder rename, new project folder popover with scaffold preview]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Project scaffold</b> — customisable folder templates auto-created for every project</li><li><b>Date range filter</b> — ingest files from a specific date range, not just today</li><li><b>Inline folder rename</b> — rename project folders directly from the app</li><li><b>Project folder popover</b> — new popover with scaffold preview before creating</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.1/CardRunner-1.4.1.dmg"
                 sparkle:edSignature="wdVTPbQdSk3uQyFV8h9V6jaxyYHysXDQqh3e5WPywQ4eJ/AFDaE/MlnmaROYhIZ1pSyLc2dSnHB/ql+bNGwYAw=="
@@ -81,8 +76,7 @@
             <pubDate>Thu, 23 Apr 2026 13:22:31 +0000</pubDate>
             <sparkle:version>6</sparkle:version>
             <sparkle:shortVersionString>1.4.2</sparkle:shortVersionString>
-            <sparkle:releaseNotesLink>https://github.com/Xtron6/-cardrunner-releases/releases/tag/v1.4.2</sparkle:releaseNotesLink>
-            <description><![CDATA[XMP sidecar files now transfer automatically in photo mode — color labels, ratings, and IPTC metadata set in Photo Mechanic, Lightroom Classic, or Capture One are preserved after offload. | Up to 30× faster transfer start on large photo cards — eliminated thousands of shell subprocess forks during the build phase by batching all file stats through a single Perl process and using in-memory manifest lookups. | Speed graph now appears immediately when copying starts instead of staying blank during large transfers. | Completion sound fixed — no more echo or stutter on large transfers; Hero + Glass chord now plays cleanly regardless of card size. | Phase timing added to logs — every run now records how long scanning, building, and copying each took, plus destination free space, making it far easier to diagnose any future issues.]]></description>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>XMP sidecar support</b> — color labels, ratings, and metadata from Photo Mechanic, Lightroom, and Capture One now transfer with your photos automatically</li><li><b>Up to 30× faster transfer start</b> on large photo cards — batch stat pre-fetch replaces thousands of individual shell calls</li><li><b>Speed graph fixed</b> — appears immediately when copying starts instead of staying blank</li><li><b>Completion sound fixed</b> — no more echo or stutter on large transfers</li><li><b>Phase timing in logs</b> — every run records how long scanning, building, and copying took for easier debugging</li></ul></body></html>]]></description>
             <enclosure
                 url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.2/CardRunner-1.4.2.dmg"
                 sparkle:edSignature="8ZqT0K0JtWq4zCmohpclOcpKnzrVeKnkImP0qZFUbLYakQ5eT7rAnmJGp5aPZCu8gy1JT9ucFG30yl5gWU9uAg=="
