@@ -84,6 +84,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.3</title>
+            <pubDate>Fri, 01 May 2026 13:19:49 +0000</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>1.4.3</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Progress bar now tracks bytes transferred, not file count — no more stalling at 93% on large clips</li><li>ETA is now calculated from a rolling 20-second speed window — no more estimates that tick upward or jump around</li><li>Speed chart no longer freezes mid-transfer when switching copy phases</li><li>Transfer progress snaps to 100% the moment copying finishes, not when the process fully exits</li><li>Today's session GB now shows the correct amount (was always showing 0 due to a byte-size calculation bug in the ingest script)</li><li>Script fallback: if the fast Perl file-size pass fails silently, the engine automatically retries with direct stat calls so bytes are always tracked</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.3/CardRunner-1.4.3.dmg"
+                sparkle:edSignature="bz7XuCq63nBVtW3ruJcOl8QbuxEJI8AWeFLIofunAmTNtGto5cp7bptbiQsAkCafH+v7GRWNhyXeZv5+1DpJDg=="
+                length="6003653"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
