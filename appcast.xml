@@ -110,6 +110,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.5</title>
+            <pubDate>Sat, 16 May 2026 18:37:26 +0000</pubDate>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>1.4.5</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Day-of-week date folders</b> — new date format option creates folders named Monday through Sunday instead of a date code (e.g. Friday instead of 260516)</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.5/CardRunner-1.4.5.dmg"
+                sparkle:edSignature="hzp4BJQ7EIMFCdxcaUFbreLG3S9hwvKcu2HM3hfu9sKFQ3uL5OfDqso6gJuija8NJViLfMZhVN1j2uTufmeGDA=="
+                length="6056839"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
