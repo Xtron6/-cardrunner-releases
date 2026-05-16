@@ -97,6 +97,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.4</title>
+            <pubDate>Sat, 16 May 2026 18:18:30 +0000</pubDate>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>1.4.4</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Session stats fixed</b> — fresh installs now show zero GB instead of phantom numbers from the demo run</li><li><b>Onboarding memory</b> — SSD and project folder chosen during setup now carry over to the first real ingest</li><li><b>Settings close on outside tap</b> — click anywhere outside the settings panel to dismiss it</li><li><b>About page</b> — fits without scrolling; License Terms and Privacy Policy links updated</li><li><b>Active zone text</b> — content can no longer overflow outside the ring, even with long card names or paths</li><li><b>Spotlight indexing</b> — app now appears in CMD+Space immediately after a fresh install</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.4/CardRunner-1.4.4.dmg"
+                sparkle:edSignature="kSxSwdNu9M7iN5+ITLyYSuCWdHaZrQg3dIm2kRE7xcK4jkr50xMdfaaZimHMDkuAh3DSF+0L0B+2KRumrDHSBg=="
+                length="6055971"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
