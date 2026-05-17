@@ -123,6 +123,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.6</title>
+            <pubDate>Sun, 17 May 2026 22:44:59 +0000</pubDate>
+            <sparkle:version>10</sparkle:version>
+            <sparkle:shortVersionString>1.4.6</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Custom folder fix</b> — footage now lands directly in the date folder (e.g. Friday/) instead of creating an extra clips subfolder inside your custom destination</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.6/CardRunner-1.4.6.dmg"
+                sparkle:edSignature="FvjXONiRa4pnQXoLaCany/zu1vtwupldlM+uWE1VQdLsapJ2CJqlSqaTzI7ziZ1U715PsyxKgSHQ0A2wWjrVDQ=="
+                length="6056904"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
