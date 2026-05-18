@@ -136,6 +136,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.4.7</title>
+            <pubDate>Mon, 18 May 2026 01:09:34 +0000</pubDate>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>1.4.7</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Failed ingest badge</b> — cancelled or errored ingests now show a persistent orange warning strip until the card is successfully re-ingested</li><li><b>Low disk space warning</b> — live warning appears in the ring if the destination has less than 20% headroom for the transfer</li><li><b>Speed accuracy</b> — cancelled transfers no longer contribute inflated MB/s readings to the session average</li><li><b>Accurate session speed</b> — now uses weighted average so large and small cards are fairly combined</li><li><b>Log version fixed</b> — log entries now show the real app version instead of v1.0</li><li><b>Scaffold log cleanup</b> — project folder scaffold only logs when folders are actually new</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.4.7/CardRunner-1.4.7.dmg"
+                sparkle:edSignature="ERJvQG5ouqIDqH+JN2z9yMccXjeXKVcreqDC/kFS0aweBuurqvrNeOuZX2uJufr2DNaZjSt/xKOoDn4qi1/DAA=="
+                length="6070959"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
