@@ -162,6 +162,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.5.0</title>
+            <pubDate>Mon, 25 May 2026 17:12:45 +0000</pubDate>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Bundled GNU rsync 3.4.3 for dramatically faster transfers</li><li>Instant card detection via mount notifications</li><li>Full 7-color Finder tag picker</li><li>Auto-ingest starts OFF at launch</li><li>Update check on every app open</li><li>Fixed empty-timestamp log entries</li><li>Eject retry logic for Spotlight race condition</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.5.0/CardRunner-1.5.0.dmg"
+                sparkle:edSignature="s81GFJuL6rKZ5cyzXWVB+RXWJo0IN2oI4Kan6bleFWFAR1ryHYQR8DlHSjzphnlYbvcXGNnvpc5BtLaK//91AQ=="
+                length="9156109"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
