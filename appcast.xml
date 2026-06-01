@@ -175,6 +175,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.6.0</title>
+            <pubDate>Mon, 01 Jun 2026 17:27:37 +0000</pubDate>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Folder colors now use Apple's Customize Folder format — folders actually change color in Finder instead of just showing a dot label</li><li>New: Project Scaffold folders can now have an optional subfolder (e.g. Footage / A-Camera)</li><li>Fix: Ingest Order setting now saves correctly when changed mid-session with a preset active</li><li>Fix: Inserting a second card while the date picker is open no longer drops the first card</li><li>Fix: Date retry scan now spaces attempts 1 second apart and clears spinner on cancel</li><li>Fix: Multi-date transfers now report correct date-skipped file count in logs</li><li>Fix: Trailing comma in date list no longer silently injects today's files</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.6.0/CardRunner-1.6.0.dmg"
+                sparkle:edSignature="i+VbuQQ6Dp13W32N1/pjmY3TJzI2rLdIp32OuG7XBZVHPPSJQUqYoVxKRV5AWVbe2grzNfq6K55nJR5VbPp8DQ=="
+                length="8774547"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
