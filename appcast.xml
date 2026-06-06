@@ -201,6 +201,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.7.1</title>
+            <pubDate>Sat, 06 Jun 2026 21:27:44 +0000</pubDate>
+            <sparkle:version>18</sparkle:version>
+            <sparkle:shortVersionString>1.7.1</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Fix: Canon R5C, EOS Cinema, and other cameras with CONTENTS/CLIPS folders now detected and ingested correctly</li><li>Fix: MXF and cinema format cards that don't use DCIM folder structure are no longer silently skipped</li><li>Expanded video support: AVI, MKV, Cinema DNG, SIGMA RAW, MPEG, TS, Insta360, Phantom CINE, GoPro LRV, and more</li><li>Expanded photo RAW support: Hasselblad 3FR/FFF, Phase One IIQ, Leaf MOS, Leica RWL, Pentax PEF, Samsung SRW, Kodak DCR/KDC, and more</li><li>System folders (.Spotlight, .Trashes, .fseventsd) now excluded from all card scans</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.7.1/CardRunner-1.7.1.dmg"
+                sparkle:edSignature="ibrWRfd8eHMw7tpfTPsoUSkSVBzmLwr8FEXir8nLcoyNroQwBPhzVNWPHnym9CEwLEYT6Brz/FMgXmFOlef7AQ=="
+                length="8817689"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
