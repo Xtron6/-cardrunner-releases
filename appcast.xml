@@ -188,6 +188,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.7.0</title>
+            <pubDate>Sat, 06 Jun 2026 03:46:19 +0000</pubDate>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Native copy engine — Finder-speed transfers using Apple's own copy path; rsync removed entirely</li><li>Data durability — files are now flushed to disk before CardRunner reports safe to eject</li><li>Duplicate filename protection — GoPro chaptered cards and Sony dual-slot cameras now preserve all clips instead of silently overwriting</li><li>Pre-flight space check — instant refusal if the destination won't fit the card instead of failing halfway</li><li>Auto-eject now blocked when verification detects corruption</li><li>License check now runs at most once every 7 days — faster launches and fully offline-safe for 14 days</li><li>Fixed a thread race in the cancel handler that could cause missed cancellations on multi-card sessions</li><li>Fixed destination path doubling when re-selecting a custom folder</li><li>Card de-duplication now uses Volume UUID — Untitled cards no longer confuse the queue</li><li>Security hardening — removed unnecessary library-validation entitlement</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.7.0/CardRunner-1.7.0.dmg"
+                sparkle:edSignature="YWmIXs0l9Zrw7ZmwhFNaNwaIM71UHHM1jkTDyjxtrxrYmbRXkQwWPmixImCUxb6asJYa2jPbj+Nias64BmZ5CA=="
+                length="8815843"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
