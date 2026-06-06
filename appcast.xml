@@ -227,6 +227,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.7.3</title>
+            <pubDate>Sat, 06 Jun 2026 23:30:24 +0000</pubDate>
+            <sparkle:version>20</sparkle:version>
+            <sparkle:shortVersionString>1.7.3</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Universal card detection — CardRunner now finds footage no matter how a camera organizes its card. If media is buried in an unusual or nested folder structure (any brand, any layout), it's detected and ingested instead of silently skipped</li><li>Catches cards that don't use standard DCIM or known cinema folder layouts</li><li>Recursive scan already finds files at any folder depth; this closes the gap where such a card wasn't recognized as a card in the first place</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.7.3/CardRunner-1.7.3.dmg"
+                sparkle:edSignature="IzKPO0FNlLBU8L2384GH7Jn9Yw5nRtltQSTclhYRtBdfjXCWW9ewrUKgUMrOMtMXcffikBYTjOEhMaLc/DpTDQ=="
+                length="8821141"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
