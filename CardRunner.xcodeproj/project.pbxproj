@@ -1,0 +1,642 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		D8DCF457CE0C492DA3391673 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 701507F77D9A40B9AE484DCA /* Sentry */; };
+		F69E099B2F8A7F0E003079B7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = F69E099A2F8A7F0E003079B7 /* Sparkle */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		F68DB7622EE9E7D900829F54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F68DB74C2EE9E7D800829F54 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F68DB7532EE9E7D800829F54;
+			remoteInfo = CardRunner;
+		};
+		F68DB76C2EE9E7D900829F54 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F68DB74C2EE9E7D800829F54 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F68DB7532EE9E7D800829F54;
+			remoteInfo = CardRunner;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F68DB7542EE9E7D800829F54 /* CardRunner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CardRunner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F68DB7612EE9E7D900829F54 /* CardRunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CardRunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F68DB76B2EE9E7D900829F54 /* CardRunnerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CardRunnerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F6EE49DF2F28634E0082C012 /* Exceptions for "CardRunner" folder in "CardRunnerUITests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"DMSans-Regular.ttf",
+				"Tech Headlines Italic.otf",
+			);
+			target = F68DB76A2EE9E7D900829F54 /* CardRunnerUITests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		F68DB7562EE9E7D800829F54 /* CardRunner */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F6EE49DF2F28634E0082C012 /* Exceptions for "CardRunner" folder in "CardRunnerUITests" target */,
+			);
+			path = CardRunner;
+			sourceTree = "<group>";
+		};
+		F68DB7642EE9E7D900829F54 /* CardRunnerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CardRunnerTests;
+			sourceTree = "<group>";
+		};
+		F68DB76E2EE9E7D900829F54 /* CardRunnerUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CardRunnerUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F68DB7512EE9E7D800829F54 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F69E099B2F8A7F0E003079B7 /* Sparkle in Frameworks */,
+				D8DCF457CE0C492DA3391673 /* Sentry in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB75E2EE9E7D900829F54 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB7682EE9E7D900829F54 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F68DB74B2EE9E7D800829F54 = {
+			isa = PBXGroup;
+			children = (
+				F68DB7562EE9E7D800829F54 /* CardRunner */,
+				F68DB7642EE9E7D900829F54 /* CardRunnerTests */,
+				F68DB76E2EE9E7D900829F54 /* CardRunnerUITests */,
+				F69E09992F8A7F0E003079B7 /* Frameworks */,
+				F68DB7552EE9E7D800829F54 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F68DB7552EE9E7D800829F54 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F68DB7542EE9E7D800829F54 /* CardRunner.app */,
+				F68DB7612EE9E7D900829F54 /* CardRunnerTests.xctest */,
+				F68DB76B2EE9E7D900829F54 /* CardRunnerUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F69E09992F8A7F0E003079B7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F68DB7532EE9E7D800829F54 /* CardRunner */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F68DB7752EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunner" */;
+			buildPhases = (
+				F68DB7502EE9E7D800829F54 /* Sources */,
+				F68DB7512EE9E7D800829F54 /* Frameworks */,
+				F68DB7522EE9E7D800829F54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F68DB7562EE9E7D800829F54 /* CardRunner */,
+			);
+			name = CardRunner;
+			packageProductDependencies = (
+				F69E099A2F8A7F0E003079B7 /* Sparkle */,
+				701507F77D9A40B9AE484DCA /* Sentry */,
+			);
+			productName = CardRunner;
+			productReference = F68DB7542EE9E7D800829F54 /* CardRunner.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F68DB7602EE9E7D900829F54 /* CardRunnerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F68DB7782EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunnerTests" */;
+			buildPhases = (
+				F68DB75D2EE9E7D900829F54 /* Sources */,
+				F68DB75E2EE9E7D900829F54 /* Frameworks */,
+				F68DB75F2EE9E7D900829F54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F68DB7632EE9E7D900829F54 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F68DB7642EE9E7D900829F54 /* CardRunnerTests */,
+			);
+			name = CardRunnerTests;
+			packageProductDependencies = (
+			);
+			productName = CardRunnerTests;
+			productReference = F68DB7612EE9E7D900829F54 /* CardRunnerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		F68DB76A2EE9E7D900829F54 /* CardRunnerUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F68DB77B2EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunnerUITests" */;
+			buildPhases = (
+				F68DB7672EE9E7D900829F54 /* Sources */,
+				F68DB7682EE9E7D900829F54 /* Frameworks */,
+				F68DB7692EE9E7D900829F54 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F68DB76D2EE9E7D900829F54 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F68DB76E2EE9E7D900829F54 /* CardRunnerUITests */,
+			);
+			name = CardRunnerUITests;
+			packageProductDependencies = (
+			);
+			productName = CardRunnerUITests;
+			productReference = F68DB76B2EE9E7D900829F54 /* CardRunnerUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F68DB74C2EE9E7D800829F54 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					F68DB7532EE9E7D800829F54 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					F68DB7602EE9E7D900829F54 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = F68DB7532EE9E7D800829F54;
+					};
+					F68DB76A2EE9E7D900829F54 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = F68DB7532EE9E7D800829F54;
+					};
+				};
+			};
+			buildConfigurationList = F68DB74F2EE9E7D800829F54 /* Build configuration list for PBXProject "CardRunner" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = F68DB74B2EE9E7D800829F54;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F69E09982F8A7DF4003079B7 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				7A677AF215B4483882FA7229 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F68DB7552EE9E7D800829F54 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F68DB7532EE9E7D800829F54 /* CardRunner */,
+				F68DB7602EE9E7D900829F54 /* CardRunnerTests */,
+				F68DB76A2EE9E7D900829F54 /* CardRunnerUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F68DB7522EE9E7D800829F54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB75F2EE9E7D900829F54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB7692EE9E7D900829F54 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F68DB7502EE9E7D800829F54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB75D2EE9E7D900829F54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F68DB7672EE9E7D900829F54 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F68DB7632EE9E7D900829F54 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F68DB7532EE9E7D800829F54 /* CardRunner */;
+			targetProxy = F68DB7622EE9E7D900829F54 /* PBXContainerItemProxy */;
+		};
+		F68DB76D2EE9E7D900829F54 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F68DB7532EE9E7D800829F54 /* CardRunner */;
+			targetProxy = F68DB76C2EE9E7D900829F54 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		F68DB7732EE9E7D900829F54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F68DB7742EE9E7D900829F54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = singlefile;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Release;
+		};
+		F68DB7762EE9E7D900829F54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = XR77568XGP;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = "CardRunner-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.7.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F68DB7772EE9E7D900829F54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CardRunner/CardRunner.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = XR77568XGP;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = "CardRunner-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.7.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		F68DB7792EE9E7D900829F54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CardRunner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CardRunner";
+			};
+			name = Debug;
+		};
+		F68DB77A2EE9E7D900829F54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CardRunner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CardRunner";
+			};
+			name = Release;
+		};
+		F68DB77C2EE9E7D900829F54 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = CardRunner;
+			};
+			name = Debug;
+		};
+		F68DB77D2EE9E7D900829F54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xaviergallo.cardrunner.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = CardRunner;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F68DB74F2EE9E7D800829F54 /* Build configuration list for PBXProject "CardRunner" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F68DB7732EE9E7D900829F54 /* Debug */,
+				F68DB7742EE9E7D900829F54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F68DB7752EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunner" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F68DB7762EE9E7D900829F54 /* Debug */,
+				F68DB7772EE9E7D900829F54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F68DB7782EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunnerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F68DB7792EE9E7D900829F54 /* Debug */,
+				F68DB77A2EE9E7D900829F54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F68DB77B2EE9E7D900829F54 /* Build configuration list for PBXNativeTarget "CardRunnerUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F68DB77C2EE9E7D900829F54 /* Debug */,
+				F68DB77D2EE9E7D900829F54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		7A677AF215B4483882FA7229 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+		F69E09982F8A7DF4003079B7 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		701507F77D9A40B9AE484DCA /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7A677AF215B4483882FA7229 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
+		F69E099A2F8A7F0E003079B7 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F69E09982F8A7DF4003079B7 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = F68DB74C2EE9E7D800829F54 /* Project object */;
+}

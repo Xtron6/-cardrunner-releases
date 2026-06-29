@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sandbox is intentionally disabled: CardRunner spawns cardcopy and
+	     CardRunner.sh, accesses arbitrary /Volumes paths, and auto-ejects
+	     disks — all require unrestricted file-system access that the App
+	     Sandbox cannot grant via security-scoped bookmarks alone. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!-- Hardened Runtime is enabled for notarization compliance.
+	     allow-unsigned-executable-memory is explicitly set to false (the
+	     default) to make the denial clear in the entitlements file.
+	     disable-library-validation is NOT present: Sparkle and Sentry are
+	     re-signed with the Developer ID at build time, so all embedded
+	     frameworks pass library validation without any exception. Removing
+	     this entitlement tightens the code-injection surface. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<false/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>
