@@ -10133,9 +10133,12 @@ struct ContentView: View {
     /// Drag-drop a waiting card's node onto a destination: bind it to that drive AND
     /// start it immediately (mirrors the demo's `route(_:to:)`).
     @MainActor private func routeAwaiting(_ awaitingID: UUID, to destID: UUID) {
+        // LINK only — bind the card to this destination but do NOT start. The card waits for
+        // the operator to press Start (there's a Start button on the lane). Inaction = stays
+        // parked. (Auto-Ingest ON routes + starts automatically via routeCardsForIngest; this
+        // drag gesture is the Auto-Ingest-OFF "choose where it'll go, then I'll start it" path.)
         guard let idx = awaitingCards.firstIndex(where: { $0.id == awaitingID }) else { return }
         awaitingCards[idx].destinationID = destID
-        startAwaiting(awaitingID)
     }
 
     /// When Auto-Ingest flips ON, start every parked card on its chosen (or default) drive.
