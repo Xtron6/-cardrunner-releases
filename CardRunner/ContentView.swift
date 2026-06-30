@@ -15123,6 +15123,13 @@ extension ContentView {
                 v3JoinCard("arrow.triangle.branch", "Additional", "Split cards across drives", selected: !v3AddIsBackup) { v3AddIsBackup = false }
                 v3JoinCard("rectangle.split.2x1", "Backup", "Mirror every card here", selected: v3AddIsBackup) { v3AddIsBackup = true }
             }
+            if v3AddIsBackup && runningCount > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill").font(.system(size: 10))
+                    Text("Routing is locked during a transfer — the drive is added now; turn on Mirror after the copy finishes.")
+                }
+                .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.9))
+            }
             HStack(spacing: 12) {
                 v3SheetCancel { showV3AddDest = false }
                 v3SheetPrimary("Add destination", icon: "plus",
