@@ -2611,6 +2611,11 @@ struct ContentView: View {
 
     // MARK: - Body
 
+    /// True only when the legacy UI is the visible face (CR_LEGACY_UI=1). Under v3, the legacy
+    /// body is mounted-invisible, so any of its own visible overlays (e.g. the settings panel)
+    /// must be gated off here and rendered by bodyV3 instead.
+    private var isLegacyUI: Bool { ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1" }
+
     var body: some View {
         // The v3 node UI is now CardRunner's REAL face — the default, no flag required.
         // The legacy body stays mounted but invisible so ALL its proven wiring (card detection
@@ -2962,7 +2967,8 @@ struct ContentView: View {
             }
 
             // ── Settings overlay (ZStack instead of .sheet so tapping outside closes it) ──
-            if isShowingSettings {
+            // Under v3 this body is invisible; bodyV3 renders the settings overlay instead.
+            if isShowingSettings && isLegacyUI {
                 Color.black.opacity(0.42)
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
@@ -15349,6 +15355,20 @@ extension ContentView {
                 v3BottomBar
             }
             .padding(26)
+
+            // The real Settings panel — the exact same `settingsSheet` the legacy UI uses.
+            // (It normally renders inside the legacy body, which is invisible under v3, so we
+            // render it here too.) Tapping the dimmed backdrop closes it.
+            if isShowingSettings {
+                Color.black.opacity(0.42).ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
+                    .transition(.opacity).zIndex(80)
+                settingsSheet
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                    .zIndex(81)
+            }
         }
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
@@ -15416,7 +15436,7 @@ extension ContentView {
     // MARK: Top bar
     private var v3TopBar: some View {
         HStack {
-            Button { v3Post(.menuOpenSettings) } label: {
+            Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } } label: {
                 Image(systemName: "slider.horizontal.3")
                     .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
