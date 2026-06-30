@@ -1660,6 +1660,7 @@ struct AllTimeStats: Codable {
 struct FailedIngestRecord: Codable, Identifiable {
     let id: UUID
     let cardName: String       // volume name e.g. "Untitled"
+    var volumeUUID: String? = nil  // physical card identity — so a success only clears THIS card's record
     let friendlyName: String   // card label e.g. "Lucas"
     let projectName: String    // e.g. "20260515_Conor Daly Doc"
     let failedAt: Date
@@ -10707,6 +10708,7 @@ struct ContentView: View {
                         let mb = Int(Double(ing.totalBytesNew) / 1_048_576)
                         let rec = FailedIngestRecord(
                             id: UUID(), cardName: card.name,
+                            volumeUUID: card.volumeUUID,
                             friendlyName: ing.friendlyName,
                             projectName: self.projectName,
                             failedAt: Date(),
@@ -10791,10 +10793,14 @@ struct ContentView: View {
                 if newFiles > 0 && !didFail { self.showCompletionState = true }
 
                 // Update failed ingest records based on outcome
-                if didFail && newFiles > 0 {
+                // Record a failure WHENEVER the outcome failed — even with newFiles==0 (an early
+                // crash / mount-loss before any file copied is MORE dangerous, not less). Without
+                // this the persistent "do not format" warning would never appear for abort failures.
+                if didFail {
                     let mb = Int(Double(ingest.totalBytesNew) / 1_048_576)
                     let rec = FailedIngestRecord(
                         id: UUID(), cardName: card.name,
+                        volumeUUID: card.volumeUUID,
                         friendlyName: ingest.friendlyName,
                         projectName: self.projectName,
                         failedAt: Date(),
@@ -10804,7 +10810,8 @@ struct ContentView: View {
                     )
                     self.saveFailedRecord(rec)
                 } else if statusString == "Completed" {
-                    self.clearFailedRecords(friendlyName: ingest.friendlyName, projectName: self.projectName)
+                    self.clearFailedRecords(cardName: card.name, volumeUUID: card.volumeUUID,
+                                            friendlyName: ingest.friendlyName, projectName: self.projectName)
                     // Persist card nickname: if the operator labelled this card, remember the
                     // UUID → label mapping so future inserts auto-fill the field.
                     if self.useCustomCardName, let uuid = card.volumeUUID {
@@ -11614,12 +11621,23 @@ struct ContentView: View {
         }
     }
 
-    private func clearFailedRecords(friendlyName: String, projectName: String) {
-        let fn = friendlyName.trimmingCharacters(in: .whitespaces).lowercased()
+    /// Clear a failure record ONLY for the SAME physical card that just succeeded — never on an
+    /// empty nickname alone. Previously this matched on `friendlyName == friendlyName`, and since
+    /// most cards are un-nicknamed (`friendlyName == ""`), a success of one un-nicknamed card would
+    /// wipe a DIFFERENT un-nicknamed card's failure record in the same project — masking a real
+    /// failure. Now we require the card's volume UUID to match (exact identity), falling back to
+    /// the volume name (+ nickname if one is set) when no UUID is available.
+    private func clearFailedRecords(cardName: String, volumeUUID: String?, friendlyName: String, projectName: String) {
         let pn = projectName.trimmingCharacters(in: .whitespaces).lowercased()
+        let cn = cardName.trimmingCharacters(in: .whitespaces).lowercased()
+        let nick = friendlyName.trimmingCharacters(in: .whitespaces).lowercased()
         let before = failedIngestRecords.count
-        failedIngestRecords.removeAll {
-            $0.friendlyName.lowercased() == fn && $0.projectName.lowercased() == pn
+        failedIngestRecords.removeAll { rec in
+            guard rec.projectName.lowercased() == pn else { return false }
+            if let u = volumeUUID, let ru = rec.volumeUUID { return ru == u }   // exact card identity
+            // No UUID to compare — fall back to the volume name; never clear on an empty nickname alone.
+            let nameMatch = rec.cardName.lowercased() == cn && !cn.isEmpty
+            return nick.isEmpty ? nameMatch : (nameMatch && rec.friendlyName.lowercased() == nick)
         }
         if failedIngestRecords.count != before {
             if let data = try? JSONEncoder().encode(failedIngestRecords) {
