@@ -15803,8 +15803,29 @@ extension ContentView {
         if let id = activePresetID, let p = presets.first(where: { $0.id == id }) { return p.name }
         return "Preset"
     }
+    /// The CardRunner logo lockup (SD-card mark + wordmark + tagline). Kept as one unit so it
+    /// can be centered on the true window center — i.e. aligned with the Active-Zone ring below.
+    private var v3LogoLockup: some View {
+        HStack(spacing: 12) {
+            Image("CardRunnerLogo")
+                .resizable().renderingMode(.original).aspectRatio(contentMode: .fit)
+                .frame(width: 46, height: 46)
+                .shadow(color: v3Purple.opacity(0.45), radius: 12)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CARDRUNNER").font(.custom("Tech Headlines Italic", size: 24)).foregroundStyle(v3Brand)
+                Text("a smoother ingest workflow for creators")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+        }
+    }
+
     private var v3TopBar: some View {
-        HStack(spacing: 10) {
+        // ZStack so the logo lockup sits at the TRUE window center (overlapping the edge
+        // controls' row) — that lines it up with the ring, regardless of the asymmetric
+        // left button cluster vs the right Auto-Ingest pill.
+        ZStack {
+            v3LogoLockup
+            HStack(spacing: 10) {
             Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } } label: {
                 Image(systemName: "slider.horizontal.3")
                     .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
@@ -15857,11 +15878,6 @@ extension ContentView {
                 .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
             }.buttonStyle(.plain).help("Video / Photo mode (⌘1 / ⌘2)")
             Spacer()
-            VStack(spacing: 2) {
-                Text("CARDRUNNER").font(.custom("Tech Headlines Italic", size: 24)).foregroundStyle(v3Brand)
-                Text("Plug a card — it copies, instantly & safely").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-            }
-            Spacer()
             HStack(spacing: 7) {
                 Circle().fill(autoIngest ? v3Green : v3Amber).frame(width: 7, height: 7)
                 Text("Auto-Ingest \(autoIngest ? "On" : "Off")").font(.system(size: 12, weight: .semibold))
@@ -15871,6 +15887,7 @@ extension ContentView {
             .overlay(Capsule().strokeBorder((autoIngest ? v3Green : v3Amber).opacity(0.35)))
             .contentShape(Capsule())
             .onTapGesture { autoIngest.toggle() }   // fires the real onChange(of: autoIngest)
+            }
         }
     }
 
