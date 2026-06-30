@@ -2108,6 +2108,7 @@ struct ContentView: View {
     @State private var v3AddCustomPath = ""
     @State private var v3AddIsBackup = false
     @State private var showV3History = false
+    @State private var showV3Log = false
     @State private var v3EditingLaneID: UUID? = nil
     @State private var v3EditText = ""
     @FocusState private var v3NameFocused: Bool
@@ -8153,13 +8154,16 @@ struct ContentView: View {
                 withAnimation(spring) { importMode = "photo" }
                 AudioEngine.shared.modeSwitch()
             }
-            // View → Show History  (⌘⇧H)
+            // View → Show History  (⌘⇧H) — route to the v3 history sheet (the legacy inline
+            // panel renders invisibly under v3); legacy UI keeps its inline panel.
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleHistory)) { _ in
-                withAnimation(spring2) { showHistory.toggle() }
+                if isLegacyUI { withAnimation(spring2) { showHistory.toggle() } }
+                else { showV3History.toggle() }
             }
             // View → Show Log  (⌘⇧G)
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleLog)) { _ in
-                withAnimation(spring2) { showLog.toggle() }
+                if isLegacyUI { withAnimation(spring2) { showLog.toggle() } }
+                else { showV3Log.toggle() }
             }
             // View → Toggle Dark / Light  (⌘⇧D)
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleDarkMode)) { _ in
@@ -15344,6 +15348,38 @@ extension ContentView {
         return f.localizedString(for: d, relativeTo: Date())
     }
 
+    // MARK: Activity-log sheet
+
+    private var v3LogSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Text("Activity Log").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Spacer()
+                Button { NSWorkspace.shared.open(logsDirectoryURL) } label: {
+                    HStack(spacing: 6) { Image(systemName: "folder"); Text("Log files") }
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                }.buttonStyle(.plain).help("Reveal log files in Finder")
+                v3SheetClose { showV3Log = false }
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(logText.isEmpty ? "No activity yet this session." : logText)
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                        .id("v3logbottom")
+                }
+                .onAppear { proxy.scrollTo("v3logbottom", anchor: .bottom) }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(12).background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.08)))
+        }
+        .padding(26).frame(width: 640, height: 560)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+    }
+
     // MARK: Derived (all from real state)
 
     /// Live transfers, oldest first (stable lane order).
@@ -15469,6 +15505,7 @@ extension ContentView {
         .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
         .sheet(isPresented: $showV3History) { v3HistorySheet }
+        .sheet(isPresented: $showV3Log) { v3LogSheet }
     }
 
     /// Animated neon connectors: drag-link cursor line, each active lane → ring,
@@ -15543,6 +15580,19 @@ extension ContentView {
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
             }.buttonStyle(.plain).help("Ingest history & stats")
+            // Video / Photo mode (also ⌘1 / ⌘2). Photo mode changes what cardcopy ingests.
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { importMode = (importMode == "photo" ? "video" : "photo") }
+                AudioEngine.shared.modeSwitch()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: importMode == "photo" ? "camera.fill" : "video.fill")
+                    Text(importMode == "photo" ? "Photo" : "Video")
+                }
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 12).frame(height: 32)
+                .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+            }.buttonStyle(.plain).help("Video / Photo mode (⌘1 / ⌘2)")
             Spacer()
             VStack(spacing: 2) {
                 Text("CARDRUNNER").font(.custom("Tech Headlines Italic", size: 24)).foregroundStyle(v3Brand)
