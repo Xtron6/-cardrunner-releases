@@ -2100,6 +2100,17 @@ struct ContentView: View {
     @FocusState private var dateFieldFocused: Bool
     @AppStorage("pref_autoEject") private var autoEject: Bool = false
 
+    // v3 design sheets — Add destination / New project folder
+    @State private var showV3AddDest = false
+    @State private var v3AddIsSSD = true
+    @State private var v3AddDrivePath = ""
+    @State private var v3AddCustomPath = ""
+    @State private var v3AddIsBackup = false
+    @State private var showV3NewProject = false
+    @State private var v3ProjName = ""
+    @State private var v3ProjColorIndex = 4          // default green
+    @State private var v3ProjScaffoldOn: [String: Bool] = [:]
+
     // New project folder sheet
     @State private var showNewProjectSheet: Bool = false
     @State private var newProjectName: String = ""
@@ -14968,6 +14979,271 @@ extension ContentView {
     /// Free-space label for a destination tile.
     private func v3DestFree(_ d: Destination) -> String { v3FreeSpace(d.path) }
 
+    // MARK: - v3 sheets: Add destination / New project folder
+
+    /// Finder-tag palette for the New-Project color row (index 0 = none).
+    private var v3TagColors: [(name: String, tag: String, color: Color)] {
+        [("none", "", Color.white.opacity(0.06)),
+         ("red", "Red", Color(hex: "#f87171")), ("orange", "Orange", Color(hex: "#fb923c")),
+         ("yellow", "Yellow", Color(hex: "#fbbf24")), ("green", "Green", Color(hex: "#34d399")),
+         ("blue", "Blue", Color(hex: "#5b8def")), ("purple", "Purple", Color(hex: "#c084fc")),
+         ("gray", "Gray", Color(hex: "#9ca3af"))]
+    }
+
+    private func v3OpenAddDest(ssd: Bool) {
+        v3AddIsSSD = ssd && !v3UnusedDrives.isEmpty
+        v3AddDrivePath = v3UnusedDrives.first?.path ?? ""
+        v3AddCustomPath = ""
+        v3AddIsBackup = false
+        showV3AddDest = true
+    }
+
+    private func v3OpenNewProject() {
+        let fmt = DateFormatter(); fmt.dateFormat = "yyMMdd"
+        v3ProjName = projectName.trimmingCharacters(in: .whitespaces).isEmpty
+            ? "\(fmt.string(from: Date()))_" : projectName
+        v3ProjColorIndex = v3TagColors.firstIndex { $0.name == finderTagColor && finderTagEnabled } ?? 4
+        v3ProjScaffoldOn = Dictionary(uniqueKeysWithValues: scaffoldFolderList.map { ($0, true) })
+        showV3NewProject = true
+    }
+
+    private func v3PickCustomFolderForAdd() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = "Use this folder"; panel.message = "Choose a folder on this Mac"
+        if panel.runModal() == .OK, let url = panel.url { v3AddCustomPath = url.path }
+    }
+
+    private func v3CommitAddDest() {
+        // "Backup" makes every card mirror to all drives; "Additional" keeps split routing.
+        routingMirror = v3AddIsBackup
+        if v3AddIsSSD {
+            if let vol = v3UnusedDrives.first(where: { $0.path == v3AddDrivePath }) { v3AddDriveDestination(vol) }
+        } else if !v3AddCustomPath.isEmpty, !destinations.contains(where: { $0.path == v3AddCustomPath }) {
+            let d = Destination(path: v3AddCustomPath,
+                                name: URL(fileURLWithPath: v3AddCustomPath).lastPathComponent,
+                                isCustomFolder: true)
+            destinations.append(d)
+            if defaultDestination == nil { defaultDestIDString = d.id.uuidString }
+            saveDestinations()
+        }
+        showV3AddDest = false
+    }
+
+    private func v3CommitNewProject() {
+        let name = v3ProjName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        projectName = name
+        let enabled = scaffoldFolderList.filter { v3ProjScaffoldOn[$0] ?? true }
+        scaffoldFoldersRaw = enabled.joined(separator: "\n")
+        scaffoldEnabled = !enabled.isEmpty
+        finderTagEnabled = v3ProjColorIndex != 0
+        if v3ProjColorIndex != 0 { finderTagColor = v3TagColors[v3ProjColorIndex].name }
+        // Create the project folder + scaffold on the default drive now, so it shows in Finder.
+        if let base = defaultDestination?.path, !base.isEmpty {
+            let fm = FileManager.default
+            let root = (base as NSString).appendingPathComponent(name)
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            for f in enabled where !f.contains("..") {
+                try? fm.createDirectory(atPath: (root as NSString).appendingPathComponent(f), withIntermediateDirectories: true)
+            }
+            if v3ProjColorIndex != 0 {
+                let url = URL(fileURLWithPath: root)
+                try? (url as NSURL).setResourceValue([v3TagColors[v3ProjColorIndex].tag], forKey: .tagNamesKey)
+            }
+        }
+        showV3NewProject = false
+    }
+
+    // MARK: Add-destination sheet
+
+    private var v3AddDestSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Add destination").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Spacer(); v3SheetClose { showV3AddDest = false }
+            }
+            v3SheetLabel("DESTINATION")
+            v3Segment(left: ("externaldrive", "SSD"), right: ("folder", "Custom Folder"), leftSelected: v3AddIsSSD) {
+                v3AddIsSSD = $0
+            }
+            if v3AddIsSSD {
+                v3SheetLabel("Drive")
+                Menu {
+                    ForEach(v3UnusedDrives, id: \.path) { vol in
+                        Button("\(vol.name) — \(v3FreeSpace(vol.path))") { v3AddDrivePath = vol.path }
+                    }
+                } label: {
+                    let sel = v3UnusedDrives.first { $0.path == v3AddDrivePath }
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sel?.name ?? "No drives available")
+                                .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                            if let s = sel { Text(v3FreeSpace(s.path)).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)) }
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+                    }
+                    .padding(14).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.10)))
+                }
+                .menuStyle(.borderlessButton)
+            } else {
+                v3SheetLabel("Folder path")
+                Button { v3PickCustomFolderForAdd() } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder").foregroundStyle(.white.opacity(0.5))
+                        Text(v3AddCustomPath.isEmpty ? "Choose a folder on this Mac…" : v3AddCustomPath)
+                            .foregroundStyle(v3AddCustomPath.isEmpty ? .white.opacity(0.5) : .white)
+                            .lineLimit(1).truncationMode(.head)
+                        Spacer()
+                    }
+                    .font(.system(size: 14)).padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.18),
+                             style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
+                }.buttonStyle(.plain)
+            }
+            v3SheetLabel("HOW IT JOINS")
+            HStack(spacing: 12) {
+                v3JoinCard("arrow.triangle.branch", "Additional", "Split cards across drives", selected: !v3AddIsBackup) { v3AddIsBackup = false }
+                v3JoinCard("rectangle.split.2x1", "Backup", "Mirror every card here", selected: v3AddIsBackup) { v3AddIsBackup = true }
+            }
+            HStack(spacing: 12) {
+                v3SheetCancel { showV3AddDest = false }
+                v3SheetPrimary("Add destination", icon: "plus",
+                               enabled: v3AddIsSSD ? !v3AddDrivePath.isEmpty : !v3AddCustomPath.isEmpty) { v3CommitAddDest() }
+            }
+            .padding(.top, 4)
+        }
+        .padding(26).frame(width: 460)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+    }
+
+    // MARK: New-project-folder sheet
+
+    private var v3NewProjectSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("New Project Folder").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                    HStack(spacing: 6) {
+                        Image(systemName: "externaldrive").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                        Text("\(defaultDestination?.name ?? "—")  /").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                Spacer(); v3SheetClose { showV3NewProject = false }
+            }
+            v3SheetLabel("FOLDER NAME")
+            TextField("Project name", text: $v3ProjName)
+                .textFieldStyle(.plain).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                .padding(14).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(v3Purple.opacity(0.5)))
+            Text("Auto-filled with today's date — add a shoot name (e.g. 260629_NWSL).")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            v3SheetLabel("FOLDER COLOR")
+            HStack(spacing: 10) {
+                ForEach(Array(v3TagColors.enumerated()), id: \.offset) { i, c in
+                    ZStack {
+                        Circle().fill(i == 0 ? AnyShapeStyle(.white.opacity(0.06)) : AnyShapeStyle(c.color))
+                            .frame(width: 30, height: 30)
+                        if i == 0 { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.5)) }
+                    }
+                    .overlay(Circle().strokeBorder(.white, lineWidth: v3ProjColorIndex == i ? 2 : 0))
+                    .contentShape(Circle()).onTapGesture { v3ProjColorIndex = i }
+                }
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.2x2").font(.system(size: 11)).foregroundStyle(v3Purple)
+                Text("Scaffold folders created inside").font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Purple)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(scaffoldFolderList, id: \.self) { f in
+                    let on = v3ProjScaffoldOn[f] ?? true
+                    Button { v3ProjScaffoldOn[f] = !on } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: on ? "checkmark" : "plus").font(.system(size: 10, weight: .bold))
+                            Text(f).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                        }
+                        .foregroundStyle(on ? .white : .white.opacity(0.4))
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background((on ? v3Purple.opacity(0.18) : Color.white.opacity(0.03)), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(on ? v3Purple.opacity(0.5) : .white.opacity(0.08)))
+                    }.buttonStyle(.plain)
+                }
+            }
+            HStack(spacing: 12) {
+                v3SheetCancel { showV3NewProject = false }
+                v3SheetPrimary("Create Folder", icon: "folder.badge.plus",
+                               enabled: !v3ProjName.trimmingCharacters(in: .whitespaces).isEmpty) { v3CommitNewProject() }
+            }
+            .padding(.top, 4)
+        }
+        .padding(26).frame(width: 460)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+    }
+
+    // MARK: Sheet building blocks
+
+    private func v3SheetLabel(_ t: String) -> some View {
+        Text(t).font(.system(size: 11, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.4))
+    }
+    private func v3SheetClose(_ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                .frame(width: 30, height: 30).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.10)))
+        }.buttonStyle(.plain)
+    }
+    private func v3Segment(left: (String, String), right: (String, String),
+                           leftSelected: Bool, _ pick: @escaping (Bool) -> Void) -> some View {
+        HStack(spacing: 0) {
+            v3SegmentHalf(left.0, left.1, selected: leftSelected) { pick(true) }
+            v3SegmentHalf(right.0, right.1, selected: !leftSelected) { pick(false) }
+        }
+        .padding(4).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.08)))
+    }
+    private func v3SegmentHalf(_ icon: String, _ title: String, selected: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: 8) { Image(systemName: icon); Text(title).font(.system(size: 14, weight: .semibold)) }
+                .foregroundStyle(selected ? .white : .white.opacity(0.6))
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(selected ? AnyShapeStyle(v3Brand) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 9))
+        }.buttonStyle(.plain)
+    }
+    private func v3JoinCard(_ icon: String, _ title: String, _ sub: String, selected: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: icon).font(.system(size: 13)).foregroundStyle(selected ? v3Purple : .white.opacity(0.7))
+                    Text(title).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                }
+                Text(sub).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            .background((selected ? v3Purple.opacity(0.12) : Color.white.opacity(0.03)), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? v3Purple.opacity(0.6) : .white.opacity(0.08)))
+        }.buttonStyle(.plain)
+    }
+    private func v3SheetCancel(_ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Text("Cancel").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 22).padding(.vertical, 12)
+                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
+                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.10)))
+        }.buttonStyle(.plain)
+    }
+    private func v3SheetPrimary(_ title: String, icon: String, enabled: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: 8) { Image(systemName: icon); Text(title).font(.system(size: 14, weight: .bold)) }
+                .foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 12)
+                .background(v3Brand, in: RoundedRectangle(cornerRadius: 11))
+                .opacity(enabled ? 1 : 0.4)
+        }.buttonStyle(.plain).disabled(!enabled)
+    }
+
     // MARK: Derived (all from real state)
 
     /// Live transfers, oldest first (stable lane order).
@@ -15076,6 +15352,8 @@ extension ContentView {
         }
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
+        .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
     }
 
     /// Animated neon connectors: drag-link cursor line, each active lane → ring,
@@ -15590,19 +15868,9 @@ extension ContentView {
         .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(v3Cyan.opacity(0.7), lineWidth: 1.5))
     }
 
-    /// "Add destination" — pick a mounted drive or a folder. Shown as a menu.
+    /// "Add destination" — opens the design sheet (SSD drive or custom folder + split/mirror).
     private var v3AddDestinationMenu: some View {
-        Menu {
-            ForEach(v3UnusedDrives) { vol in
-                Button { v3AddDriveDestination(vol) } label: {
-                    Label(vol.name, systemImage: "externaldrive.fill")
-                }
-            }
-            if !v3UnusedDrives.isEmpty { Divider() }
-            Button { v3AddFolderDestination() } label: {
-                Label("Choose a folder…", systemImage: "folder.badge.plus")
-            }
-        } label: {
+        Button { v3OpenAddDest(ssd: true) } label: {
             HStack(spacing: 6) { Image(systemName: "plus"); Text("Add destination") }
                 .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                 .padding(.horizontal, 14).padding(.vertical, 9)
@@ -15610,7 +15878,7 @@ extension ContentView {
                 .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12)))
         }
-        .menuStyle(.borderlessButton).fixedSize()
+        .buttonStyle(.plain)
     }
 
     /// Legacy fallback box — shown only when NO Destination list is configured yet (untouched
@@ -15668,12 +15936,12 @@ extension ContentView {
             if runningCount > 0 {
                 v3Chip("Stop", "stop.circle", v3Red) { v3Post(.menuStopTransfer) }
             }
-            v3Chip("New project folder", "folder.badge.plus", v3Purple) { v3Post(.menuOpenSettings) }
+            v3Chip("New project folder", "folder.badge.plus", v3Purple) { v3OpenNewProject() }
             v3Chip("Today only", "calendar", dateFilterMode == "today" ? v3Cyan : .white.opacity(0.6)) {
                 dateFilterMode = dateFilterMode == "today" ? "all" : "today"
             }
             v3Chip("Auto-eject  \(autoEject ? "On" : "Off")", "eject", autoEject ? v3Green : .white.opacity(0.6)) { autoEject.toggle() }
-            Button { v3AddFolderDestination() } label: {
+            Button { v3OpenAddDest(ssd: false) } label: {
                 HStack(spacing: 6) { Image(systemName: "folder.badge.plus"); Text("Add folder") }
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 9).background(v3Brand, in: Capsule())
