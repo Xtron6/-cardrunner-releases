@@ -1723,6 +1723,7 @@ struct ActiveIngest {
     var cardName: String = ""
     var volumeUUID: String? = nil    // source card's volume UUID — lets a lane persist a nickname
     var sourcePath: String = ""      // source card's mount path — distinguishes two same-named UUID-less cards
+    var runMode: String = "video"    // import mode this ingest actually ran in — for the mixed-card hint
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -2156,6 +2157,10 @@ struct ContentView: View {
     @State private var v3AddDrivePath = ""
     @State private var v3AddCustomPath = ""
     @State private var v3AddIsBackup = false
+    @State private var showV3DateRange = false
+    @State private var v3RangeFrom = Date()
+    @State private var v3RangeTo = Date()
+    @State private var v3RangeSingleDay = false
     @State private var showV3History = false
     @State private var showV3Log = false
     @State private var v3EditingLaneID: UUID? = nil
@@ -6731,6 +6736,27 @@ struct ContentView: View {
                 info: "When enabled, any .xml files found alongside your video clips on the card are copied to the same destination folder. Has no effect in photo mode."
             )
 
+            // Parallel-ingest ceiling. Cards on DIFFERENT physical drives can copy at once;
+            // two cards never write the same drive simultaneously (the scheduler guarantees it).
+            HStack(spacing: 12) {
+                Image(systemName: "square.stack.3d.up").font(.system(size: 14)).foregroundStyle(accentBlue)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("Max cards copying at once")
+                            .font(.custom("DM Sans", size: 12).weight(.semibold)).foregroundStyle(textPrimary)
+                        InfoPopover("Upper limit on simultaneous ingests. Parallelism only happens across different physical drives — two cards are never copied to the same drive at the same time. Default 3.")
+                    }
+                    Text("Across different destination drives.")
+                        .font(.custom("DM Sans", size: 10)).foregroundStyle(textMuted)
+                }
+                Spacer()
+                Stepper(value: $maxConcurrentCards, in: 1...8) {
+                    Text("\(maxConcurrentCards)").font(.custom("DM Sans", size: 13).weight(.semibold))
+                        .foregroundStyle(textPrimary).frame(minWidth: 18)
+                }.labelsHidden().fixedSize()
+            }
+
             Divider().opacity(0.4)
 
             // ── Project Scaffold ─────────────────────────────────────────────
@@ -10439,6 +10465,7 @@ struct ContentView: View {
         activeIngests[processID]?.friendlyName = useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         activeIngests[processID]?.volumeUUID = card.volumeUUID
         activeIngests[processID]?.sourcePath = card.path
+        activeIngests[processID]?.runMode = importMode
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
 
@@ -11671,6 +11698,7 @@ struct ContentView: View {
             projectRoot: "\(primary.path)/\(cp.projectName)"
         )
         activeIngests[processID]?.sourcePath = cp.cardPath
+        activeIngests[processID]?.runMode = cp.mode
         lastNewFiles = 0; lastAvgMBps = 0; lastDurationSec = 0
         lastDestPath = ""; lastReportPath = ""
         showCompletionState = false
@@ -15676,6 +15704,7 @@ extension ContentView {
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
         .sheet(isPresented: $showV3History) { v3HistorySheet }
         .sheet(isPresented: $showV3Log) { v3LogSheet }
+        .sheet(isPresented: $showV3DateRange) { v3DateRangeSheet }
     }
 
     /// Animated neon connectors: drag-link cursor line, each active lane → ring,
@@ -16049,20 +16078,38 @@ extension ContentView {
             HStack(spacing: 7) { ProgressView().controlSize(.small).tint(v3Green)
                 Text("Verifying checksums…").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9)) }
         case .done:
-            HStack(spacing: 7) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(v3Green)
-                Text("SAFE TO PULL").font(.system(size: 12, weight: .bold)).foregroundStyle(v3Green)
-                Spacer()
-                Button { v3Post(.menuEjectCard) } label: {
-                    HStack(spacing: 4) { Image(systemName: "eject.fill").font(.system(size: 9)); Text("Pull").font(.system(size: 11, weight: .semibold)) }
-                        .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-                }.buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 7) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(v3Green)
+                    Text("SAFE TO PULL").font(.system(size: 12, weight: .bold)).foregroundStyle(v3Green)
+                    Spacer()
+                    Button { v3Post(.menuEjectCard) } label: {
+                        HStack(spacing: 4) { Image(systemName: "eject.fill").font(.system(size: 9)); Text("Pull").font(.system(size: 11, weight: .semibold)) }
+                            .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                    }.buttonStyle(.plain)
+                }
+                if ing.skipWrongMode > 0 { v3MixedModeHint(ing.skipWrongMode, runMode: ing.runMode) }
             }
         case .failed:
             Text("Transfer failed — card kept mounted, re-insert to retry")
                 .font(.system(size: 11)).foregroundStyle(v3Red)
         }
+    }
+
+    /// Mixed-card hint — shown only when the engine actually skipped wrong-mode files on a
+    /// card (skipWrongMode > 0). Mode is global, so a card holding both stills + video copies
+    /// only the current mode's files; the rest are SKIPPED (never deleted). Tells the operator
+    /// how to grab them: switch mode (⌘1/⌘2) and re-insert — the card re-surfaces to re-run.
+    private func v3MixedModeHint(_ n: Int, runMode: String) -> some View {
+        let otherKind = runMode == "photo" ? "video" : "photo"
+        return HStack(spacing: 6) {
+            Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 10)).foregroundStyle(v3Amber)
+            Text("\(n) \(otherKind) file\(n == 1 ? "" : "s") skipped — switch to \(otherKind.capitalized) mode & re-insert to copy them")
+                .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(v3Amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: Ring (real aggregate)
@@ -16375,13 +16422,13 @@ extension ContentView {
                 v3Chip("Stop", "stop.circle", v3Red) { v3Post(.menuStopTransfer) }
             }
             v3Chip("New project folder", "folder.badge.plus", v3Purple) { v3OpenNewProject() }
-            // Date filter — Today / Yesterday / All, with Custom range in Settings.
+            // Date filter — Today / Yesterday / All / Custom (range or single day).
             Menu {
                 Button("Today") { dateFilterMode = "today" }
                 Button("Yesterday") { dateFilterMode = "yesterday" }
                 Button("All dates") { dateFilterMode = "all" }
                 Divider()
-                Button("Custom range…") { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } }
+                Button("Custom range…") { v3OpenDateRange() }
             } label: {
                 v3ChipLabel(v3DateFilterText, "calendar", dateFilterMode == "all" ? .white.opacity(0.6) : v3Cyan)
             }.menuStyle(.borderlessButton).fixedSize()
@@ -16406,9 +16453,95 @@ extension ContentView {
         switch dateFilterMode {
         case "today": return "Today only"
         case "yesterday": return "Yesterday"
-        case "custom": return "Custom dates"
+        case "custom":
+            let from = v3PrettyYMD(dateFilterFrom)
+            if dateFilterSubMode == "range" && !dateFilterTo.isEmpty {
+                return "\(from) – \(v3PrettyYMD(dateFilterTo))"
+            }
+            return from.isEmpty ? "Custom dates" : from
         default: return "All dates"
         }
+    }
+
+    /// Convert a stored YYYYMMDD key to a short human label (e.g. "Jun 30").
+    private func v3PrettyYMD(_ ymd: String) -> String {
+        let inFmt = DateFormatter(); inFmt.dateFormat = "yyyyMMdd"
+        guard let d = inFmt.date(from: ymd) else { return ymd }
+        let out = DateFormatter(); out.dateFormat = "MMM d"
+        return out.string(from: d)
+    }
+
+    /// Open the custom date-range sheet, seeding the pickers from any saved custom range.
+    private func v3OpenDateRange() {
+        let inFmt = DateFormatter(); inFmt.dateFormat = "yyyyMMdd"
+        v3RangeFrom = inFmt.date(from: dateFilterFrom) ?? Date()
+        v3RangeTo   = inFmt.date(from: dateFilterTo) ?? v3RangeFrom
+        v3RangeSingleDay = (dateFilterSubMode != "range")
+        showV3DateRange = true
+    }
+
+    /// Apply the chosen range: writes the custom-mode prefs the engine reads via buildIngestArgs.
+    private func v3ApplyDateRange() {
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyyMMdd"
+        // Normalize so From is never after To.
+        let lo = min(v3RangeFrom, v3RangeTo), hi = max(v3RangeFrom, v3RangeTo)
+        dateFilterFrom = fmt.string(from: lo)
+        if v3RangeSingleDay {
+            dateFilterSubMode = "single"
+            dateFilterTo = ""
+        } else {
+            dateFilterSubMode = "range"
+            dateFilterTo = fmt.string(from: hi)
+        }
+        dateFilterMode = "custom"
+        showV3DateRange = false
+    }
+
+    /// Custom date-range picker (footage filter). "Single day" copies only that day's clips;
+    /// "Range" copies From…To inclusive. Maps to --date-from / --date-to (yyyyMMdd).
+    private var v3DateRangeSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Custom date filter").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+            Text("Only clips recorded in this window are copied. The rest are skipped (never deleted).")
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
+
+            Picker("", selection: $v3RangeSingleDay) {
+                Text("Date range").tag(false)
+                Text("Single day").tag(true)
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 260)
+
+            HStack(spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(v3RangeSingleDay ? "DAY" : "FROM")
+                        .font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.5))
+                    DatePicker("", selection: $v3RangeFrom, displayedComponents: .date)
+                        .labelsHidden().datePickerStyle(.compact)
+                }
+                if !v3RangeSingleDay {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("TO").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.5))
+                        DatePicker("", selection: $v3RangeTo, in: v3RangeFrom..., displayedComponents: .date)
+                            .labelsHidden().datePickerStyle(.compact)
+                    }
+                }
+            }
+
+            HStack {
+                Button("Clear filter") {
+                    dateFilterMode = "all"; dateFilterFrom = ""; dateFilterTo = ""
+                    showV3DateRange = false
+                }.buttonStyle(.plain).foregroundStyle(v3Amber)
+                Spacer()
+                Button("Cancel") { showV3DateRange = false }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.6))
+                Button { v3ApplyDateRange() } label: {
+                    Text("Apply").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 20).padding(.vertical, 8).background(v3Green, in: Capsule())
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(28).frame(width: 460)
+        .background(Color(hex: "#16101f"))
+        .preferredColorScheme(.dark)
     }
     private var v3VerifyText: String { fullVerifyEnabled ? "Full" : (verifyTransfer ? "Spot" : "Off") }
 
