@@ -1726,6 +1726,7 @@ struct ActiveIngest {
     var sourcePath: String = ""      // source card's mount path — distinguishes two same-named UUID-less cards
     var runMode: String = "video"    // import mode this ingest actually ran in — for the mixed-card hint
     var cardLabel: String = ""       // the --cardlabel this card copied under (the per-card folder name)
+    var pendingRename: String? = nil // a new folder name typed DURING transfer — applied at completion
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -2174,9 +2175,6 @@ struct ContentView: View {
     @State private var v3RangeSingleDay = false
     @State private var showV3History = false
     @State private var showV3Log = false
-    @State private var v3EditingLaneID: UUID? = nil
-    @State private var v3EditText = ""
-    @FocusState private var v3NameFocused: Bool
     @State private var showV3NewProject = false
     @State private var v3ProjName = ""
     @State private var v3ProjColorIndex = 4          // default green
@@ -9655,6 +9653,52 @@ struct ContentView: View {
         }
     }
 
+    /// Apply a per-card folder rename AFTER a copy completes (never mid-copy — the shell caches
+    /// dest paths, so a live rename would split footage). Renames every {destPath}/{date}/{old}
+    /// directory to {date}/{new}. CONFLICT-SAFE: skips (and logs) when the target already exists
+    /// or the source is missing — it never merges, overwrites, or deletes. The manifest dedups on
+    /// SOURCE identity, so a renamed dest folder doesn't break re-ingest. Returns the name actually
+    /// in effect (new if at least one folder moved, else old — footage is never left in limbo).
+    @MainActor @discardableResult
+    private func applyPendingFolderRename(destPath: String, oldLabel: String, newLabel: String) -> String {
+        let fm = FileManager.default
+        let oldT = oldLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newT = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only rename an EXISTING label folder to a new, valid, non-empty, different name.
+        guard !destPath.isEmpty, !oldT.isEmpty, !newT.isEmpty, newT != oldT,
+              !newT.contains("/"), newT != ".", newT != ".." else { return oldLabel }
+        var movedAny = false
+        // Conflict-safe move of {parent}/{oldT} → {parent}/{newT}. Never overwrites/merges/deletes.
+        func tryRename(in parent: String) {
+            let src = "\(parent)/\(oldT)", dst = "\(parent)/\(newT)"
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: src, isDirectory: &isDir), isDir.boolValue else { return }
+            if fm.fileExists(atPath: dst) {
+                appendLog("RENAME SKIP: \(dst) already exists — kept folder \(oldT)\n"); return
+            }
+            do { try fm.moveItem(atPath: src, toPath: dst); movedAny = true
+                 appendLog("Renamed card folder \(oldT) → \(newT)\n") }
+            catch { appendLog("RENAME FAIL: \(src) → \(newT): \(error.localizedDescription) — kept \(oldT)\n") }
+        }
+        // Cover the label folder wherever the engine nests it: {date}/{label} (flat/custom),
+        // and {date}/{reel|lane}/{label} (reel-multi / olympics). One extra shallow listing per
+        // date dir — both passes are conflict-safe, so a label that isn't there is simply skipped.
+        let dateDirs = (try? fm.contentsOfDirectory(atPath: destPath)) ?? []
+        for d in dateDirs {
+            let dateDir = "\(destPath)/\(d)"
+            var dIsDir: ObjCBool = false
+            guard fm.fileExists(atPath: dateDir, isDirectory: &dIsDir), dIsDir.boolValue else { continue }
+            tryRename(in: dateDir)
+            for s in (try? fm.contentsOfDirectory(atPath: dateDir)) ?? [] {
+                let subDir = "\(dateDir)/\(s)"
+                var sIsDir: ObjCBool = false
+                guard fm.fileExists(atPath: subDir, isDirectory: &sIsDir), sIsDir.boolValue else { continue }
+                tryRename(in: subDir)
+            }
+        }
+        return movedAny ? newT : oldLabel
+    }
+
     /// Auto-fill the card label field when we recognise a card's UUID.
     /// Only fills if the field is currently empty or the toggle is off — never stomps
     /// a label the user has already typed or one applied by a preset.
@@ -10998,6 +11042,17 @@ struct ContentView: View {
                     )
                     self.saveFailedRecord(rec)
                 } else if statusString == "Completed" {
+                    // Apply a folder rename the operator typed DURING the copy (safety valve).
+                    // Done here — after the process has fully exited and released all handles —
+                    // so it can never split an in-progress copy. Conflict-safe; footage already
+                    // verified before this point.
+                    if let newLabel = ingest.pendingRename {
+                        // The lane entry was already removed at completion (10966), so there's
+                        // nothing to update in activeIngests here — the rename operates on the
+                        // verified folder on disk via the local `ingest` snapshot.
+                        self.applyPendingFolderRename(destPath: ingest.destPath,
+                                                      oldLabel: ingest.cardLabel, newLabel: newLabel)
+                    }
                     self.clearFailedRecords(cardName: card.name, volumeUUID: card.volumeUUID,
                                             friendlyName: ingest.friendlyName, projectName: self.projectName)
                     // Persist card nickname: if the operator labelled this card, remember the
@@ -15984,24 +16039,23 @@ extension ContentView {
             HStack(spacing: 10) {
                 Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(col)
                     .frame(width: 32, height: 32).background(col.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    if v3EditingLaneID == id {
-                        TextField("Card name", text: $v3EditText)
-                            .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                            .focused($v3NameFocused)
-                            .onSubmit { v3CommitLaneRename(ing) }
-                            .onExitCommand { v3EditingLaneID = nil }
-                    } else {
-                        // Rename only when this card has a volume UUID to persist the nickname
-                        // against — otherwise the edit would be silently dropped, so don't offer it.
-                        let canRename = ing.volumeUUID != nil
-                        Text(v3LaneName(ing)).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                            .onTapGesture(count: 2) {
-                                guard canRename else { return }
-                                v3EditText = v3LaneName(ing); v3EditingLaneID = id; v3NameFocused = true
-                            }
-                            .help(canRename ? "Double-click to rename this card" : "")
+                VStack(alignment: .leading, spacing: 4) {
+                    // Editable FOLDER NAME — same pill as the awaiting lane. Editing DURING the
+                    // copy is a safety valve: the rename is applied when the card finishes (the
+                    // copy can't be safely renamed live), so footage still lands and gets the
+                    // corrected name. For a card with no per-card folder, this persists a nickname.
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(col.opacity(0.85))
+                        TextField("Folder name", text: v3ActiveNameBinding(id))
+                            .textFieldStyle(.plain).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                            .frame(minWidth: 60).fixedSize()
+                            .onSubmit { v3CommitActiveRename(id) }
+                        Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
                     }
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.18),
+                             style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .help("Edit the folder name — applied when this card finishes copying")
                     HStack(spacing: 5) {
                         Text(ing.cameraModel.isEmpty ? "Camera" : ing.cameraModel)
                         Text("·  → \(v3DestDriveName)").foregroundStyle(.white.opacity(0.35))
@@ -16026,14 +16080,46 @@ extension ContentView {
         if let u = ing.volumeUUID, let nick = knownCardNicknames[u], !nick.isEmpty { return nick }
         return ing.cardName.isEmpty ? "Card" : ing.cardName
     }
-    /// Persist an inline lane rename as this card's nickname (keyed by volume UUID).
-    private func v3CommitLaneRename(_ ing: ActiveIngest) {
-        let name = v3EditText.trimmingCharacters(in: .whitespacesAndNewlines)
-        v3EditingLaneID = nil
-        guard !name.isEmpty, let uuid = ing.volumeUUID else { return }
-        knownCardNicknames[uuid] = name
-        persistCardNicknames()
+
+    /// Two-way binding into an active ingest's editable folder name (by processID). Typing sets
+    /// a pendingRename; the get shows the pending name, else the folder label, else the lane name.
+    private func v3ActiveNameBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: {
+                guard let ing = self.activeIngests[id] else { return "" }
+                if let p = ing.pendingRename { return p }
+                return ing.cardLabel.isEmpty ? self.v3LaneName(ing) : ing.cardLabel
+            },
+            set: { newVal in self.activeIngests[id]?.pendingRename = newVal }
+        )
     }
+
+    /// Commit a folder-name edit made on an ACTIVE lane.
+    /// - Folder-labeled card still copying → leave pendingRename; the termination handler renames
+    ///   the folder safely once the process exits (never mid-copy — that would split footage).
+    /// - Folder-labeled card already .done (process exited) → rename the folder now.
+    /// - Card with no per-card folder → persist the edit as a nickname so the display sticks.
+    private func v3CommitActiveRename(_ id: UUID) {
+        guard let ing = activeIngests[id] else { return }
+        let newName = (ing.pendingRename ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { activeIngests[id]?.pendingRename = nil; return }
+        if !ing.cardLabel.isEmpty {
+            if ing.phase == .done {
+                let applied = applyPendingFolderRename(destPath: ing.destPath,
+                                                       oldLabel: ing.cardLabel, newLabel: newName)
+                activeIngests[id]?.cardLabel = applied
+                activeIngests[id]?.friendlyName = applied
+                activeIngests[id]?.pendingRename = nil
+            }
+            // else still copying → keep pendingRename; termination handler applies it.
+        } else {
+            // No folder to rename — persist as a nickname so the display sticks.
+            activeIngests[id]?.friendlyName = newName
+            if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
+            activeIngests[id]?.pendingRename = nil
+        }
+    }
+
 
     /// Two-way binding into an awaiting card's editable per-card folder name (by id).
     private func v3AwaitingNameBinding(_ id: UUID) -> Binding<String> {
