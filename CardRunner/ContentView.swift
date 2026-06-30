@@ -15739,6 +15739,8 @@ extension ContentView {
                 // DRY RUN is a simulation — NO files are copied. Loud banner so the operator
                 // never mistakes a dry run for a real transfer (a card would NOT be safe to pull).
                 if dryRun { v3DryRunBanner.zIndex(1) }
+                // Developer tools (Run Demo / log / dry-run) — only when Debug Mode is on.
+                if debugMode { v3DebugStrip.zIndex(1) }
                 HStack(alignment: .top, spacing: 24) {
                     v3Sources.frame(maxWidth: .infinity, alignment: .leading)
                     v3Ring.frame(width: 360)
@@ -16215,6 +16217,51 @@ extension ContentView {
                     .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
             }
         }
+    }
+
+    /// Developer tools strip — visible only when Debug Mode is on (Settings ▸ About ▸ Developer).
+    /// Brings the old UI's debug surface into v3: Run UI Demo (a full simulated ingest that drives
+    /// the real lanes/ring), Show Log, Log Files, and a Dry-Run toggle. Idle/inert otherwise.
+    private var v3DebugStrip: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "ladybug.fill").font(.system(size: 12))
+                Text("DEV").font(.system(size: 11, weight: .bold)).tracking(1)
+            }.foregroundStyle(v3Purple)
+            Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 18)
+
+            // Guard: the demo flips Auto-Ingest on, which would drain any PARKED real cards into
+            // the queue and auto-start them when the demo finishes. Block it while cards are
+            // awaiting (or a real ingest is running) so a dev can't kick off real copies by accident.
+            let demoBlocked = runningCount != 0 || !awaitingCards.isEmpty
+            Button { runDemoIngest() } label: {
+                Label("Run UI Demo", systemImage: "play.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            }.buttonStyle(.plain).foregroundStyle(demoBlocked ? .white.opacity(0.3) : v3Cyan)
+                .disabled(demoBlocked)
+                .help(awaitingCards.isEmpty ? "Simulate a full ingest (no card needed) — exercises every lane/ring state"
+                                            : "Unavailable while cards are waiting to route — the demo would auto-start them")
+
+            Button { showV3Log = true } label: {
+                Label("Show Log", systemImage: "doc.plaintext").font(.system(size: 12, weight: .semibold))
+            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8))
+
+            Button { NSWorkspace.shared.open(logsDirectoryURL) } label: {
+                Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold))
+            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8))
+
+            Spacer()
+
+            HStack(spacing: 7) {
+                Text("Dry Run").font(.system(size: 12, weight: .semibold)).foregroundStyle(dryRun ? v3Amber : .white.opacity(0.6))
+                Toggle("", isOn: $dryRun).labelsHidden().toggleStyle(.switch).tint(v3Amber)
+            }
+            Text("Turn off in Settings").font(.system(size: 10)).foregroundStyle(.white.opacity(0.3))
+        }
+        .padding(.horizontal, 16).padding(.vertical, 9)
+        .background(v3Purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(v3Purple.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [5, 3])))
+        .padding(.horizontal, 2)
     }
 
     /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
