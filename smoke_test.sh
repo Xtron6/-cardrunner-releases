@@ -194,6 +194,28 @@ lp9=$(find "$P9" -type f -name '*.MP4' | wc -l | tr -d ' ')
 [[ "$lp9" == 3 ]]      && ok "primary copy intact (footage never lost on mirror failure)" || bad "primary lost files: $lp9/3"
 out_has "EJECT_SKIPPED" && ok "card kept mounted (EJECT_SKIPPED) despite --auto-eject"     || bad "card eligible for eject after mirror failure"
 
+# ── Check 10: --ignore-manifest re-copies an already-offloaded card ──────────
+# Footage workflow: a card whose clips are in the manifest is normally skipped
+# (new=0) even into a NEW empty folder. --ignore-manifest must re-copy them.
+print -r -- "${BOLD}[10] --ignore-manifest deliberate re-ingest${RST}"
+C10="$(mktemp -d /tmp/cr_card10.XXXXXX)"
+make_files "$C10/DCIM/100MEDIA" 4 XG_REING
+D10a="$(mktemp -d /tmp/cr_dest10a.XXXXXX)"
+run_ingest "$C10" "$D10a"                                   # 1st ingest → populates the manifest
+[[ "$(field new_files)" == "4" ]] && ok "1st ingest copied 4 (manifest now has them)" || bad "1st new_files=$(field new_files) (expected 4)"
+# Re-ingest the SAME card to a NEW empty dest — manifest should block it.
+D10b="$(mktemp -d /tmp/cr_dest10b.XXXXXX)"
+run_ingest "$C10" "$D10b"
+[[ "$(field new_files)" == "0" ]]  && ok "manifest blocks re-copy to a new folder (new=0)" || bad "manifest did not block: new_files=$(field new_files)"
+[[ "$(field manifest)" == "4" ]]   && ok "4 counted as manifest skips"                     || bad "manifest=$(field manifest) (expected 4)"
+# Same card + new dest + --ignore-manifest → all 4 re-copy.
+D10c="$(mktemp -d /tmp/cr_dest10c.XXXXXX)"
+run_ingest "$C10" "$D10c" --ignore-manifest
+landed10=$(find "$D10c" -type f -name '*.MP4' | wc -l | tr -d ' ')
+(( RUN_EC == 0 ))                  && ok "exit code 0 with --ignore-manifest"               || bad "exit code was $RUN_EC"
+[[ "$(field new_files)" == "4" ]]  && ok "--ignore-manifest re-copied all 4 (manifest bypassed)" || bad "new_files=$(field new_files) (expected 4)"
+[[ "$landed10" == "4" ]]           && ok "4 files landed at the new destination"            || bad "$landed10 landed (expected 4)"
+
 # ── Check 7: no fatal shell errors slipped through any run ───────────────────
 print -r -- "${BOLD}[7] no fatal shell errors${RST}"
 # This is the exact class that broke every transfer: arithmetic/function errors

@@ -66,6 +66,7 @@ PROJECT_NAME=""
 DEST_ROOT=""      # when set, overrides PRIMARY_ROOT/PROJECT_NAME as the base dest
 SUBFOLDER=""
 CARDLABEL=""
+IGNORE_MANIFEST="no"   # --ignore-manifest: re-copy files even if the card manifest says already-ingested
 LATEST_COUNT=0
 DRY_RUN="no"
 TODAY_ONLY="no"      # legacy — still honoured; sets DATE_FROM to today
@@ -1859,11 +1860,14 @@ PYEOF
       # Subscript MUST be quoted — an unquoted '|'-containing key never matches
       # in zsh (keys are set with a quoted subscript), which would silently
       # disable manifest-based skipping and re-copy already-ingested files.
-      if [[ "$WINTER_OLYMPICS_MODE" != "yes" ]] && \
+      # --ignore-manifest re-copies everything: skip the manifest check entirely so a card
+      # that was already offloaded can be deliberately re-ingested (e.g. to a second drive).
+      # The dest-exists check below still prevents copying ON TOP of an existing file.
+      if [[ "$IGNORE_MANIFEST" != "yes" ]] && [[ "$WINTER_OLYMPICS_MODE" != "yes" ]] && \
          [[ -n "${_manifest_cache["${rel}|${_sz}|${_mt}|"]+x}" ]]; then
         (( skip_manifest++ ))
         continue
-      elif [[ "$WINTER_OLYMPICS_MODE" == "yes" ]]; then
+      elif [[ "$IGNORE_MANIFEST" != "yes" ]] && [[ "$WINTER_OLYMPICS_MODE" == "yes" ]]; then
         if is_already_ingested_global "$src" "$rel"; then
           (( skip_manifest++ ))
           continue
@@ -2430,6 +2434,7 @@ while [[ $# -gt 0 ]]; do
     --dest-root)       DEST_ROOT="$2"; shift 2 ;;
     --subfolder)       SUBFOLDER="$2"; shift 2 ;;
     --cardlabel)       CARDLABEL="$2"; shift 2 ;;
+    --ignore-manifest) IGNORE_MANIFEST="yes"; shift 1 ;;
     --latest)          LATEST_COUNT="$2"; shift 2 ;;
     --dry-run)         DRY_RUN="yes"; shift 1 ;;
     --today-only)      DATE_FROM="$(date +%Y%m%d)"; TODAY_ONLY="yes"; shift 1 ;;

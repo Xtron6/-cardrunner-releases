@@ -1206,6 +1206,7 @@ struct IngestArgsConfig {
     var selectedSubfolder: String
     var useCustomCardName: Bool
     var customCardName: String
+    var ignoreManifest: Bool = false   // --ignore-manifest: re-copy even if already in the card manifest
     var latestCount: Int
     var dryRun: Bool
     var wrongClockDate: String?
@@ -1273,6 +1274,10 @@ func buildIngestArgs(_ c: IngestArgsConfig) -> [String] {
         if !trimmedLabel.isEmpty {
             args.append(contentsOf: ["--cardlabel", trimmedLabel])
         }
+    }
+
+    if c.ignoreManifest {
+        args.append("--ignore-manifest")
     }
 
     if c.latestCount > 0 {
@@ -1727,6 +1732,7 @@ struct ActiveIngest {
     var runMode: String = "video"    // import mode this ingest actually ran in — for the mixed-card hint
     var cardLabel: String = ""       // the --cardlabel this card copied under (the per-card folder name)
     var pendingRename: String? = nil // a new folder name typed DURING transfer — applied at completion
+    var destinationID: UUID? = nil   // the routed destination — lets a re-ingest target the same drive
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -2318,6 +2324,11 @@ struct ContentView: View {
     @State private var showTier0Prompt: Bool = false
     @State private var tier0Card: Volume? = nil
     @State private var tier0SkippedCount: Int = 0
+    // "Already up to date" → offer Re-ingest when the MANIFEST is what blocked the copy.
+    @State private var showManifestReingest: Bool = false
+    @State private var manifestReingestCard: Volume? = nil
+    @State private var manifestReingestDestID: UUID? = nil
+    @State private var manifestReingestCount: Int = 0
 
     // Card nickname memory — UUID → human label persisted across sessions
     @State private var knownCardNicknames: [String: String] = [:]
@@ -2993,6 +3004,18 @@ struct ContentView: View {
                 }
             } message: {
                 Text("All \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s") on this card were excluded by the current date filter. Ingest everything?")
+            }
+            .alert("Already up to date", isPresented: $showManifestReingest) {
+                Button("OK", role: .cancel) { manifestReingestCard = nil }
+                Button("Re-ingest all \(manifestReingestCount)") {
+                    if let card = manifestReingestCard {
+                        let dest = manifestReingestDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
+                        manifestReingestCard = nil
+                        startIngest(for: card, destination: dest, ignoreManifest: true)
+                    }
+                }
+            } message: {
+                Text("No new files — all \(manifestReingestCount) clip\(manifestReingestCount == 1 ? "" : "s") were already copied from this card on a previous transfer. Re-ingest copies them again to the chosen destination (your earlier copy is untouched).")
             }
             .sheet(isPresented: $showDatePickerSheet) {
                 datePickerSheet
@@ -10404,7 +10427,8 @@ struct ContentView: View {
                               wrongClockDate: String? = nil,
                               reelFilter: [String] = [], reelMulti: Bool = false,
                               destination: Destination? = nil,
-                              mirrorTargets: [Destination] = []) {
+                              mirrorTargets: [Destination] = [],
+                              ignoreManifest: Bool = false) {
         // Per-card folder name set on the lane (awaiting field), keyed by source path so it
         // survives the async analysis/picker detours without threading through every call site.
         // Resolve once: a per-card label overrides the global custom-card-name pref.
@@ -10564,6 +10588,7 @@ struct ContentView: View {
         activeIngests[processID]?.volumeUUID = card.volumeUUID
         activeIngests[processID]?.sourcePath = card.path
         activeIngests[processID]?.runMode = importMode
+        activeIngests[processID]?.destinationID = (destination ?? defaultDestination)?.id
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
 
@@ -10592,6 +10617,7 @@ struct ContentView: View {
             // Per-card folder name (--cardlabel): see resolveCardLabel. Empty → no --cardlabel.
             useCustomCardName: !effectiveCardLabel.isEmpty,
             customCardName: effectiveCardLabel,
+            ignoreManifest: ignoreManifest,
             latestCount: latestCount,
             dryRun: dryRun,
             wrongClockDate: wrongClockDate,
@@ -11168,6 +11194,13 @@ struct ContentView: View {
                         self.tier0Card          = card
                         self.tier0SkippedCount  = ingest.skipTodayFilter
                         self.showTier0Prompt    = true
+                    } else if ingest.skipManifest > 0 && NSApplication.shared.isActive {
+                        // The MANIFEST blocked the copy (this card's files were already offloaded
+                        // on a previous run). Offer a deliberate re-ingest to THIS destination.
+                        self.manifestReingestCard   = card
+                        self.manifestReingestDestID = ingest.destinationID
+                        self.manifestReingestCount  = ingest.skipManifest
+                        self.showManifestReingest   = true
                     } else {
                         let alertBody = skipSummaryLine.isEmpty
                             ? "No new files found on \(card.name)."

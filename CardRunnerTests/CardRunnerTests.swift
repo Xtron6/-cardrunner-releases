@@ -304,13 +304,15 @@ struct CardRunnerTests {
                      secondaryPaths: [String] = [],
                      dateFilterMode: String = "all",
                      verifyTransfer: Bool = false,
-                     finderTagEnabled: Bool = false) -> IngestArgsConfig {
+                     finderTagEnabled: Bool = false,
+                     ignoreManifest: Bool = false) -> IngestArgsConfig {
         IngestArgsConfig(
             scriptPath: "/app/CardRunner.sh", appVersion: "1.0", cardPath: "/Volumes/CARD",
             useCustomDest: useCustomDest, destRoot: destRoot,
             projectRoot: useCustomDest ? destRoot : "\(destRoot)/\(projectName)",
             projectName: projectName, selectedSubfolder: "Default",
-            useCustomCardName: false, customCardName: "", latestCount: 0, dryRun: false,
+            useCustomCardName: false, customCardName: "", ignoreManifest: ignoreManifest,
+            latestCount: 0, dryRun: false,
             wrongClockDate: nil, reelFilter: [], reelMulti: false, dateOverride: nil,
             dateFilterMode: dateFilterMode, dateFilterFrom: "", dateFilterTo: "",
             dateFilterSubMode: "single", autoEject: false, fullVerifyEnabled: false,
@@ -487,5 +489,17 @@ struct CardRunnerTests {
 
     @Test func cardLabelNilWithGlobalDisabledIsEmpty() {
         #expect(resolveCardLabel(perCard: nil, globalEnabled: false, globalName: "GLOBAL") == "")
+    }
+
+    // MARK: - --ignore-manifest (deliberate re-ingest of an already-offloaded card)
+
+    @Test func buildArgsEmitsIgnoreManifestWhenSet() {
+        let args = buildIngestArgs(cfg(ignoreManifest: true))
+        #expect(args.contains("--ignore-manifest"))
+    }
+
+    @Test func buildArgsOmitsIgnoreManifestByDefault() {
+        let args = buildIngestArgs(cfg())
+        #expect(!args.contains("--ignore-manifest"))
     }
 }
