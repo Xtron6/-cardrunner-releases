@@ -2145,6 +2145,11 @@ struct ContentView: View {
     @FocusState private var dateFieldFocused: Bool
     @AppStorage("pref_autoEject") private var autoEject: Bool = false
 
+    // v3 free-space labels are probed OFF the main thread and cached here so a slow/
+    // sleeping/wedged drive can never stall a render. Renders read the cache; lifecycle
+    // events (appear / mount / unmount / 30-s loop / add-dest sheet) refresh it.
+    @State private var v3FreeSpaceCache: [String: String] = [:]
+
     // v3 design sheets — Add destination / New project folder
     @State private var showV3AddDest = false
     @State private var v3AddIsSSD = true
@@ -2891,6 +2896,7 @@ struct ContentView: View {
                 // detected cards as "waiting to route" instead of auto-starting them).
                 // Without this, a missed mount notification leaves a plugged card invisible.
                 startAutoScanLoop()
+                refreshFreeSpaceCache()   // seed v3 drive free-space labels off-main
 
                 setupShortcutMonitor()
                 checkFDA()   // always probe — banner must show even after wizard is dismissed
@@ -3420,6 +3426,7 @@ struct ContentView: View {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)  // 30 s fallback interval
                 guard !Task.isCancelled else { return }
                 await self.scanForNewCardsAndIngestBackground()
+                await MainActor.run { self.refreshFreeSpaceCache() }  // keep free-space labels current
             }
         }
     }
@@ -7942,6 +7949,7 @@ struct ContentView: View {
                 name: NSWorkspace.didMountNotification)) { _ in
                 volumeCardCache = [:]
                 refreshDestinations()
+                refreshFreeSpaceCache()  // a new drive changes available capacity tiles
                 cleanupOrphanPartialDirs()
                 restoreProjectForCurrentSSD()
                 revalidateCustomDest()   // a newly mounted volume may satisfy a stale path
@@ -7970,11 +7978,23 @@ struct ContentView: View {
                 cardNameIsFromMemory    = false
                 lastAutoFilledUUID      = nil   // re-inserting the same card should re-fill its name
                 refreshDestinations()
+                if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
+                    v3FreeSpaceCache.removeValue(forKey: url.path)   // drop the ejected drive's stale label
+                }
+                refreshFreeSpaceCache()
                 revalidateCustomDest()   // drive holding custom dest may have been ejected
             }
             // Kick / stop the "Finalizing…" pulse as the flush window opens and closes.
             .onChange(of: isFinalizing) { _, now in
                 finalizePulse = now
+            }
+            // Refresh free-space labels when a transfer finishes (capacity just dropped) and
+            // when the add-destination picker opens (so unused-drive rows show real numbers).
+            .onChange(of: runningCount) { _, now in
+                if now == 0 { refreshFreeSpaceCache() }
+            }
+            .onChange(of: showV3AddDest) { _, now in
+                if now { refreshFreeSpaceCache() }
             }
             // 1-second heartbeat for sparkline (stable timer — see sparklineTimer decl)
             .onReceive(sparklineTimer) { _ in
@@ -10278,6 +10298,25 @@ struct ContentView: View {
             enqueueIfNew(card: card, dateOverride: dateOverride,
                          wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
                          destinationID: destination?.id)
+            return
+        }
+
+        // ── Guard: never start a SECOND in-flight ingest for a card already being copied.
+        // Two routing paths can race to start the same source — e.g. on the Auto-Ingest
+        // ON-flip, drainAwaiting() routes the parked card and the immediately-following
+        // forceRescan tries to route it again. A duplicate launch would run two cardcopy
+        // processes against one card and corrupt progress/footage accounting. Match on
+        // source volume UUID, falling back to mount PATH for UUID-less exFAT/FAT cards
+        // (never the bare name — two "Untitled" cards mount at distinct paths). A .done/
+        // .failed lane does NOT block, so a deliberate re-run of a finished card still works.
+        let inFlight: Set<IngestPhase> = [.idle, .scanning, .building, .copying, .verifying, .finalizing]
+        let alreadyIngesting = activeIngests.values.contains { ing in
+            guard inFlight.contains(ing.phase) else { return false }
+            if let u = card.volumeUUID, let iu = ing.volumeUUID { return u == iu }
+            return !card.path.isEmpty && ing.sourcePath == card.path
+        }
+        if alreadyIngesting {
+            appendLog("Skipped duplicate ingest start for \(card.name) — already copying.\n")
             return
         }
 
@@ -15537,12 +15576,38 @@ extension ContentView {
         if p == "/" || p.isEmpty { return "Macintosh HD" }
         return URL(fileURLWithPath: p).lastPathComponent
     }
+    /// Render-safe free-space label: a PURE read of the off-main cache (never touches the
+    /// filesystem on the main thread). Shows "…" until the first background probe lands.
     private func v3FreeSpace(_ path: String) -> String {
+        v3FreeSpaceCache[path] ?? "…"
+    }
+
+    /// The actual volume probe — runs only on a background thread (see refreshFreeSpaceCache).
+    nonisolated private static func freeSpaceLabel(forPath path: String) -> String {
         if let v = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityKey]),
            let b = v.volumeAvailableCapacity {
             return ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file) + " free"
         }
         return "—"
+    }
+
+    /// Probe every volume the v3 UI shows free space for, OFF the main thread, then publish
+    /// to v3FreeSpaceCache. Called from lifecycle events — never from a render path (mutating
+    /// @State during body evaluation is illegal in SwiftUI). A wedged drive only delays a
+    /// cache update; it can no longer freeze the UI.
+    @MainActor private func refreshFreeSpaceCache(extra: [String] = []) {
+        var paths = Set(destinations.map { $0.path })
+        paths.insert(v3DestDrivePath)
+        if !primarySSDPath.isEmpty { paths.insert(primarySSDPath) }
+        for v in v3UnusedDrives { paths.insert(v.path) }
+        for p in extra { paths.insert(p) }
+        let wanted = paths.filter { !$0.isEmpty }
+        guard !wanted.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            var results: [String: String] = [:]
+            for p in wanted { results[p] = Self.freeSpaceLabel(forPath: p) }
+            await MainActor.run { for (k, v) in results { self.v3FreeSpaceCache[k] = v } }
+        }
     }
     private func v3SpeedText(_ mbps: Double) -> String {
         mbps >= 1000 ? String(format: "%.2f GB/s", mbps / 1000) : String(format: "%.0f MB/s", mbps)
@@ -15555,6 +15620,10 @@ extension ContentView {
             v3Background
             VStack(spacing: 18) {
                 v3TopBar.zIndex(1)
+                // Full-Disk-Access gate — without it NO card can be read and NO file copied.
+                // checkFDA() re-probes on every didBecomeActive, so returning from System
+                // Settings clears this automatically. Highest-priority blocker → top of stage.
+                if !fdaGranted { v3FDABanner.zIndex(1) }
                 HStack(alignment: .top, spacing: 24) {
                     v3Sources.frame(maxWidth: .infinity, alignment: .leading)
                     v3Ring.frame(width: 360)
@@ -15730,6 +15799,38 @@ extension ContentView {
             if !v3DoneLanes.isEmpty { v3DonePile }
             Spacer(minLength: 0)
         }
+    }
+
+    /// Full-Disk-Access blocker banner (v3). Without FDA the app cannot read cards or write
+    /// drives, so this is a hard gate, not a nicety. "Grant Access" opens the Privacy pane;
+    /// the existing checkFDA() on didBecomeActive clears it when the user returns having granted.
+    private var v3FDABanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "lock.trianglebadge.exclamationmark.fill")
+                .font(.system(size: 18)).foregroundStyle(v3Red)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Full Disk Access required")
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(v3Red)
+                Text("CardRunner can't read cards or write to drives without it — no footage can be copied.")
+                    .font(.system(size: 11)).foregroundStyle(v3Red.opacity(0.8))
+            }
+            Spacer()
+            Button {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Text("Grant Access →")
+                    .font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(v3Red, in: Capsule())
+            }.buttonStyle(.plain).help("Open System Settings ▸ Privacy & Security ▸ Full Disk Access")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(v3Red.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(v3Red.opacity(0.45)))
+        .padding(.horizontal, 2)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     /// Persistent "ingest failed — do not format" strip. One row per FailedIngestRecord, with a
