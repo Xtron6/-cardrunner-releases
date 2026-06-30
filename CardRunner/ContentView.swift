@@ -1698,6 +1698,7 @@ enum IngestPhase: String {
 
 struct ActiveIngest {
     var cardName: String = ""
+    var volumeUUID: String? = nil    // source card's volume UUID — lets a lane persist a nickname
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -2106,6 +2107,10 @@ struct ContentView: View {
     @State private var v3AddDrivePath = ""
     @State private var v3AddCustomPath = ""
     @State private var v3AddIsBackup = false
+    @State private var showV3History = false
+    @State private var v3EditingLaneID: UUID? = nil
+    @State private var v3EditText = ""
+    @FocusState private var v3NameFocused: Bool
     @State private var showV3NewProject = false
     @State private var v3ProjName = ""
     @State private var v3ProjColorIndex = 4          // default green
@@ -10319,6 +10324,7 @@ struct ContentView: View {
             projectRoot: resolvedProjectRoot
         )
         activeIngests[processID]?.friendlyName = useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        activeIngests[processID]?.volumeUUID = card.volumeUUID
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
 
@@ -15250,6 +15256,80 @@ extension ContentView {
         }.buttonStyle(.plain).disabled(!enabled)
     }
 
+    // MARK: Ingest-history sheet
+
+    private var v3HistorySheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Ingest History").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Spacer(); v3SheetClose { showV3History = false }
+            }
+            HStack(spacing: 12) {
+                v3StatCard("CARDS", "\(allTimeStats.totalCards)", "sdcard")
+                v3StatCard("FILES", allTimeStats.totalFiles.formatted(), "doc.on.doc")
+                v3StatCard("TRANSFERRED", v3HumanMB(allTimeStats.totalMB), "externaldrive")
+                v3StatCard("PEAK", "\(allTimeStats.peakMBps) MB/s", "speedometer")
+            }
+            v3SheetLabel("RECENT INGESTS")
+            if historyEntries.isEmpty {
+                Text("No ingests recorded yet.").font(.system(size: 13)).foregroundStyle(.white.opacity(0.4))
+                    .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 40)
+            } else {
+                ScrollView {
+                    VStack(spacing: 8) { ForEach(historyEntries.prefix(80)) { v3HistoryRow($0) } }
+                }.frame(maxHeight: 360)
+            }
+        }
+        .padding(26).frame(width: 580, height: 560)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+    }
+
+    private func v3StatCard(_ label: String, _ value: String, _ icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 11)).foregroundStyle(v3Cyan)
+                Text(label).font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(.white.opacity(0.45))
+            }
+            Text(value).font(.system(size: 18, weight: .bold)).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.08)))
+    }
+
+    private func v3HistoryRow(_ e: IngestHistoryEntry) -> some View {
+        let failed = e.status.lowercased().contains("fail")
+        let col: Color = failed ? v3Red : (e.newFiles == 0 ? .white.opacity(0.5) : v3Green)
+        return HStack(spacing: 12) {
+            Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill").foregroundStyle(col)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(e.cardName.isEmpty ? "Card" : e.cardName).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text("\(e.newFiles) \(e.mediaLabel) · \(e.avgMBps) MB/s · \(v3Duration(e.durationSec)) · \(v3RelDate(e.timestamp))")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+            }
+            Spacer()
+            Text(e.status).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
+                .padding(.horizontal, 8).padding(.vertical, 3).background(col.opacity(0.12), in: Capsule())
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
+    }
+
+    private func v3HumanMB(_ mb: Double) -> String {
+        if mb >= 1_048_576 { return String(format: "%.1f TB", mb / 1_048_576) }
+        if mb >= 1024 { return String(format: "%.1f GB", mb / 1024) }
+        return String(format: "%.0f MB", mb)
+    }
+    private func v3Duration(_ sec: Int) -> String {
+        if sec >= 3600 { return "\(sec / 3600)h \((sec % 3600) / 60)m" }
+        if sec >= 60 { return "\(sec / 60)m \(sec % 60)s" }
+        return "\(sec)s"
+    }
+    private func v3RelDate(_ d: Date) -> String {
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
+        return f.localizedString(for: d, relativeTo: Date())
+    }
+
     // MARK: Derived (all from real state)
 
     /// Live transfers, oldest first (stable lane order).
@@ -15374,6 +15454,7 @@ extension ContentView {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
+        .sheet(isPresented: $showV3History) { v3HistorySheet }
     }
 
     /// Animated neon connectors: drag-link cursor line, each active lane → ring,
@@ -15435,13 +15516,19 @@ extension ContentView {
 
     // MARK: Top bar
     private var v3TopBar: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } } label: {
                 Image(systemName: "slider.horizontal.3")
                     .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).help("Settings")
+            Button { showV3History = true } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
+                    .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+            }.buttonStyle(.plain).help("Ingest history & stats")
             Spacer()
             VStack(spacing: 2) {
                 Text("CARDRUNNER").font(.custom("Tech Headlines Italic", size: 24)).foregroundStyle(v3Brand)
@@ -15484,7 +15571,17 @@ extension ContentView {
                 Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(col)
                     .frame(width: 32, height: 32).background(col.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ing.cardName.isEmpty ? "Card" : ing.cardName).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    if v3EditingLaneID == id {
+                        TextField("Card name", text: $v3EditText)
+                            .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                            .focused($v3NameFocused)
+                            .onSubmit { v3CommitLaneRename(ing) }
+                            .onExitCommand { v3EditingLaneID = nil }
+                    } else {
+                        Text(v3LaneName(ing)).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                            .onTapGesture(count: 2) { v3EditText = v3LaneName(ing); v3EditingLaneID = id; v3NameFocused = true }
+                            .help("Double-click to rename this card")
+                    }
                     HStack(spacing: 5) {
                         Text(ing.cameraModel.isEmpty ? "Camera" : ing.cameraModel)
                         Text("·  → \(v3DestDriveName)").foregroundStyle(.white.opacity(0.35))
@@ -15502,6 +15599,20 @@ extension ContentView {
             ing.phase == .failed ? v3Red.opacity(0.4) : .white.opacity(0.10)))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(id)": $0] }
+    }
+
+    /// A lane's display name — the saved nickname for this card if any, else its volume name.
+    private func v3LaneName(_ ing: ActiveIngest) -> String {
+        if let u = ing.volumeUUID, let nick = knownCardNicknames[u], !nick.isEmpty { return nick }
+        return ing.cardName.isEmpty ? "Card" : ing.cardName
+    }
+    /// Persist an inline lane rename as this card's nickname (keyed by volume UUID).
+    private func v3CommitLaneRename(_ ing: ActiveIngest) {
+        let name = v3EditText.trimmingCharacters(in: .whitespacesAndNewlines)
+        v3EditingLaneID = nil
+        guard !name.isEmpty, let uuid = ing.volumeUUID else { return }
+        knownCardNicknames[uuid] = name
+        persistCardNicknames()
     }
 
     /// The destination name an awaiting card would land on (its chosen drive, or the default).
@@ -15957,9 +16068,25 @@ extension ContentView {
                 v3Chip("Stop", "stop.circle", v3Red) { v3Post(.menuStopTransfer) }
             }
             v3Chip("New project folder", "folder.badge.plus", v3Purple) { v3OpenNewProject() }
-            v3Chip("Today only", "calendar", dateFilterMode == "today" ? v3Cyan : .white.opacity(0.6)) {
-                dateFilterMode = dateFilterMode == "today" ? "all" : "today"
-            }
+            // Date filter — Today / Yesterday / All, with Custom range in Settings.
+            Menu {
+                Button("Today") { dateFilterMode = "today" }
+                Button("Yesterday") { dateFilterMode = "yesterday" }
+                Button("All dates") { dateFilterMode = "all" }
+                Divider()
+                Button("Custom range…") { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } }
+            } label: {
+                v3ChipLabel(v3DateFilterText, "calendar", dateFilterMode == "all" ? .white.opacity(0.6) : v3Cyan)
+            }.menuStyle(.borderlessButton).fixedSize()
+            // Verify — Off / Spot-check / Full.
+            Menu {
+                Button("Off") { verifyTransfer = false; fullVerifyEnabled = false }
+                Button("Spot-check (fast)") { verifyTransfer = true; fullVerifyEnabled = false }
+                Button("Full verify (slower)") { verifyTransfer = true; fullVerifyEnabled = true }
+            } label: {
+                v3ChipLabel("Verify · \(v3VerifyText)", "checkmark.shield",
+                            verifyTransfer ? v3Green : .white.opacity(0.5))
+            }.menuStyle(.borderlessButton).fixedSize()
             v3Chip("Auto-eject  \(autoEject ? "On" : "Off")", "eject", autoEject ? v3Green : .white.opacity(0.6)) { autoEject.toggle() }
             Button { v3OpenAddDest(ssd: false) } label: {
                 HStack(spacing: 6) { Image(systemName: "folder.badge.plus"); Text("Add folder") }
@@ -15968,13 +16095,24 @@ extension ContentView {
             }.buttonStyle(.plain)
         }
     }
+    private var v3DateFilterText: String {
+        switch dateFilterMode {
+        case "today": return "Today only"
+        case "yesterday": return "Yesterday"
+        case "custom": return "Custom dates"
+        default: return "All dates"
+        }
+    }
+    private var v3VerifyText: String { fullVerifyEnabled ? "Full" : (verifyTransfer ? "Spot" : "Off") }
+
+    private func v3ChipLabel(_ t: String, _ icon: String, _ color: Color) -> some View {
+        HStack(spacing: 6) { Image(systemName: icon); Text(t) }
+            .font(.system(size: 12, weight: .medium)).foregroundStyle(color)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(.white.opacity(0.04), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+    }
     private func v3Chip(_ t: String, _ icon: String, _ color: Color, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            HStack(spacing: 6) { Image(systemName: icon); Text(t) }
-                .font(.system(size: 12, weight: .medium)).foregroundStyle(color)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(.white.opacity(0.04), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.10)))
-        }.buttonStyle(.plain)
+        Button(action: act) { v3ChipLabel(t, icon, color) }.buttonStyle(.plain)
     }
 }
 
