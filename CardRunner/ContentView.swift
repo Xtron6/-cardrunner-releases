@@ -6421,6 +6421,11 @@ struct ContentView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 4) {
+                // Dual-dest backup only applies to the legacy single-destination flow. When a
+                // Destination list is configured (the default for current users), routing is
+                // per-card and this toggle has no effect — disable it so it can't promise a
+                // backup it won't make. (Split/Mirror was removed; routing is per-card.)
+                let perCardRouting = defaultDestination != nil
                 HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "externaldrive.fill")
                         .font(.system(size: 12, weight: .medium))
@@ -6428,13 +6433,16 @@ struct ContentView: View {
                         .frame(width: 16)
                     Toggle("Dual-destination backup", isOn: $dualDestEnabled)
                         .font(.body)
+                        .disabled(perCardRouting)
                     InfoPopover("Copies every file from the card to both your primary SSD and a second drive in the same pass. Both copies come directly from the card source — not a copy of a copy. If the secondary drive isn't mounted when an ingest starts, the secondary copy is skipped and a warning is logged.")
                 }
-                Text("Copy every file to a second drive simultaneously. Never one copy.")
+                Text(perCardRouting
+                     ? "Inactive — you're using per-card routing. Route each card to the destination you want."
+                     : "Copy every file to a second drive simultaneously. Never one copy.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(perCardRouting ? .orange : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if dualDestEnabled {
+                if dualDestEnabled && !perCardRouting {
                     HStack(spacing: 8) {
                         Text("Secondary SSD")
                             .font(.footnote)
@@ -6930,6 +6938,18 @@ struct ContentView: View {
                 )
                 .padding(.leading, 16)
                 .transition(.opacity.combined(with: .move(edge: .top)))
+
+                if showDryRunToggle {
+                    SettingsRow(
+                        toggle: $dryRun,
+                        title: "Dry Run — simulate (no files copied)",
+                        detail: "Evaluate and log the ingest without copying or ejecting anything.",
+                        icon: "wand.and.rays",
+                        info: "When ON, an ingest runs in SIMULATION: folder structure is evaluated and logged but NO files are copied and the card is never ejected. A banner shows in the main view so you can't mistake it for a real transfer. Turn OFF for real ingests."
+                    )
+                    .padding(.leading, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
                 // ── Onboarding debug controls ─────────────────────────────
                 Divider().opacity(0.28).padding(.leading, 16).padding(.top, 4)
@@ -15622,6 +15642,9 @@ extension ContentView {
                 // checkFDA() re-probes on every didBecomeActive, so returning from System
                 // Settings clears this automatically. Highest-priority blocker → top of stage.
                 if !fdaGranted { v3FDABanner.zIndex(1) }
+                // DRY RUN is a simulation — NO files are copied. Loud banner so the operator
+                // never mistakes a dry run for a real transfer (a card would NOT be safe to pull).
+                if dryRun { v3DryRunBanner.zIndex(1) }
                 HStack(alignment: .top, spacing: 24) {
                     v3Sources.frame(maxWidth: .infinity, alignment: .leading)
                     v3Ring.frame(width: 360)
@@ -15735,6 +15758,10 @@ extension ContentView {
     }
 
     // MARK: Top bar
+    private var v3ActivePresetName: String {
+        if let id = activePresetID, let p = presets.first(where: { $0.id == id }) { return p.name }
+        return "Preset"
+    }
     private var v3TopBar: some View {
         HStack(spacing: 10) {
             Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } } label: {
@@ -15749,6 +15776,32 @@ extension ContentView {
                     .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
             }.buttonStyle(.plain).help("Ingest history & stats")
+            // Preset quick-switch — one tap applies a saved preset (mode, verify, naming,
+            // subfolder, scaffold, etc.). Only shown when presets exist. applyPreset() sets
+            // activePresetID and every backing pref the engine reads.
+            if !presets.isEmpty {
+                Menu {
+                    ForEach(presets) { p in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) { applyPreset(p) }
+                            AudioEngine.shared.modeSwitch()
+                        } label: {
+                            if activePresetID == p.id { Label(p.name, systemImage: "checkmark") }
+                            else { Text(p.name) }
+                        }
+                    }
+                    Divider()
+                    Button("Edit presets…") {
+                        settingsTab = .presets
+                        withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true }
+                    }
+                } label: {
+                    HStack(spacing: 6) { Image(systemName: "rectangle.stack.fill"); Text(v3ActivePresetName) }
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).frame(height: 32)
+                        .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                }.menuStyle(.borderlessButton).fixedSize().help("Switch ingest preset")
+            }
             // Video / Photo mode (also ⌘1 / ⌘2). Photo mode changes what cardcopy ingests.
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { importMode = (importMode == "photo" ? "video" : "photo") }
@@ -15828,6 +15881,32 @@ extension ContentView {
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(v3Red.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(v3Red.opacity(0.45)))
+        .padding(.horizontal, 2)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    /// Dry-Run banner — a dry run SIMULATES an ingest and copies NOTHING. Loud, persistent
+    /// warning so an operator never reads a "done" lane as real footage on disk. One tap turns it off.
+    private var v3DryRunBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "wand.and.rays").font(.system(size: 18)).foregroundStyle(v3Amber)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("DRY RUN — nothing is being copied")
+                    .font(.system(size: 13, weight: .bold)).foregroundStyle(v3Amber)
+                Text("Ingests are simulated: folders are logged but no files land on disk and cards are not ejected.")
+                    .font(.system(size: 11)).foregroundStyle(v3Amber.opacity(0.8))
+            }
+            Spacer()
+            Button { dryRun = false } label: {
+                Text("Turn off")
+                    .font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(v3Amber, in: Capsule())
+            }.buttonStyle(.plain).help("Turn off Dry Run and copy for real")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(v3Amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(v3Amber.opacity(0.45)))
         .padding(.horizontal, 2)
         .transition(.move(edge: .top).combined(with: .opacity))
     }
