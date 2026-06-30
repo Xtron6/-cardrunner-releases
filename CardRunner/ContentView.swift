@@ -2156,7 +2156,6 @@ struct ContentView: View {
     @State private var v3AddIsSSD = true
     @State private var v3AddDrivePath = ""
     @State private var v3AddCustomPath = ""
-    @State private var v3AddIsBackup = false
     @State private var showV3DateRange = false
     @State private var v3RangeFrom = Date()
     @State private var v3RangeTo = Date()
@@ -2390,7 +2389,6 @@ struct ContentView: View {
     @AppStorage("pref_destinationsJSON") private var destinationsJSON: String = "[]"
     @AppStorage("pref_defaultDestID")    private var defaultDestIDString: String = ""
     /// false = SPLIT (per-card routing), true = MIRROR (every card → every drive).
-    @AppStorage("pref_routingMirror")    private var routingMirror: Bool = false
     @State private var destinations: [Destination] = []
     /// Cards detected while Auto-Ingest is OFF, parked waiting to be routed.
     @State private var awaitingCards: [AwaitingCard] = []
@@ -10427,16 +10425,15 @@ struct ContentView: View {
         }
 
         // ── N-way mirror targets ───────────────────────────────────────────────────
-        // MIRROR mode: every OTHER destination is a mirror target (copy this card there too).
-        // SPLIT mode: only the explicitly-passed `mirrorTargets` are mirrored. In both cases
-        // skip targets that land on the source card or duplicate the primary destination.
+        // Per-card routing: a card copies ONLY to its routed destination (or the default).
+        // Any explicitly-passed `mirrorTargets` are still honored (reserved for an optional
+        // future per-card backup), but there is no global "mirror every card to all drives".
+        // Targets that land on the source card or duplicate the primary destination are skipped.
         // When the destination list is empty (legacy), fall back to the dual-dest secondary.
         let resolvedDest = destination ?? defaultDestination
         var mirrorPaths: [String] = []
         if resolvedDest != nil {
-            let candidates: [Destination] = routingMirror
-                ? destinations.filter { $0.id != resolvedDest?.id }
-                : mirrorTargets
+            let candidates: [Destination] = mirrorTargets
             for m in candidates {
                 let (mRoot, _) = resolvedPaths(for: m)
                 if mRoot == resolvedDestRoot { continue }
@@ -15169,7 +15166,6 @@ extension ContentView {
         v3AddIsSSD = ssd && !v3UnusedDrives.isEmpty
         v3AddDrivePath = v3UnusedDrives.first?.path ?? ""
         v3AddCustomPath = ""
-        v3AddIsBackup = false
         showV3AddDest = true
     }
 
@@ -15191,10 +15187,8 @@ extension ContentView {
     }
 
     private func v3CommitAddDest() {
-        // Adding a destination never reinterprets routing for in-flight cards and never silently
-        // tears down an existing mirror policy: only ENABLE mirror (when a Backup drive is added)
-        // and only when nothing is copying. Choosing "Additional" leaves the current mode alone.
-        if v3AddIsBackup && runningCount == 0 { routingMirror = true }
+        // Adding a destination just appends a routing target; it never reinterprets routing for
+        // in-flight cards. Cards are routed per-card (drag node / cycle) or fall to the default.
         if v3AddIsSSD {
             if let vol = v3UnusedDrives.first(where: { $0.path == v3AddDrivePath }) { v3AddDriveDestination(vol) }
         } else if !v3AddCustomPath.isEmpty, !destinations.contains(where: { $0.path == v3AddCustomPath }) {
@@ -15281,18 +15275,8 @@ extension ContentView {
                              style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
                 }.buttonStyle(.plain)
             }
-            v3SheetLabel("HOW IT JOINS")
-            HStack(spacing: 12) {
-                v3JoinCard("arrow.triangle.branch", "Additional", "Split cards across drives", selected: !v3AddIsBackup) { v3AddIsBackup = false }
-                v3JoinCard("rectangle.split.2x1", "Backup", "Mirror every card here", selected: v3AddIsBackup) { v3AddIsBackup = true }
-            }
-            if v3AddIsBackup && runningCount > 0 {
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.fill").font(.system(size: 10))
-                    Text("Routing is locked during a transfer — the drive is added now; turn on Mirror after the copy finishes.")
-                }
-                .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.9))
-            }
+            Text("Cards route to whichever destination you pick (drag a card's node onto a drive, or use the default). Adding a destination just makes it available as a target.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
                 v3SheetCancel { showV3AddDest = false }
                 v3SheetPrimary("Add destination", icon: "plus",
@@ -15395,20 +15379,6 @@ extension ContentView {
                 .foregroundStyle(selected ? .white : .white.opacity(0.6))
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
                 .background(selected ? AnyShapeStyle(v3Brand) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 9))
-        }.buttonStyle(.plain)
-    }
-    private func v3JoinCard(_ icon: String, _ title: String, _ sub: String, selected: Bool, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Image(systemName: icon).font(.system(size: 13)).foregroundStyle(selected ? v3Purple : .white.opacity(0.7))
-                    Text(title).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                }
-                Text(sub).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-            .background((selected ? v3Purple.opacity(0.12) : Color.white.opacity(0.03)), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? v3Purple.opacity(0.6) : .white.opacity(0.08)))
         }.buttonStyle(.plain)
     }
     private func v3SheetCancel(_ act: @escaping () -> Void) -> some View {
@@ -16221,7 +16191,6 @@ extension ContentView {
             HStack {
                 Text("DESTINATIONS").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
                 Spacer()
-                if destinations.count >= 2 { v3RoutingToggle }
             }
             .frame(width: 348)
             if let def = defaultDestination {
@@ -16233,25 +16202,6 @@ extension ContentView {
             v3AddDestinationMenu
             Spacer(minLength: 0)
         }
-    }
-
-    /// Split / Mirror routing-policy toggle (the real `routingMirror` pref).
-    private var v3RoutingToggle: some View {
-        HStack(spacing: 0) {
-            ForEach([("Split", false), ("Mirror", true)], id: \.0) { label, mirror in
-                Text(label)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(routingMirror == mirror ? .black : .white.opacity(0.7))
-                    .padding(.horizontal, 12).padding(.vertical, 5)
-                    .background(routingMirror == mirror ? AnyShapeStyle(v3Cyan) : AnyShapeStyle(Color.clear), in: Capsule())
-                    .contentShape(Capsule())
-                    .onTapGesture { if runningCount == 0 { routingMirror = mirror } }
-            }
-        }
-        .padding(2).background(.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
-        .help(runningCount == 0 ? "Split = each card to its own drive · Mirror = every card to all drives"
-                                : "Locked while a transfer is running")
     }
 
     /// The golden DEFAULT box, bound to a real `Destination`. Doubles as a drop target:
@@ -16318,8 +16268,7 @@ extension ContentView {
                     }
                 }
                 Text(v3DestFree(d)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                Text(isDefault ? "Default target"
-                     : (routingMirror ? "Mirror copy of every card" : "Routed target"))
+                Text(isDefault ? "Default target — unrouted cards land here" : "Routed target")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
             }
             Spacer()
@@ -16408,8 +16357,7 @@ extension ContentView {
         let lead = v3Summary.isEmpty ? (autoIngest ? "Ready" : "Auto-ingest off") : v3Summary
         let speed = runningCount > 0 ? "  ·  \(v3SpeedText(v3CombinedMBps)) combined" : ""
         if let def = defaultDestination {
-            let policy = routingMirror ? "Mirror" : "Split"
-            return "\(lead)\(speed)   ·   \(policy) · \(destinations.count) destination\(destinations.count == 1 ? "" : "s") · default \(def.name)"
+            return "\(lead)\(speed)   ·   \(destinations.count) destination\(destinations.count == 1 ? "" : "s") · default \(def.name)"
         }
         let dest = v3DestRoot.isEmpty ? "no destination" : "default \(v3DestDriveName)"
         return "\(lead)\(speed)  ·  \(dest)"
