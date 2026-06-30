@@ -464,4 +464,28 @@ struct CardRunnerTests {
         #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled", cardUUID: "U-A",
                                      awaitingPaths: [], activeUUIDs: [], activePaths: []) == false)
     }
+
+    // MARK: - Per-card folder label (--cardlabel) resolution
+
+    @Test func cardLabelPerCardOverridesGlobal() {
+        // A name typed on the lane wins over the global custom-card-name pref.
+        #expect(resolveCardLabel(perCard: "A006", globalEnabled: true, globalName: "GLOBAL") == "A006")
+    }
+
+    @Test func cardLabelPerCardTrimmed() {
+        #expect(resolveCardLabel(perCard: "  A007 ", globalEnabled: false, globalName: "") == "A007")
+    }
+
+    @Test func cardLabelEmptyPerCardMeansNoSubfolder() {
+        // An explicitly-cleared per-card name → no --cardlabel, even if the global toggle is on.
+        #expect(resolveCardLabel(perCard: "   ", globalEnabled: true, globalName: "GLOBAL") == "")
+    }
+
+    @Test func cardLabelNilFallsBackToGlobalWhenEnabled() {
+        #expect(resolveCardLabel(perCard: nil, globalEnabled: true, globalName: "GLOBAL") == "GLOBAL")
+    }
+
+    @Test func cardLabelNilWithGlobalDisabledIsEmpty() {
+        #expect(resolveCardLabel(perCard: nil, globalEnabled: false, globalName: "GLOBAL") == "")
+    }
 }

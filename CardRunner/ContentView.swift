@@ -1185,6 +1185,7 @@ struct AwaitingCard: Identifiable, Hashable {
     let id = UUID()
     let card: Volume
     var destinationID: UUID? = nil
+    var customName: String = ""   // per-card folder name (--cardlabel). Empty = no per-card subfolder.
 }
 
 /// Everything the shell-arg builder needs, captured as plain values so the builder is a
@@ -1724,6 +1725,7 @@ struct ActiveIngest {
     var volumeUUID: String? = nil    // source card's volume UUID — lets a lane persist a nickname
     var sourcePath: String = ""      // source card's mount path — distinguishes two same-named UUID-less cards
     var runMode: String = "video"    // import mode this ingest actually ran in — for the mixed-card hint
+    var cardLabel: String = ""       // the --cardlabel this card copied under (the per-card folder name)
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -2015,6 +2017,16 @@ func cardIsAlreadyTracked(cardPath: String,
     if activePaths.contains(cardPath)   { return true }
     if let u = cardUUID, activeUUIDs.contains(u) { return true }
     return false
+}
+
+/// Pure: resolve the effective per-card folder label (--cardlabel) for an ingest.
+/// A per-card name typed on the lane (perCard, non-nil) overrides the global custom-card-name
+/// pref; nil means "no per-card name, use the global setting". The result is trimmed — empty
+/// means NO per-card subfolder (footage lands directly under the date). Used for both the
+/// emitted --cardlabel and the lane's display name so they never diverge.
+func resolveCardLabel(perCard: String?, globalEnabled: Bool, globalName: String) -> String {
+    let candidate = perCard ?? (globalEnabled ? globalName : "")
+    return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 // MARK: - Main View
@@ -2392,6 +2404,9 @@ struct ContentView: View {
     @State private var destinations: [Destination] = []
     /// Cards detected while Auto-Ingest is OFF, parked waiting to be routed.
     @State private var awaitingCards: [AwaitingCard] = []
+    // Per-card folder names (--cardlabel) entered on a lane, keyed by source mount path.
+    // Read by startIngest at launch; survives the async analysis/picker chain.
+    @State private var pendingCardLabels: [String: String] = [:]
     // Drag-to-link node UI state (bodyV3) — ported from the demo.
     @State private var destFrames: [UUID: CGRect] = [:]
     @State private var dragLine: DragLine? = nil
@@ -8024,6 +8039,7 @@ struct ContentView: View {
                 refreshDestinations()
                 if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
                     v3FreeSpaceCache.removeValue(forKey: url.path)   // drop the ejected drive's stale label
+                    pendingCardLabels.removeValue(forKey: url.path)  // a name set but never Started leaves with the card
                 }
                 refreshFreeSpaceCache()
                 revalidateCustomDest()   // drive holding custom dest may have been ejected
@@ -10049,7 +10065,10 @@ struct ContentView: View {
             if cardIsAlreadyTracked(cardPath: card.path, cardUUID: card.volumeUUID,
                                     awaitingPaths: awaitingPaths,
                                     activeUUIDs: activeUUIDs, activePaths: activePaths) { continue }
-            awaitingCards.append(AwaitingCard(card: card))
+            // Pre-fill the per-card folder name with this card's saved nickname (if any) or its
+            // volume name, so each lane shows an editable folder name out of the box.
+            let prefill = card.volumeUUID.flatMap { knownCardNicknames[$0] } ?? card.name
+            awaitingCards.append(AwaitingCard(card: card, customName: prefill))
             awaitingPaths.insert(card.path)
         }
     }
@@ -10062,6 +10081,7 @@ struct ContentView: View {
         let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
         seenCardPaths.insert(item.card.path)
         if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
+        pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
         awaitingCards.removeAll { $0.id == awaitingID }
         routeCardsForIngest([item.card], destination: dest)
     }
@@ -10082,6 +10102,7 @@ struct ContentView: View {
             let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
             seenCardPaths.insert(item.card.path)
             if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
+            pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
             routeCardsForIngest([item.card], destination: dest)
         }
     }
@@ -10337,6 +10358,12 @@ struct ContentView: View {
                               reelFilter: [String] = [], reelMulti: Bool = false,
                               destination: Destination? = nil,
                               mirrorTargets: [Destination] = []) {
+        // Per-card folder name set on the lane (awaiting field), keyed by source path so it
+        // survives the async analysis/picker detours without threading through every call site.
+        // Resolve once: a per-card label overrides the global custom-card-name pref.
+        let perCardLabel: String? = pendingCardLabels[card.path]
+        let effectiveCardLabel = resolveCardLabel(perCard: perCardLabel,
+                                                  globalEnabled: useCustomCardName, globalName: customCardName)
         // The onboarding demo owns the engine exclusively — queue real cards behind it.
         if demoTask != nil {
             enqueueIfNew(card: card, dateOverride: dateOverride,
@@ -10479,7 +10506,14 @@ struct ContentView: View {
             cameraModel: card.cameraModel,
             projectRoot: resolvedProjectRoot
         )
-        activeIngests[processID]?.friendlyName = useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        // Lane display + the folder this card copied under (same resolved value as --cardlabel).
+        // cardLabel is retained so a during-transfer rename knows the original folder name.
+        activeIngests[processID]?.friendlyName = effectiveCardLabel
+        activeIngests[processID]?.cardLabel = effectiveCardLabel
+        // Single-use: consume the per-card label now that THIS ingest has committed (past all
+        // early-return guards). Prevents a stale entry from shadowing the global pref for a
+        // DIFFERENT card later mounted at the same path (e.g. two "Untitled" cards).
+        pendingCardLabels.removeValue(forKey: card.path)
         activeIngests[processID]?.volumeUUID = card.volumeUUID
         activeIngests[processID]?.sourcePath = card.path
         activeIngests[processID]?.runMode = importMode
@@ -10508,8 +10542,9 @@ struct ContentView: View {
             projectRoot: resolvedProjectRoot,
             projectName: projectName,
             selectedSubfolder: selectedSubfolder,
-            useCustomCardName: useCustomCardName,
-            customCardName: customCardName,
+            // Per-card folder name (--cardlabel): see resolveCardLabel. Empty → no --cardlabel.
+            useCustomCardName: !effectiveCardLabel.isEmpty,
+            customCardName: effectiveCardLabel,
             latestCount: latestCount,
             dryRun: dryRun,
             wrongClockDate: wrongClockDate,
@@ -10596,7 +10631,7 @@ struct ContentView: View {
             primaryPath:      checkpointPrimaryPath,
             projectName:      checkpointProjectName,
             subfolder:        selectedSubfolder == "Default" ? "" : selectedSubfolder,
-            cardLabel:        useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            cardLabel:        effectiveCardLabel,   // the per-card label this ingest actually ran with
             dateFormat:       dateFolderFormat,
             finderTagColor:   finderTagEnabled ? finderTagColor : "",
             mode:             importMode,
@@ -11142,6 +11177,9 @@ struct ContentView: View {
             appendLog("❌ Failed to run script for card \(card.name): \(error.localizedDescription)\n")
             statusText = "Error starting ingest."
             runningCount = max(0, runningCount - 1)
+            // Capture the per-card folder name before discarding the lane, so the "do not
+            // format" record shows the same name the operator typed.
+            let laneLabel = activeIngests[processID]?.friendlyName ?? ""
             activeIngests.removeValue(forKey: processID)   // clean up the orphaned entry
             HapticEngine.shared.error()
 
@@ -11163,7 +11201,7 @@ struct ContentView: View {
             // failure strip / ring warn the operator that this card was NOT offloaded.
             let failRec = FailedIngestRecord(
                 id: UUID(), cardName: card.name, volumeUUID: card.volumeUUID,
-                friendlyName: useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                friendlyName: laneLabel,
                 projectName: self.projectName, failedAt: Date(),
                 filesToCopy: 0, mbToCopy: 0, reason: "Error")
             saveFailedRecord(failRec)
@@ -15997,6 +16035,18 @@ extension ContentView {
         persistCardNicknames()
     }
 
+    /// Two-way binding into an awaiting card's editable per-card folder name (by id).
+    private func v3AwaitingNameBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { self.awaitingCards.first(where: { $0.id == id })?.customName ?? "" },
+            set: { newVal in
+                if let idx = self.awaitingCards.firstIndex(where: { $0.id == id }) {
+                    self.awaitingCards[idx].customName = newVal
+                }
+            }
+        )
+    }
+
     /// The destination name an awaiting card would land on (its chosen drive, or the default).
     private func v3AwaitingDestName(_ aw: AwaitingCard) -> String {
         if let id = aw.destinationID, let d = destinations.first(where: { $0.id == id }) { return d.name }
@@ -16020,9 +16070,20 @@ extension ContentView {
             HStack(spacing: 10) {
                 Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(v3Amber)
                     .frame(width: 32, height: 32).background(v3Amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(aw.card.name.isEmpty ? "Card" : aw.card.name)
-                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 4) {
+                    // Editable per-card FOLDER NAME (--cardlabel). Folder icon + field + pencil,
+                    // dashed amber pill — this is the name the footage's folder gets on the drive.
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(v3Amber.opacity(0.85))
+                        TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
+                            .textFieldStyle(.plain).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                            .frame(minWidth: 70).fixedSize()
+                            .onSubmit { startAwaiting(aw.id) }
+                        Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(v3Amber.opacity(0.5),
+                             style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                     Text("\(aw.card.cameraModel)  ·  → \(v3AwaitingDestName(aw))")
                         .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
                         .lineLimit(1).truncationMode(.tail)
@@ -16037,9 +16098,7 @@ extension ContentView {
                 .help("Tap to cycle drives, or drag the node onto a drive")
             }
             HStack(spacing: 7) {
-                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
-                    .font(.system(size: 11)).foregroundStyle(v3Amber)
-                Text("Drag the node to a drive · or").font(.system(size: 11)).foregroundStyle(v3Amber.opacity(0.9))
+                Text("Name the folder, then Start").font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
                 Spacer()
                 Button { startAwaiting(aw.id) } label: {
                     Text("Start").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
