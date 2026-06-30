@@ -20,7 +20,6 @@ extension Notification.Name {
     static let menuPhotoMode        = Notification.Name("cardrunner.menu.photoMode")
     static let menuToggleHistory    = Notification.Name("cardrunner.menu.toggleHistory")
     static let menuToggleLog        = Notification.Name("cardrunner.menu.toggleLog")
-    static let menuToggleDarkMode   = Notification.Name("cardrunner.menu.toggleDarkMode")
     static let menuViewLogFiles     = Notification.Name("cardrunner.menu.viewLogFiles")
 }
 
@@ -136,16 +135,7 @@ private struct CardRunnerCommands: Commands {
                 post(.menuToggleLog)
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
-
-            // Dark/Light only applies to the legacy UI — the v3 face is dark-only, so the
-            // shortcut would be a no-op there. Show it only when the legacy UI is active.
-            if isLegacyUI {
-                Divider()
-                Button("Toggle Dark / Light Mode") {
-                    post(.menuToggleDarkMode)
-                }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-            }
+            // Light mode removed — the app is dark-only, so there is no Dark/Light command.
         }
 
         // ── Help ─────────────────────────────────────────────────────────────

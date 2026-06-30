@@ -2046,8 +2046,10 @@ struct ContentView: View {
     /// Onboarding-matching violet — used for destination-mode UI (toggle, drive icon, action buttons)
     private var accentViolet: Color { useLightMode ? Color(hex: "#6D3BBF") : Color(hex: "#9B5FFF") }
 
-    // Light/Dark mode (dark by default)
-    @AppStorage("pref_useLightMode") private var useLightMode: Bool = false
+    // Light mode was REMOVED — the app is dark-only. This stays as a constant `false` so the
+    // many `useLightMode ? light : dark` color branches resolve to dark, and any previously
+    // saved pref_useLightMode=true is ignored. No toggle / shortcut sets it any more.
+    private var useLightMode: Bool { false }
     @AppStorage("pref_importMode") private var importMode: String = "video"
     @AppStorage("pref_ingestOrder") private var ingestOrder: String = "oldest"
 
@@ -2123,9 +2125,6 @@ struct ContentView: View {
     @AppStorage("pref_renameTemplate")        private var renameTemplate: String = "{cardname}_{original}"
     @AppStorage("winterOlympicsMode") private var winterOlympicsMode: Bool = false
     @AppStorage("pref_olympicsCode") private var olympicsCode: String = "TUWE"
-    // Persist light mode, import mode, etc...
-    // Only keep the pref_useLightMode version
-    // If you also want the XML checkbox:
     @AppStorage("copyXML") private var copyXML: Bool = false
     @AppStorage("pref_lastVideoCopyXML") private var lastVideoCopyXML: Bool = true
     @State private var availableDestinations: [Volume] = []
@@ -2289,7 +2288,6 @@ struct ContentView: View {
 
     @Namespace private var modeToggleNS
     @Namespace private var ingestToggleNS
-    @Namespace private var lightModeToggleNS
     @Namespace private var destToggleNS
     @Namespace private var statsToggleNS
     // Hover tracking for destination tab + folder button
@@ -4524,14 +4522,13 @@ struct ContentView: View {
 
     private var headerSection: some View {
         ZStack {
-            // Edge controls row (Settings + Video/Photo on left, Light mode on right)
+            // Edge controls row (Settings + Video/Photo on left). Light mode removed — dark-only.
             HStack {
                 HStack(spacing: 12) {
                     settingsButton
                     videoPhotoSegment
                 }
                 Spacer()
-                lightModeControl
             }
 
             // Centered logo stack stays visually centered regardless of side content
@@ -7204,87 +7201,6 @@ struct ContentView: View {
         .animation(swoosh, value: importMode)
     }
 
-    private var lightModeControl: some View {
-        let swoosh = Animation.spring(response: 0.32, dampingFraction: 0.62)
-
-        return HStack(spacing: 0) {
-
-            // ── Dark ───────────────────────────────────────────────────────
-            Button {
-                withAnimation(swoosh) { useLightMode = false }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "moon.stars.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("Dark")
-                        .font(.custom("DM Sans", size: 12).weight(.medium))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .foregroundStyle(!useLightMode ? Color.white : textSecondary.opacity(0.55))
-                .scaleEffect(!useLightMode ? 1.0 : 0.88)
-                .background {
-                    if !useLightMode {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(LinearGradient(
-                                colors: [CardRunnerTheme.neonBlue,
-                                         CardRunnerTheme.neonPurple.opacity(0.85)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing))
-                            .shadow(color: CardRunnerTheme.neonBlue.opacity(0.4), radius: 6, y: 2)
-                            .matchedGeometryEffect(id: "lightPill", in: lightModeToggleNS)
-                    }
-                }
-                // Note: this pill only renders in dark mode — no light-mode fix needed
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            // ── Light ──────────────────────────────────────────────────────
-            Button {
-                withAnimation(swoosh) { useLightMode = true }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "sun.max.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("Light")
-                        .font(.custom("DM Sans", size: 12).weight(.medium))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .foregroundStyle(useLightMode ? Color(hex: "#1a1a2e") : textSecondary.opacity(0.55))
-                .scaleEffect(useLightMode ? 1.0 : 0.88)
-                .background {
-                    if useLightMode {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(LinearGradient(
-                                colors: [Color(hex: "#F59E0B").opacity(0.95),
-                                         Color(hex: "#FBBF24").opacity(0.75)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing))
-                            .shadow(color: Color(hex: "#F59E0B").opacity(0.45), radius: 6, y: 2)
-                            .matchedGeometryEffect(id: "lightPill", in: lightModeToggleNS)
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(useLightMode ? Color.black.opacity(0.06) : Color.white.opacity(0.07))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(
-                            useLightMode ? Color.black.opacity(0.09) : Color.white.opacity(0.09),
-                            lineWidth: 1
-                        )
-                )
-        )
-        .animation(swoosh, value: useLightMode)
-    }
-
     // MARK: - Preset UI
 
     private var presetPickerRow: some View {
@@ -8317,10 +8233,6 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleLog)) { _ in
                 if isLegacyUI { withAnimation(spring2) { showLog.toggle() } }
                 else { showV3Log.toggle() }
-            }
-            // View → Toggle Dark / Light  (⌘⇧D)
-            .onReceive(NotificationCenter.default.publisher(for: .menuToggleDarkMode)) { _ in
-                withAnimation(spring) { useLightMode.toggle() }
             }
             // Help → Report an Issue…
             .onReceive(NotificationCenter.default.publisher(for: .menuReportIssue)) { _ in
@@ -14486,7 +14398,7 @@ struct LicenseGateView: View {
     @State private var errorMessage: String? = nil
     @State private var activateHovered: Bool = false
 
-    @AppStorage("pref_useLightMode") private var useLightMode: Bool = false
+    private var useLightMode: Bool { false }   // light mode removed — dark-only
 
     private var bgColor: Color { useLightMode ? Color(hex: "#F4F6FD") : Color(hex: "#090f1e") }
     private var textPrimary: Color { useLightMode ? .black : .white }
