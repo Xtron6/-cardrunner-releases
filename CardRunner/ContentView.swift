@@ -2036,6 +2036,54 @@ func resolveCardLabel(perCard: String?, globalEnabled: Bool, globalName: String)
     return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
+/// Animatable state for the v3 gloss sheen sweep (KeyframeAnimator drives x + opacity).
+struct V3SheenState { var x: CGFloat = 0; var opacity: Double = 0 }
+
+// MARK: - v3 Settings categories (icon-rail redesign)
+
+/// The left icon-rail categories for the redesigned v3 Settings screen. Every legacy setting
+/// is migrated into exactly one of these (Presets / Shortcuts / About embed the existing flows).
+enum V3SettingsCat: String, CaseIterable, Identifiable {
+    case general, verify, naming, files, performance, presets, shortcuts, about
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .general:     return "slider.horizontal.3"
+        case .verify:      return "checkmark.shield"
+        case .naming:      return "tag"
+        case .files:       return "doc.on.doc"
+        case .performance: return "gauge.with.dots.needle.67percent"
+        case .presets:     return "square.stack.3d.up"
+        case .shortcuts:   return "keyboard"
+        case .about:       return "info.circle"
+        }
+    }
+    var title: String {
+        switch self {
+        case .general:     return "General"
+        case .verify:      return "Verify & Safety"
+        case .naming:      return "Naming & Folders"
+        case .files:       return "Files & Copy"
+        case .performance: return "Performance"
+        case .presets:     return "Presets"
+        case .shortcuts:   return "Shortcuts"
+        case .about:       return "About"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .general:     return "Sounds, ordering, and session behavior"
+        case .verify:      return "Checksums, ejection, and reports"
+        case .naming:      return "Folder names, tags, and scaffolding"
+        case .files:       return "What gets copied and backed up"
+        case .performance: return "Throughput and concurrency"
+        case .presets:     return "Saved setups for different shoots"
+        case .shortcuts:   return "Keyboard shortcuts"
+        case .about:       return "Version, license, and developer tools"
+        }
+    }
+}
+
 // MARK: - Main View
 
 struct ContentView: View {
@@ -2174,6 +2222,11 @@ struct ContentView: View {
     @State private var v3AddIsSSD = true
     @State private var v3AddDrivePath = ""
     @State private var v3AddCustomPath = ""
+    @State private var v3SettingsCat: V3SettingsCat = .general   // selected icon-rail category
+    @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
+    @State private var v3SheenTrigger = 0                        // bump to fire one gloss sweep
+    // Stable timer (a fresh Timer.publish in onReceive would resubscribe every body eval).
+    private let v3SheenTimer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
     @State private var showV3DateRange = false
     @State private var v3RangeFrom = Date()
     @State private var v3RangeTo = Date()
@@ -15718,15 +15771,18 @@ extension ContentView {
             }
             .padding(26)
 
-            // The real Settings panel — the exact same `settingsSheet` the legacy UI uses.
-            // (It normally renders inside the legacy body, which is invisible under v3, so we
-            // render it here too.) Tapping the dimmed backdrop closes it.
+            // Subtle iridescent gloss sweep — a feathered, skewed band that drifts across the
+            // stage every ~20 s. Idle between passes (KeyframeAnimator one-shot, timer-triggered)
+            // so there's no always-on render cost. Non-interactive; sits above content, below modals.
+            v3Sheen.allowsHitTesting(false).zIndex(2)
+
+            // The redesigned v3 Settings screen (icon rail + migrated settings). Tapping the
+            // dimmed backdrop closes it. The legacy settingsSheet is still used under CR_LEGACY_UI.
             if isShowingSettings {
-                Color.black.opacity(0.42).ignoresSafeArea()
+                Color.black.opacity(0.5).ignoresSafeArea()
                     .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
                     .transition(.opacity).zIndex(80)
-                settingsSheet
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                v3SettingsView
                     .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
                     .zIndex(81)
@@ -15734,6 +15790,7 @@ extension ContentView {
         }
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
+        .onReceive(v3SheenTimer) { _ in v3SheenTrigger += 1 }   // fire one gloss sweep, ~every 20 s
         .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
         .sheet(isPresented: $showV3History) { v3HistorySheet }
@@ -15805,6 +15862,394 @@ extension ContentView {
     }
     /// The CardRunner logo lockup (SD-card mark + wordmark + tagline). Kept as one unit so it
     /// can be centered on the true window center — i.e. aligned with the Active-Zone ring below.
+    // ════════════════════════════════════════════════════════════════════════
+    // MARK: - v3 Settings screen (icon-rail redesign)
+    // Migrates every legacy setting into the new look. Presets / Shortcuts / About
+    // embed the existing functional flows (restyle is a Stage-2 follow-up).
+    // ════════════════════════════════════════════════════════════════════════
+
+    var v3SettingsView: some View {
+        HStack(spacing: 0) {
+            v3SettingsRail
+            v3SettingsContent
+        }
+        .frame(width: 1000, height: 700)
+        .background(Color(hex: "#0d0a1a"))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(0.08)))
+        .preferredColorScheme(.dark)
+    }
+
+    private var v3SettingsRail: some View {
+        VStack(spacing: 8) {
+            // Brand mark (top)
+            Image("CardRunnerLogo").resizable().aspectRatio(contentMode: .fit)
+                .frame(width: 34, height: 34)
+                .padding(.bottom, 10)
+            ForEach(V3SettingsCat.allCases.filter { $0 != .about }) { cat in
+                v3SettingsRailIcon(cat)
+            }
+            Spacer()
+            v3SettingsRailIcon(.about)   // info icon pinned to the bottom
+        }
+        .padding(.vertical, 22)
+        .frame(width: 78)
+        .background(Color.white.opacity(0.02))
+        .overlay(Rectangle().frame(width: 1).foregroundStyle(.white.opacity(0.06)), alignment: .trailing)
+    }
+
+    private func v3SettingsRailIcon(_ cat: V3SettingsCat) -> some View {
+        let selected = v3SettingsCat == cat
+        return Button {
+            withAnimation(.easeInOut(duration: 0.15)) { v3SettingsCat = cat }
+        } label: {
+            Image(systemName: cat.icon)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(selected ? .white : .white.opacity(0.4))
+                .frame(width: 44, height: 44)
+                .background(selected ? AnyShapeStyle(v3Brand.opacity(0.9)) : AnyShapeStyle(Color.clear),
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay(alignment: .leading) {
+                    if selected {
+                        Capsule().fill(v3Cyan).frame(width: 3, height: 20).offset(x: -19)
+                    }
+                }
+        }.buttonStyle(.plain).help(cat.title)
+    }
+
+    private var v3SettingsContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(v3SettingsCat.title).font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
+                    Text(v3SettingsCat.subtitle).font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
+                }
+                Spacer()
+                Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } } label: {
+                    Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 34, height: 34).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 11))
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 18)
+            Divider().opacity(0.5)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    v3SettingsCatBody
+                }
+                .padding(.horizontal, 32).padding(.vertical, 26)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var v3SettingsCatBody: some View {
+        switch v3SettingsCat {
+        case .general:     v3SettingsGeneral
+        case .verify:      v3SettingsVerify
+        case .naming:      v3SettingsNaming
+        case .files:       v3SettingsFiles
+        case .performance: v3SettingsPerformance
+        case .presets:     v3SettingsEmbed { settingsPresetsTab }
+        case .shortcuts:   v3SettingsEmbed { settingsShortcutsTab }
+        case .about:       v3SettingsAbout
+        }
+    }
+
+    // ── Reusable rows ────────────────────────────────────────────────────────
+    private func v3SettingsSection<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(label).font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.35))
+            VStack(spacing: 0) { content() }
+                .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.06)))
+        }
+    }
+
+    private func v3SettingDivider() -> some View {
+        Divider().opacity(0.4).padding(.leading, 18)
+    }
+
+    private func v3ToggleRow(_ title: String, _ subtitle: String, _ isOn: Binding<Bool>,
+                             enabled: Bool = true, onChange: ((Bool) -> Void)? = nil) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(enabled ? .white : .white.opacity(0.4))
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(.white.opacity(enabled ? 0.45 : 0.25))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).tint(v3Cyan).disabled(!enabled)
+                .onChange(of: isOn.wrappedValue) { _, now in onChange?(now) }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 14)
+    }
+
+    private func v3MenuRow(_ title: String, _ subtitle: String, current: String,
+                           options: [(String, String)], _ onSelect: @escaping (String) -> Void) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(.white.opacity(0.45))
+            }
+            Spacer()
+            Menu {
+                ForEach(options, id: \.1) { opt in
+                    Button { onSelect(opt.1) } label: {
+                        if opt.1 == current { Label(opt.0, systemImage: "checkmark") } else { Text(opt.0) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(options.first { $0.1 == current }?.0 ?? current).font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 7)
+                .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+            }.menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.horizontal, 18).padding(.vertical, 14)
+    }
+
+    private func v3SliderRow(_ title: String, _ subtitle: String, value: Binding<Double>,
+                             range: ClosedRange<Double>, step: Double, valueLabel: String) -> some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(.white.opacity(0.45))
+            }
+            Spacer()
+            Slider(value: value, in: range, step: step).frame(width: 220).tint(v3Cyan)
+            Text(valueLabel).font(.system(size: 13, weight: .semibold)).foregroundStyle(v3Cyan).frame(width: 74, alignment: .trailing)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 14)
+    }
+
+    /// Embed a legacy settings tab inside the new chrome (functional now; restyle later).
+    private func v3SettingsEmbed<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        content().frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // ── Category bodies ──────────────────────────────────────────────────────
+    private var v3SettingsGeneral: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            v3SettingsSection("FEEDBACK") {
+                v3MenuRow("Completion animation", "Plays when a card finishes offloading.",
+                          current: completionAnimationRaw,
+                          options: CompletionAnimation.allCases.map { ($0.label, $0.rawValue) }) { completionAnimationRaw = $0 }
+            }
+            v3SettingsSection("INGEST") {
+                v3MenuRow("Ingest order", "Order files are dispatched to the destination.",
+                          current: ingestOrder, options: [("Oldest first", "oldest"), ("Newest first", "newest")]) { ingestOrder = $0 }
+            }
+            v3SettingsSection("SESSION") {
+                v3MenuRow("Session resets at", "When \u{201C}Today\u{201D}\u{2019}s summary rolls over.",
+                          current: String(dayStartHour),
+                          options: [("12 am", "0"), ("2 am", "2"), ("4 am", "4"), ("6 am", "6")]) { dayStartHour = Int($0) ?? 4 }
+                v3SettingDivider()
+                v3ToggleRow("Broadcast-day folder routing",
+                            "Clips shot between midnight and your day-start hour file under the previous calendar day.",
+                            $broadcastDayFolders)
+            }
+        }
+    }
+
+    private var v3SettingsVerify: some View {
+        v3SettingsSection("VERIFICATION & SAFETY") {
+            v3ToggleRow("Verify transfer (spot-check)", "Checksum a random sample of up to 10 files after each ingest.", $verifyTransfer)
+            v3SettingDivider()
+            v3ToggleRow("Full checksum verification", "MD5 every file on source and destination. Slower, exhaustive.", $fullVerifyEnabled)
+            v3SettingDivider()
+            v3ToggleRow("Auto-eject after ingest", "Safely eject the card once every byte is confirmed.", $autoEject)
+            v3SettingDivider()
+            v3ToggleRow("Transfer report (CSV)", "Write a per-ingest CSV to TransferReports/ on the destination.", $transferReportEnabled)
+        }
+    }
+
+    private var v3SettingsNaming: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            v3SettingsSection("FOLDERS") {
+                v3MenuRow("Folder date format", "How each date folder is named during ingest.",
+                          current: dateFolderFormat,
+                          options: [("260630 (yymmdd)", "%y%m%d"), ("20260630 (yyyymmdd)", "%Y%m%d"),
+                                    ("2026-06-30", "%Y-%m-%d"), ("26.06.30", "%y.%m.%d"), ("Tuesday", "%A")]) { dateFolderFormat = $0 }
+            }
+            v3SettingsSection("TRANSFER MARKER TAG") {
+                v3ToggleRow("Tag the first clip of each batch", "Adds a Finder color tag so you can spot where a new card's footage begins.", $finderTagEnabled)
+                if finderTagEnabled {
+                    v3SettingDivider()
+                    v3FinderTagSwatches.padding(.horizontal, 18).padding(.vertical, 12)
+                }
+            }
+            v3SettingsSection("RENAME ON INGEST") {
+                v3ToggleRow("Rename files on ingest", "Apply a naming template as files are copied.", $renameOnIngestEnabled)
+                if renameOnIngestEnabled {
+                    v3SettingDivider()
+                    HStack(spacing: 10) {
+                        TextField("{cardname}_{original}", text: $renameTemplate)
+                            .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                        Button("Reset") { renameTemplate = "{cardname}_{original}" }
+                            .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
+                    }.padding(.horizontal, 18).padding(.vertical, 12)
+                }
+            }
+            v3SettingsSection("PROJECT SCAFFOLD") {
+                v3ToggleRow("Create companion folders", "Make a standard folder set inside every new project.", $scaffoldEnabled)
+                if scaffoldEnabled {
+                    v3SettingDivider()
+                    v3ScaffoldEditor.padding(.horizontal, 18).padding(.vertical, 12)
+                }
+            }
+        }
+    }
+
+    private var v3SettingsFiles: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            v3SettingsSection("EXTRA FILES") {
+                v3ToggleRow("Copy in-camera proxies", "Include low-res proxy files in a Proxies/ subfolder.", $includeProxies)
+                v3SettingDivider()
+                v3ToggleRow("Copy XML sidecars", "Copy .xml sidecar files alongside video clips. No effect in photo mode.", $copyXML)
+            }
+            let perCardRouting = defaultDestination != nil
+            v3SettingsSection("BACKUP") {
+                v3ToggleRow("Dual-destination backup",
+                            perCardRouting ? "Inactive — you're using per-card routing. Route each card to the drive you want."
+                                           : "Copy every file to a second drive in the same pass. Never one copy.",
+                            $dualDestEnabled, enabled: !perCardRouting)
+                if dualDestEnabled && !perCardRouting {
+                    v3SettingDivider()
+                    HStack(spacing: 12) {
+                        Text("Secondary SSD").font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
+                        Picker("", selection: $selectedSecondary) {
+                            Text("— none —").tag(Optional<Volume>.none)
+                            ForEach(availableDestinations.filter { $0.path != selectedPrimary?.path }) { vol in
+                                Text(vol.name).tag(Optional(vol))
+                            }
+                        }.labelsHidden().onChange(of: selectedSecondary) { secondaryPath = selectedSecondary?.path ?? "" }
+                        Spacer()
+                    }.padding(.horizontal, 18).padding(.vertical, 12)
+                }
+            }
+        }
+    }
+
+    private var v3SettingsPerformance: some View {
+        v3SettingsSection("THROUGHPUT") {
+            v3SliderRow("Concurrent copies", "How many cards transfer at once (across different drives).",
+                        value: Binding(get: { Double(maxConcurrentCards) }, set: { maxConcurrentCards = Int($0) }),
+                        range: 1...8, step: 1, valueLabel: "\(maxConcurrentCards) cop\(maxConcurrentCards == 1 ? "y" : "ies")")
+        }
+    }
+
+    private var v3SettingsAbout: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            v3SettingsEmbed { settingsAboutTab }
+            v3SettingsSection("DEVELOPER") {
+                // Restore the legacy cleanup contract: turning Debug off clears the dry-run
+                // surfaces so a simulate-only state can never get stranded behind a hidden control.
+                v3ToggleRow("Debug mode", "Reveal the Log panel and Dry-Run controls.", $debugMode) { now in
+                    if !now { showDryRunToggle = false; dryRun = false; showLog = false } else { showDryRunToggle = true }
+                }
+                if debugMode {
+                    v3SettingDivider()
+                    v3ToggleRow("Show Dry-Run toggle", "Expose a simulate-only switch.", $showDryRunToggle) { now in
+                        if !now { dryRun = false }
+                    }
+                    if showDryRunToggle {
+                        v3SettingDivider()
+                        v3ToggleRow("Dry Run — simulate (no files copied)", "Evaluate and log an ingest without copying or ejecting.", $dryRun)
+                    }
+                    v3SettingDivider()
+                    HStack(spacing: 12) {
+                        Button("Reset onboarding") { onboardingCompleted = false }
+                            .buttonStyle(.plain).font(.system(size: 13, weight: .semibold)).foregroundStyle(v3Cyan)
+                        Button("Preview onboarding now") {
+                            isShowingSettings = false; showOnboarding = true
+                        }.buttonStyle(.plain).font(.system(size: 13, weight: .semibold)).foregroundStyle(v3Cyan)
+                        Spacer()
+                    }.padding(.horizontal, 18).padding(.vertical, 13)
+                }
+            }
+        }
+    }
+
+    // Finder-tag color swatch picker (7 colors), rebuilt for the new look.
+    private var v3FinderTagSwatches: some View {
+        HStack(spacing: 12) {
+            ForEach(v3TagColors, id: \.tag) { c in
+                Circle().fill(c.color).frame(width: 26, height: 26)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: finderTagColor == c.tag ? 2.5 : 0))
+                    .overlay(finderTagColor == c.tag ? Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white) : nil)
+                    .onTapGesture { finderTagColor = c.tag }
+            }
+            Spacer()
+        }
+    }
+
+    // Simple scaffold folder-list editor (add / delete) for the new look.
+    private var v3ScaffoldEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(scaffoldFolderList.enumerated()), id: \.offset) { idx, folder in
+                HStack(spacing: 8) {
+                    Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    Text(folder).font(.system(size: 13)).foregroundStyle(.white)
+                    Spacer()
+                    Button {
+                        var list = scaffoldFolderList; list.remove(at: idx); scaffoldFoldersRaw = list.joined(separator: "\n")
+                    } label: { Image(systemName: "xmark").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4)) }
+                        .buttonStyle(.plain)
+                }
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "plus").font(.system(size: 11)).foregroundStyle(v3Cyan)
+                TextField("Add folder…", text: $v3NewScaffold)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                    .onSubmit {
+                        let n = v3NewScaffold.trimmingCharacters(in: .whitespaces)
+                        guard !n.isEmpty else { return }
+                        var list = scaffoldFolderList; list.append(n); scaffoldFoldersRaw = list.joined(separator: "\n"); v3NewScaffold = ""
+                    }
+                Button("Reset") { scaffoldFoldersRaw = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments" }
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+            }
+        }
+    }
+
+    /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
+    /// stage over ~7 s, opacity easing in/out so it never pops. Fired occasionally by v3SheenTimer
+    /// (idle between passes — a KeyframeAnimator one-shot, NOT an always-on TimelineView, so there
+    /// is no continuous render cost). Brand-tinted (cyan→white→magenta) for a faint holographic read.
+    private var v3Sheen: some View {
+        GeometryReader { geo in
+            let sweep = geo.size.width + 340
+            Rectangle()
+                .fill(LinearGradient(stops: [
+                    .init(color: .clear,               location: 0.00),
+                    .init(color: v3Cyan.opacity(0.05), location: 0.40),
+                    .init(color: .white.opacity(0.11), location: 0.50),   // hot core
+                    .init(color: v3Mag.opacity(0.05),  location: 0.60),
+                    .init(color: .clear,               location: 1.00),
+                ], startPoint: .leading, endPoint: .trailing))
+                .frame(width: 300, height: geo.size.height * 1.7)
+                .blur(radius: 12)                                          // big feather
+                .rotationEffect(.degrees(-13))
+                .frame(width: geo.size.width, height: geo.size.height)
+                .keyframeAnimator(initialValue: V3SheenState(), trigger: v3SheenTrigger) { content, v in
+                    content.offset(x: -sweep / 2 + v.x * sweep).opacity(v.opacity)
+                } keyframes: { _ in
+                    KeyframeTrack(\.x) { LinearKeyframe(1.0, duration: 7.0) }
+                    KeyframeTrack(\.opacity) {
+                        CubicKeyframe(1.0, duration: 1.6)    // ease in
+                        LinearKeyframe(1.0, duration: 3.8)   // hold
+                        CubicKeyframe(0.0, duration: 1.6)    // ease out
+                    }
+                }
+                .blendMode(.screen)
+        }
+    }
+
     private var v3LogoLockup: some View {
         HStack(spacing: 12) {
             Image("CardRunnerLogo")
