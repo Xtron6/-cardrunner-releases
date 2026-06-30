@@ -1,130 +1,158 @@
-# CardRunner — Session Handoff (2026-06-29)
+# CardRunner — Session Handoff (2026-06-30)
 
-**For:** the next coding agent / chat.
-**Purpose:** continue the v3 UI rebuild + engine wiring without re-discovering everything.
+**For:** the next coding agent / chat (context is filling up).
+**Owner:** Xavier Gallo. macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
-**Owner:** Xavier Gallo. macOS SwiftUI app, **Mac-only**, direct-distribution (not App Store).
+**Branch:** `nway-rebuild` (all work lives here; `main` is the original "Initial Commit" stub — do NOT branch off main).
 
-> Persistent project memory lives in
-> `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
-> — read `MEMORY.md` + `cardrunner-roadmap.md` + `cardrunner-ui-patterns.md` first; they hold the locked decisions.
-
----
-
-## 1. What CardRunner is
-A macOS app that offloads footage from camera cards to drives, **fast and safely** — `cardcopy` (fcopyfile/clonefile) engine, SHA-256/MD5 verify, atomic `.cardrunner_partial`→rename, crash-safe. Promise: **never lose footage, never report a failed transfer as success.** Used by DITs / sports & event shooters under pressure.
-
-Key files:
-- `CardRunner/ContentView.swift` — ~15k lines, the **shipping** UI + all ingest logic. **Untouched-as-UI** this session except safe extractions/fixes below.
-- `CardRunner/CardRunner.sh` — ~2.4k-line bash ingest engine (scan/filter/manifest/copy).
-- `cardcopy/cardcopy.c` — native copy engine (v1.2.0). Bundled binary at `CardRunner/cardcopy`.
-- `CardRunner/CardRunner.swift` — `@main`. Has a **temporary** `CR_V3_PREVIEW=1` launch flag (see §4).
+> Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
+> Read `MEMORY.md` + `cardrunner-roadmap.md` first — they hold the full chronology + locked decisions. This file is the fast snapshot.
 
 ---
 
-## 2. Two worlds right now
-1. **Shipping app** (`ContentView`): the real, working, footage-safe app. Still the default UI.
-2. **v3 rebuild** (`CardRunner/V3/`): the new multicard "ring" UI from Xavier's Claude Design mockups, being built natively and wired to a real engine. Shown only via `CR_V3_PREVIEW=1`.
+## 1. TL;DR — where things are
 
-The plan is to finish v3, wire it to real ingest, validate on hardware, then cut over.
+**The v3 node UI IS the app now.** The redesign is no longer a preview flag — `ContentView.body` renders `bodyV3` by **default**. It runs as a real Finder-launched `.app`, drives the **real, unchanged copy engine** (`cardcopy` + `CardRunner.sh`), and has been proven on hardware (26-clip / 17.7 GB ingest at 227 MB/s, Status=OK).
 
----
-
-## 3. What happened this session (chronological)
-
-### A. Bug fixes to the shipping engine (all done + verified)
-- **CRITICAL `int` bug:** `CardRunner.sh` used zsh `int()` without `zmodload zsh/mathfunc` → every transfer aborted at "PHASE copying" with 0 files. **Fixed** (added `zmodload zsh/mathfunc`). This was breaking real shoots.
-- **Stats inflation:** failed runs counted *planned* bytes/files. Now credit **actual** (`doneBytes`/`completedFiles`) on failure — `bytesTransferred`/`filesTransferred` in the termination handler.
-- **Sparkline never animated during transfer:** inline `Timer.publish` was recreated every render → reset. Hoisted to a stable `sparklineTimer` + seeded history.
-- **99% "frozen" pause explained + surfaced:** it's the `F_FULLFSYNC` durability flush. Added an `isFinalizing` state → "Finalizing… / Flushing to disk" instead of a stuck 99%.
-- **Proxy/missing-file accounting:** proxy skips & vanished-source files were silently dropped (made `found ≠ new + skipped`). Added `skip_proxy`/`skip_missing` counters + `PROXY SKIPS`/`MISSING SOURCES` log lines + `SKIP_SUMMARY proxy=/missing=` + Swift parsing + a red breakdown row.
-- **Broadcast-day footage-loss bug:** the scan date-filter compared raw mtime while routing applied the broadcast-hour shift → post-midnight clips of the selected day were silently excluded. **Fixed** (scan now applies the same shift; `CR_BCAST_HOUR` env → `broadcast_shift()` in the Python scanner).
-- **Eject logging:** `diskutil eject` success is now logged with duration (was only logging failures) — explains the post-copy gap.
-- **Card-detection heuristic:** APFS/>2TB were *hard* rejects, blinding the app to 4TB CFexpress / APFS SSD recorders. Now a definitive camera signature wins; APFS/>2TB only gate the weak Tier-4 catch-all.
-- **Verification default:** `pref_verifyTransfer` now defaults **ON** (spot-check, ≤10-file MD5, negligible time). Full verify stays opt-in. (Decision: lightweight safety by default without the 2× full-verify hit.)
-
-### B. The safety net (Phase 0 — done)
-- **`smoke_test.sh`** (repo root): runs the REAL shell+cardcopy against synthetic cards, asserts files land + correct success/failure. **24 checks**, incl. the `int`-class catch, proxy accounting, broadcast-day regression, spot-check verify, and a **concurrent two-destination** run (proves the shell is parallel-safe). Wired as a **gate in `release.sh`** (`SKIP_SMOKE=1` to bypass).
-- **Unit tests** `CardRunnerTests/CardRunnerTests.swift` — **24 tests**. Also gated in `release.sh` (`SKIP_TESTS=1`).
-- **Extracted the footage-critical pure logic** out of `ContentView` (so it's testable + reusable):
-  - `evaluateIngestOutcome(exitStatus:ingest:) -> IngestOutcome` — the authoritative success/failure gate ("never report success on failure"). 5 tests incl. *exit-0-but-COPY_ERROR → failure*.
-  - `applyIngestProgressLine(_:to:)` — pure shell→Swift progress parser. View's `parseProgress` now delegates data to it + a `handleProgressLineUI`. 7 tests.
-  - `canAdmitIngest(_:snapshot:)` + `SchedulerSnapshot` — destination-aware concurrent **scheduler** (parallel across different drives, sequential per drive). 6 tests. Wired into `ContentView`'s `startIngest`/`drainQueue` (Phase 2 core) behind `pref_maxConcurrentCards` (default 3) — **behavior-preserving** with single-dest config.
-
-### C. The v3 design + native build
-- Xavier iterated the design in Claude Design (multiple handoff zips in `~/Downloads/`). We scrapped a hand-built approximation and a WebView preview — **decision: Mac-only native Swift, no HTML/WebView.**
-- Built the native v3 UI in `CardRunner/V3/`:
-  - `V3Model.swift` — state machine / view-model (demo lifecycle + now the engine adapter, see §D).
-  - `CardRunnerV3View.swift` — the dashboard (top bar, sources lanes, center ring, destinations, funnel connector lines, drag-to-route, settings/add-dest/folder sheets, toast, bottom bar). ~700 lines.
-  - `V3SettingsView.swift` — full 14-section settings screen.
-- Matched the design closely: DEFAULT DESTINATION dashed-amber box, brand wordmark in bundled `Tech Headlines Italic`, tagline "Plug a card — it copies, instantly & safely", ring "All safe to pull" + count + Open-in-Finder pill, real bottom bar (status + New project folder / Today only / Auto-eject / Add destination). The demo buttons are a dimmed **TESTING** strip (kept on purpose to drive the prototype without hardware).
-
-### D. Engine extraction + binding (Steps 2 & 4 — done; built + tests green)
-- **`IngestEngine.swift`** (Step 2): real `@MainActor ObservableObject` ingest pipeline. Detects drives + card mounts (`NSWorkspace`), runs the real `CardRunner.sh` via `Process` with the buffered line reader, and **reuses** `applyIngestProgressLine` / `evaluateIngestOutcome` / `canAdmitIngest` (no logic duplication). Auto-routes to default + auto-starts, scheduler queue/drain, split/mirror (mirror via shell `--secondary`), history, keeps finished cards as `.done` "safe to pull" until pulled (`pull(_:)`/`pullAll()`), `eject` via diskutil. **Card-detection here is a COMPACT heuristic — TODO: unify with `ContentView.volumeLooksLikeCardStatic`.**
-- **Step 4 binding:** `V3Model` now owns the engine and mirrors its real state — real drives → destination tiles, real ingests → lanes (`ActiveIngest.phase`→`V3CardStatus`), Pull→`engine.pull`, settings→engine via `didSet`. Simulated test cards (`V3Card.realKey == nil`) coexist with real ones (`realKey` set).
-- **Freeze bug fixed:** `syncFromEngine()` was writing back to engine `@Published` → `objectWillChange` → re-entered sync → infinite main-thread loop (beachball). Now **read-only from the engine**; settings flow engine-ward only via `didSet`. Also the sim tick now **skips real cards** (they have `sizeGB==0` → divide-by-zero).
+- **Tier 1 — COMPLETE, production-ready** (reviewer-verified): history+stats, date-filter menu, verify menu, per-card naming.
+- **Tier 2 — COMPLETE, production-ready** (reviewer-verified "ship it"): all keyboard/menu wiring surfaced in v3, Photo/Video toggle, v3 Activity Log, and a hardened **completion-feedback / failure-record footage-safety chain**.
+- **Latest commit:** `a73dc48` on `nway-rebuild`. Build + **33 unit** + **31 smoke** all green.
 
 ---
 
-## 4. How to build / run / test
+## 2. How to build / run / test
+
 ```bash
 cd "/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner"
 
-# Build
+# Build (Debug, no signing)
 xcodebuild -project CardRunner.xcodeproj -scheme CardRunner -configuration Debug \
-  -destination 'platform=macOS' CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO build
+  -destination 'platform=macOS' CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO build 2>&1 \
+  | grep -iE 'error:|BUILD SUCCEEDED|BUILD FAILED'
 
-# Unit tests (24)
+# Unit tests (33). MUST skip the UITests target — its runner hangs headless.
 xcodebuild test -project CardRunner.xcodeproj -scheme CardRunner -destination 'platform=macOS' \
-  -only-testing:CardRunnerTests CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+  -only-testing:CardRunnerTests -skip-testing:CardRunnerUITests \
+  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1 | grep -iE 'TEST SUCCEEDED|TEST FAILED'
 
-# Smoke test (24 — real shell+cardcopy end to end)
+# Smoke test (31) — runs the REAL shell + cardcopy against synthetic cards. The footage-safety gate.
 ./smoke_test.sh
-
-# Run the v3 preview (the new UI). Kill any existing instance first.
-pkill -f "Debug/CardRunner.app" ; CR_V3_PREVIEW=1 \
-  "/Users/xaviergallo/Library/Developer/Xcode/DerivedData/CardRunner-hbuwejbtuggdywgriapcyvzklrwt/Build/Products/Debug/CardRunner.app/Contents/MacOS/CardRunner"
 ```
+
+**Running the real app (Xavier does this; do NOT screen-control unless asked):**
+- Build, then **refresh the Desktop app and ad-hoc sign it** so it launches from Finder as a real foreground GUI app:
+  ```bash
+  SRC="/Users/xaviergallo/Library/Developer/Xcode/DerivedData/CardRunner-hbuwejbtuggdywgriapcyvzklrwt/Build/Products/Debug/CardRunner.app"
+  DST="$HOME/Desktop/CardRunner.app"
+  pkill -9 -f "MacOS/CardRunner"; rm -rf "$DST"; cp -R "$SRC" "$DST"
+  codesign --force --deep --sign - "$DST"; xattr -dr com.apple.quarantine "$DST"
+  ```
+- Xavier **double-clicks `~/Desktop/CardRunner.app`**. DO NOT launch from a terminal — see gotchas §7.
 - DerivedData hash `CardRunner-hbuwejbtuggdywgriapcyvzklrwt` has been stable; re-derive if it changes.
-- **Do NOT screen-control / screenshot** unless asked — Xavier runs it himself and reports back. Verify via build + xcodebuild only.
+
+**Launch flags:** none needed for the v3 app. `CR_LEGACY_UI=1` = old UI escape hatch. `CR_V3_DEMO=1` = pure-sim demo (`CardRunnerV3View`, no engine — for design preview only).
 
 ---
 
-## 5. Next steps (the roadmap)
-1. **Step 5 — validate on real hardware (highest priority).** Plug a real card + drive, run with `CR_V3_PREVIEW=1`, watch a real transfer go through `IngestEngine`. The launch path is structurally real (reuses tested pure fns) but **has NOT been exercised on hardware** — expect to fix real-world issues (arg construction, drive paths, progress mapping, eject). Last reported state: freeze fixed, relaunch pending Xavier's test.
-2. **Step 3 — per-card / N-way routing** (only net-new backend). Today real cards auto-route to the **default drive only**; the v3 drag-to-route to a *different* real drive isn't wired to the engine, and mirror is one `--secondary` (extend to N drives). Make each card carry its own destination.
-3. **Cut over** ContentView → v3 once it moves real footage (flip the default; keep old reachable briefly; then retire the `CR_V3_PREVIEW` flag + `ContentView`).
-4. **Polish:** unify the engine's compact card heuristic with `ContentView.volumeLooksLikeCardStatic`; DM Sans bold faces (only Regular is bundled — body type falls back to system; add bold .ttf to the project for fidelity); pixel polish per Xavier's eye.
-5. **Still-open from the old audit** (`memory/audit-2026-06-25.md`): history/stats durability (UserDefaults-only, no atomic file mirror), `--latest N` is a no-op, manifest dedup on exFAT mtime, persist `volumeUUID` in checkpoints. Lower priority than the v3 cutover.
+## 3. Architecture — the graft (how the new UI sits on the proven engine)
+
+`ContentView.swift` (~15.8k lines) is ONE giant `struct ContentView: View` holding ALL engine logic (`@State activeIngests: [UUID: ActiveIngest]`, `startIngest`, detection, `parseProgress`, history, presets) AND the UI. We did NOT extract a controller; instead:
+
+- **`ContentView.body`**: `if CR_LEGACY_UI { legacyBody } else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3 } }`. The **legacy body stays mounted but invisible** so all its proven wiring keeps running: card detection (`didMount → scanForNewCardsAndIngest`), timers, the menu-notification handlers, and `.sheet`/`.alert` modifiers (which present OVER v3 from the window layer).
+- **`bodyV3`** is an `extension ContentView` appended at the END of `ContentView.swift` (must be same file — it reads `private @State`). Pure presentation over the real `@State`; actions via direct `@State` mutation or the **menu-notification bus**.
+- **Gotcha pattern:** any legacy *inline overlay* (not a `.sheet`/`.alert`) renders INVISIBLY under v3. We hit this with Settings, History, and Log — each fixed by rendering a v3 equivalent and gating the legacy copy behind `isLegacyUI`. **If a menu command "does nothing," this is almost always why.**
+- **Menu/keyboard:** `CardRunnerCommands` (CardRunner.swift) posts NotificationCenter messages; `menuNotificationHandlers` (`.onReceive` on the always-mounted legacy body) handle them. So shortcuts fire regardless of which face is visible.
 
 ---
 
-## 6. Hard constraints / locked decisions (do not violate)
-- **Copy engine is `fcopyfile()` only** (clonefile APFS fast path). No rsync/cp/loops/fallback. Closed decision.
-- **Mac-only native Swift.** No HTML/WebView UI. (Both were tried + scrapped.)
-- **Keep the big center ring** — it's the app's identity ("armed & watching, plug in → instant auto-start"). Redesign *around* it.
-- **Routing:** **split is default**, mirror is opt-in. A plugged card **auto-routes to the default destination and auto-starts** (the instant-ingest promise). "Waiting/blocked" exists ONLY when no default is configured → loud blocking state, never a quiet dead-end.
-- **Pull/eject:** manual pull by default; auto-eject opt-in.
-- **Footage safety:** never report success on failure (the `evaluateIngestOutcome` gate); card kept mounted on failure; manifest only written on confirmed success.
-- **GSD workflow** rule in `CLAUDE.md` is NOT installed in this checkout — direct edits are authorized.
+## 4. N-way destination routing (the big backend feature, DONE)
+
+**Shell (`CardRunner.sh`):** `SECONDARY_ROOT` → `SECONDARY_ROOTS=()` (repeated `--secondary`). Mirror block is a per-dest loop; each mirror is safety-equivalent (atomic partial + inline verify). A failing mirror → `_failed_secondaries` → non-zero exit (`PHASE failed … mirror=N`), blocks auto-eject, and WITHHOLDS the manifest (deferred `record_ingested_global`, gated on primary AND all mirrors OK). **Also fixed a pre-existing bug: a failing mirror used to report success.** Single-dest path is byte-identical.
+
+**Swift (`ContentView.swift`):** `struct Destination {id, path, name, isCustomFolder}` + persisted list (`pref_destinationsJSON` / `pref_defaultDestID` / `pref_routingMirror`), migrated from legacy `primarySSDPath`/`secondaryPath`/`customDestPath`. Per-card `destinationID`. **Pure `buildIngestArgs(_:)` (top-level, unit-tested)** — legacy single-dest args are byte-identical; mirror fan-out emits N `--secondary`, filtered to never mirror onto the primary or source card. `AwaitingCard` + `awaitingCards` = the "waiting to route" state; `startAwaiting`/`routeAwaiting` are the engine entry points the drag-node calls. SPLIT parallelism is free (each card already runs its own process w/ own dest device key).
 
 ---
 
-## 7. Key file map (v3)
+## 5. Footage-safety core (the most important thing — hardened over 3 review rounds)
+
+The promise: **never lose footage, never report a failed transfer as success, never let the operator think a failed card is safe to format.**
+
+- **`evaluateIngestOutcome(exitStatus:ingest:)`** (top-level, unit-tested) is the SINGLE authoritative success/failure gate. `didFail = exitStatus != 0 || hasCopyError`.
+- **`FailedIngestRecord`** (now has `volumeUUID`) is the PERSISTENT "do not format" warning (UserDefaults, survives relaunch). A failure ALWAYS writes one — mid-copy, early-abort (`newFiles==0`), cancel, OR even when `cardcopy` never launches (the `process.run()` catch).
+- **`failureRecordsSurviving(...)`** (top-level, **unit-tested**, 5 tests) decides which records a success clears: ONLY on matching volume UUID, or (no UUID — FAT/exFAT camera cards) matching name AND a non-empty nickname. **NEVER on volume-name alone** (camera cards share "Untitled"/"NO NAME"). When in doubt, KEEP the record (operator dismisses manually).
+- **v3 surfacing:** `v3FailureStrip` (top of Sources) renders the records with "DO NOT FORMAT" + dismiss; `v3RingCenter`/`v3RingStroke` check failure FIRST (keyed off `v3HasFailures = v3FailedCount>0 || !failedIngestRecords.isEmpty`) → "N need(s) attention · Do not format the card(s)".
+- **`v3AllDone`** is gated on `failedIngestRecords.isEmpty && v3FailedCount == 0` → "All safe to pull" / green ring is IMPOSSIBLE while any failure exists, under any lane-cleanup order.
+- ⚠️ When touching ANY of this, run the smoke test + the `failure*` unit tests. This is the area that has bitten us repeatedly.
+
+---
+
+## 6. The agent review loop (Xavier's preferred working mode)
+
+Lead coder (you, in-context) implements; then spawn a **reviewer sub-agent** (`general-purpose`, read-only, NOT a worktree — review the main tree by absolute path / `git diff <range>`). It returns prioritized P0/P1/P2 findings; fix P0 (footage-safety) first; re-verify (build + unit + smoke); **resume the same reviewer via SendMessage (its `agentId`)** to confirm. Loop until it says production-ready. This caught every footage-safety bug in Tier 2 — keep using it.
+**Worktree caveat:** isolated-worktree agents need the code to be COMMITTED first (they branch from a commit; uncommitted work is invisible to them). Two early worktree agents died this way before we committed the checkpoint.
+
+---
+
+## 7. Hard-won gotchas (do not re-debug these)
+
+- **Launch from Finder, not a terminal.** Terminal-launched debug builds hit: (a) **SIGTTIN** — the ingest shell inherited the tty as stdin and got stopped on its first `read`. FIXED with `process.standardInput = FileHandle.nullDevice`. (b) **App Nap** Mach-suspended the ingest shell when the app was backgrounded → copy froze at 0%, `SIGCONT`-immune. FIXED with `ProcessInfo.beginActivity(.userInitiated)` per ingest (`ingestActivities`, ended on termination).
+- **Funnel animation** used `TimelineView(.animation)` at 120fps forever → burned a whole core (327 CPU-min) → starved the ingest pipe. FIXED: 20fps and only while copying/dragging; static when idle.
+- **A wedged SMB/NAS share** (`/Volumes/Projects`) froze launch — the volume scan does synchronous `contentsOfDirectory` on the MAIN thread. Environmental, but a real robustness gap → **off-main-thread volume scan is a TODO** (a flaky NAS shouldn't freeze the app on set).
+- **UITests runner hangs headless** — always pass `-skip-testing:CardRunnerUITests`. The unit-test host can also hang in a degraded session (separate from the code); it cleared on its own after MCP reconnects.
+- **Don't `defaults write` while the app runs** — it flushes @AppStorage on quit and clobbers your write. (We hit this turning off a leftover `pref_dryRun`.)
+
+---
+
+## 8. What's next (Tier 3 / open items)
+
+- **New-design Settings screen.** The gear opens the EXACT original `settingsSheet` overlay — fully functional but visually the OLD design. This is the last visual seam. **Needs a mockup from Xavier** (no design exists yet).
+- **Off-main-thread volume scan** (so a dead NAS can't freeze launch) — see §7.
+- **Per-destination routing role.** The Add-destination sheet's "Additional vs Backup" wording implies per-drive roles, but the model is a single global `routingMirror` bool. Adding a Backup only ENABLES mirror (guarded to idle). Reconcile the model with the UI wording for true per-destination roles.
+- **Photo-mode mixed-card hint** — mode is global; mixed photo/video cards in one session skip mismatched files (safe, counted in `skipWrongMode`), but a UI hint would help.
+- Lower-priority from the old audit (`memory/audit-2026-06-25.md`): history/stats durability (UserDefaults-only), `--latest N` no-op, manifest exFAT-mtime key.
+- **7-day failure-record expiry** (`loadFailedRecords`) — records auto-vanish after 7 days even un-acknowledged. Reviewer deemed it an acceptable retention window; revisit only if Xavier wants longer.
+
+---
+
+## 9. File map
+
 | File | Role |
 |---|---|
-| `CardRunner/V3/IngestEngine.swift` | Real ingest pipeline (detection, scheduler, launch/parse/outcome, pull). Reuses the tested pure fns. |
-| `CardRunner/V3/V3Model.swift` | View-model: simulated test cards + **adapter** mirroring `IngestEngine` real state. `syncFromEngine()` is **read-only from the engine** (don't write back — loop). |
-| `CardRunner/V3/CardRunnerV3View.swift` | The dashboard view. Demo "TESTING" toolbar drives sim; bottom bar is the real design. |
-| `CardRunner/V3/V3SettingsView.swift` | Full settings screen. |
-| `CardRunner/CardRunner.swift` | `@main`; `CR_V3_PREVIEW=1` shows `CardRunnerV3View` (temporary). |
-| `CardRunner/ContentView.swift` | Shipping app + the extracted pure fns (`evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `SchedulerSnapshot`, `ActiveIngest`, `Volume`, `IngestHistoryEntry`). |
-| `smoke_test.sh`, `CardRunnerTests/` | The test net (gates in `release.sh`). |
+| `CardRunner/ContentView.swift` | EVERYTHING — engine + legacy UI + `bodyV3` (at end). Top-level pure fns: `buildIngestArgs`, `evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `failureRecordsSurviving`. |
+| `CardRunner/CardRunner.sh` | ~2.5k-line zsh ingest engine (scan/filter/manifest/copy/N-way mirror). |
+| `cardcopy/cardcopy.c` + `CardRunner/cardcopy` | native copy engine (fcopyfile/clonefile, v1.2.0). |
+| `CardRunner/CardRunner.swift` | `@main`; `CardRunnerCommands` (menu + keyboard shortcuts); launches `ContentView()` or `CardRunnerV3View()` (CR_V3_DEMO). |
+| `CardRunner/V3/CardRunnerV3View.swift` + `V3Model.swift` | pure-SIM demo (CR_V3_DEMO) — design preview only, no engine. `V3SettingsView.swift`/`IngestEngine.swift` are TOMBSTONED (empty). |
+| `CardRunnerTests/CardRunnerTests.swift` | 33 unit tests (Swift Testing + XCTest). |
+| `smoke_test.sh` | 31 checks, real shell+cardcopy. Gated in `release.sh`. |
 
 ---
 
-## 8. Known caveats
-- v3 real-transfer path is **not hardware-tested** yet (Step 5).
-- In v3, when **real drives are connected** the Add/Remove-destination buttons are effectively inert (drives auto-detect; `syncFromEngine` rebuilds `dests`). With **no real drive** connected, the demo dests + add/remove work (for testing). Fine for now; revisit during cutover.
-- Real-card lane MB/s label uses the sim contention math (cosmetic); real per-card speed should come from `ActiveIngest.liveMBps`.
-- Engine's compact card heuristic ≠ ContentView's full one (unify later).
+## 10. Commit history on `nway-rebuild` (recent)
+
+```
+a73dc48 Tier 2: close FAT-card failure-masking + launch-failure leak (+ regression tests)
+f7d0cea Tier 2: close two failure-masking paths in the persistence layer (footage safety)
+f7018ee Tier 2 review fixes: P0 persistent failure visibility, P1 dead shortcut + log banners
+fbd60c3 Tier 2 (1/2): wire menu/keyboard into v3 — history, log, photo/video
+4af0a6c Tier 1 P2 polish: lock-routing hint
+0a1b3be Tier 1 review fixes: P0 history-status + routing-flip, P1 rename guard
+0d74a26 Tier 1 in v3: history+stats, date-filter menu, verify menu, per-card naming
+4410d60 Wire the gear to the real Settings panel in v3
+4dd6700 Add v3-design Add-destination + New-project-folder sheets
+f95074d Make the v3 node UI the default app face (CR_LEGACY_UI escapes to legacy)
+2fdfa7b Fix transfer stalls: App-Nap suppression + funnel CPU runaway
+a40b9b9 Fix: detach ingest shell from inherited terminal (SIGTTIN stop)
+adf9e75 Phase 2: N-way per-card destination routing (Swift)
+8561030 Checkpoint: CardRunner v3 node UI + shell N-way mirror (pre Phase-2 Swift)
+```
+
+## 11. Locked decisions (do not violate)
+- Copy engine is `fcopyfile()`/clonefile only. No rsync/cp/fallback.
+- Mac-only native Swift. No HTML/WebView UI (tried + scrapped).
+- Keep the big center ring (app identity). v3 is dark-only (no light mode — ⇧⌘D is legacy-only).
+- Routing: split is default, mirror opt-in. Plug a card → auto-route to default + auto-start (instant-ingest promise). "Blocked/waiting" only when no destination configured.
+- Manual pull default; auto-eject opt-in. Footage safety > convenience.
+- Don't screen-control / screenshot the running app unless Xavier asks — he runs it and reports back; verify via build + unit + smoke.
+</content>
+</invoke>
