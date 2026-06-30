@@ -2601,16 +2601,18 @@ struct ContentView: View {
     // MARK: - Body
 
     var body: some View {
-        if ProcessInfo.processInfo.environment["CR_V3_PREVIEW"] == "1" {
-            // v3 graft: the legacy body stays mounted but invisible so ALL its proven wiring
-            // (card detection via didMount → scanForNewCardsAndIngest, timers, menu handlers,
-            // settings/alert sheets) keeps running. bodyV3 is a new face over the SAME @State.
+        // The v3 node UI is now CardRunner's REAL face — the default, no flag required.
+        // The legacy body stays mounted but invisible so ALL its proven wiring (card detection
+        // via didMount → scanForNewCardsAndIngest, timers, menu handlers, settings/alert sheets)
+        // keeps running underneath; bodyV3 is the new face over the SAME @State.
+        // Escape hatch: launch with CR_LEGACY_UI=1 to fall back to the old UI.
+        if ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1" {
+            legacyBody
+        } else {
             ZStack {
                 legacyBody.opacity(0).allowsHitTesting(false)
                 bodyV3
             }
-        } else {
-            legacyBody
         }
     }
 
