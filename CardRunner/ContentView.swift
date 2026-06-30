@@ -10529,6 +10529,12 @@ struct ContentView: View {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError  = stderrPipe
+        // Detach the ingest shell from any inherited controlling terminal. When the app is
+        // launched FROM a terminal (e.g. a dev run passing CR_V3_PREVIEW), the child shell
+        // would otherwise inherit that tty as stdin; the first `read` in a background process
+        // group then triggers SIGTTIN and the shell STOPS (state T) — cardcopy never runs and
+        // the transfer hangs at 0%. /dev/null stdin makes this impossible regardless of launch.
+        process.standardInput  = FileHandle.nullDevice
 
         // stderr handler — log only, never parsed as progress data.
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
