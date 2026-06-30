@@ -15028,8 +15028,10 @@ extension ContentView {
     }
 
     private func v3CommitAddDest() {
-        // "Backup" makes every card mirror to all drives; "Additional" keeps split routing.
-        routingMirror = v3AddIsBackup
+        // Adding a destination never reinterprets routing for in-flight cards and never silently
+        // tears down an existing mirror policy: only ENABLE mirror (when a Backup drive is added)
+        // and only when nothing is copying. Choosing "Additional" leaves the current mode alone.
+        if v3AddIsBackup && runningCount == 0 { routingMirror = true }
         if v3AddIsSSD {
             if let vol = v3UnusedDrives.first(where: { $0.path == v3AddDrivePath }) { v3AddDriveDestination(vol) }
         } else if !v3AddCustomPath.isEmpty, !destinations.contains(where: { $0.path == v3AddCustomPath }) {
@@ -15298,10 +15300,15 @@ extension ContentView {
     }
 
     private func v3HistoryRow(_ e: IngestHistoryEntry) -> some View {
-        let failed = e.status.lowercased().contains("fail")
-        let col: Color = failed ? v3Red : (e.newFiles == 0 ? .white.opacity(0.5) : v3Green)
+        // Footage-safety: the stored status vocabulary is "Completed" / "Error" (plus mirror/
+        // verify/cancel variants). A failed transfer must NEVER read as a green success here.
+        let s = e.status.lowercased()
+        let failed = s.contains("error") || s.contains("fail") || s.contains("cancel")
+        let neutral = !failed && e.newFiles == 0          // nothing new — already up to date
+        let col: Color = failed ? v3Red : (neutral ? .white.opacity(0.5) : v3Green)
+        let icon = failed ? "exclamationmark.triangle.fill" : (neutral ? "minus.circle" : "checkmark.circle.fill")
         return HStack(spacing: 12) {
-            Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill").foregroundStyle(col)
+            Image(systemName: icon).foregroundStyle(col)
             VStack(alignment: .leading, spacing: 2) {
                 Text(e.cardName.isEmpty ? "Card" : e.cardName).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                 Text("\(e.newFiles) \(e.mediaLabel) · \(e.avgMBps) MB/s · \(v3Duration(e.durationSec)) · \(v3RelDate(e.timestamp))")
@@ -15578,9 +15585,15 @@ extension ContentView {
                             .onSubmit { v3CommitLaneRename(ing) }
                             .onExitCommand { v3EditingLaneID = nil }
                     } else {
+                        // Rename only when this card has a volume UUID to persist the nickname
+                        // against — otherwise the edit would be silently dropped, so don't offer it.
+                        let canRename = ing.volumeUUID != nil
                         Text(v3LaneName(ing)).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                            .onTapGesture(count: 2) { v3EditText = v3LaneName(ing); v3EditingLaneID = id; v3NameFocused = true }
-                            .help("Double-click to rename this card")
+                            .onTapGesture(count: 2) {
+                                guard canRename else { return }
+                                v3EditText = v3LaneName(ing); v3EditingLaneID = id; v3NameFocused = true
+                            }
+                            .help(canRename ? "Double-click to rename this card" : "")
                     }
                     HStack(spacing: 5) {
                         Text(ing.cameraModel.isEmpty ? "Camera" : ing.cameraModel)
