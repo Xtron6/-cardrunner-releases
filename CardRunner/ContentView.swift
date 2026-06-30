@@ -10387,7 +10387,7 @@ struct ContentView: View {
             finderTagEnabled: finderTagEnabled,
             finderTagColor: finderTagColor))
 
-        if showLog { appendLog("=== Starting ingest for card: \(card.name) ===\n") }
+        appendLog("=== Starting ingest for card: \(card.name) ===\n")   // banner always written (v3 log has no showLog flag)
         statusText = "Ingesting \(card.name)…"
         runningCount += 1
         // Seed the sparkline immediately so the Canvas (which needs ≥2 points) has data
@@ -10738,7 +10738,7 @@ struct ContentView: View {
                     }
                     return
                 }
-                if self.showLog { self.appendLog("=== Finished ingest for card: \(card.name) ===\n\n") }
+                self.appendLog("=== Finished ingest for card: \(card.name) ===\n\n")   // always written (v3 log)
 
                 // Pull this ingest's record, commit the last in-flight file, then remove it
                 // so the aggregate computed properties automatically exclude it.
@@ -15392,10 +15392,19 @@ extension ContentView {
         totalBytesNew > 0 ? min(100, Double(doneBytes) / Double(totalBytesNew) * 100) : 0
     }
     private var v3FailedCount: Int { activeIngests.values.filter { $0.phase == .failed }.count }
+    /// Persistent failure presence — `failedIngestRecords` survives lane cleanup AND app relaunch.
+    /// The ring/strip key off this so a failure stays visible after the transient alert is dismissed.
+    private var v3HasFailures: Bool { v3FailedCount > 0 || !failedIngestRecords.isEmpty }
+    private var v3AttentionCount: Int { max(v3FailedCount, failedIngestRecords.count) }
     private var v3DoneCount: Int { activeIngests.values.filter { $0.phase == .done }.count }
     private var v3CopyingCount: Int { activeIngests.values.filter { [.copying, .scanning, .building].contains($0.phase) }.count }
     private var v3FinalizingCount: Int { activeIngests.values.filter { [.finalizing, .verifying].contains($0.phase) }.count }
-    private var v3AllDone: Bool { !activeIngests.isEmpty && runningCount == 0 && activeIngests.values.allSatisfy { $0.phase == .done || $0.phase == .failed } }
+    // "All safe to pull" must be IMPOSSIBLE while any failure exists (transient .failed lane
+    // OR a persistent failure record), and a .failed lane must never satisfy "done".
+    private var v3AllDone: Bool {
+        failedIngestRecords.isEmpty && v3FailedCount == 0 && !activeIngests.isEmpty
+            && runningCount == 0 && activeIngests.values.allSatisfy { $0.phase == .done }
+    }
 
     private func v3LanePct(_ ing: ActiveIngest) -> Double {
         ing.totalBytesNew > 0 ? min(100, Double(ing.doneBytes) / Double(ing.totalBytesNew) * 100) : 0
@@ -15614,6 +15623,9 @@ extension ContentView {
     // MARK: Sources (real lanes + awaiting "drag to route" lanes)
     private var v3Sources: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Persistent failure warnings — survive lane cleanup AND app relaunch, so an operator
+            // is never told a failed card is safe to format. Dismiss only when acknowledged.
+            if !failedIngestRecords.isEmpty { v3FailureStrip }
             Text("SOURCES").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
             if v3Lanes.isEmpty && awaitingCards.isEmpty {
                 Text(autoIngest ? "Waiting for a card…" : "Auto-ingest is off — plug a card to route it")
@@ -15625,6 +15637,35 @@ extension ContentView {
             ForEach(v3ActiveLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
             if !v3DoneLanes.isEmpty { v3DonePile }
             Spacer(minLength: 0)
+        }
+    }
+
+    /// Persistent "ingest failed — do not format" strip. One row per FailedIngestRecord, with a
+    /// dismiss button. Survives lane cleanup and app relaunch (the records are persisted).
+    private var v3FailureStrip: some View {
+        VStack(spacing: 8) {
+            ForEach(failedIngestRecords) { rec in
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 13)).foregroundStyle(v3Amber)
+                    VStack(alignment: .leading, spacing: 2) {
+                        let name = rec.friendlyName.isEmpty ? rec.cardName : rec.friendlyName
+                        Text("\(name) — \(rec.reason == "Cancelled" ? "ingest cancelled" : "ingest error") · DO NOT FORMAT")
+                            .font(.system(size: 12, weight: .bold)).foregroundStyle(v3Amber).lineLimit(1)
+                        Text(rec.filesToCopy > 0
+                             ? "\(rec.filesToCopy) files not copied · \(relativeTimeString(from: rec.failedAt))"
+                             : "Transfer did not complete · \(relativeTimeString(from: rec.failedAt))")
+                            .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.75))
+                    }
+                    Spacer()
+                    Button { dismissFailedRecord(id: rec.id) } label: {
+                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(v3Amber.opacity(0.7))
+                            .frame(width: 22, height: 22).background(v3Amber.opacity(0.12), in: Circle())
+                    }.buttonStyle(.plain).help("Dismiss — only after you've confirmed the footage is safe")
+                }
+                .padding(12).frame(width: 360)
+                .background(v3Amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(v3Amber.opacity(0.45)))
+            }
         }
     }
 
@@ -15881,13 +15922,21 @@ extension ContentView {
         }
     }
     private var v3RingStroke: AnyShapeStyle {
-        if v3FailedCount > 0 { return AnyShapeStyle(v3Amber) }
+        if v3HasFailures { return AnyShapeStyle(v3Amber) }   // persistent — survives lane cleanup
         if v3WaitingToRoute { return AnyShapeStyle(v3Amber) }
         if v3AllDone { return AnyShapeStyle(v3Green) }
         return AnyShapeStyle(v3Brand)
     }
     @ViewBuilder private var v3RingCenter: some View {
-        if v3WaitingToRoute {
+        // Failure is checked FIRST and keyed off the PERSISTENT record, so a failed card never
+        // gets masked by "Ready for cards" / "All safe to pull" once its lane is cleaned up.
+        if v3HasFailures {
+            VStack(spacing: 6) {
+                Text("\(v3AttentionCount)").font(.system(size: 40, weight: .bold)).foregroundStyle(v3Amber)
+                Text("need\(v3AttentionCount == 1 ? "s" : "") attention").font(.system(size: 13, weight: .semibold)).foregroundStyle(v3Amber)
+                Text("Do not format the card(s)").font(.system(size: 11)).foregroundStyle(v3Amber.opacity(0.8))
+            }
+        } else if v3WaitingToRoute {
             VStack(spacing: 6) {
                 Text("\(awaitingCards.count)").font(.system(size: 48, weight: .bold)).foregroundStyle(v3Amber)
                 Text("card\(awaitingCards.count == 1 ? "" : "s") waiting to route")
@@ -15898,11 +15947,6 @@ extension ContentView {
             VStack(spacing: 6) {
                 Text("Ready for cards").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
                 Text(autoIngest ? "Auto-ingest armed" : "Auto-ingest off").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-            }
-        } else if v3FailedCount > 0 {
-            VStack(spacing: 6) {
-                Text("\(v3FailedCount)").font(.system(size: 40, weight: .bold)).foregroundStyle(v3Amber)
-                Text("needs attention").font(.system(size: 13)).foregroundStyle(v3Amber)
             }
         } else if v3AllDone {
             VStack(spacing: 8) {

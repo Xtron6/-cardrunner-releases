@@ -30,6 +30,9 @@ private struct CardRunnerCommands: Commands {
     var updaterController: SPUStandardUpdaterController
     /// Only show the Debug menu in the v3 preview (keeps the shipping menu clean).
     var showDebugMenu: Bool = false
+    /// True when the legacy UI is the visible face (CR_LEGACY_UI=1). v3 is dark-only, so the
+    /// Dark/Light item is shown only in legacy mode.
+    var isLegacyUI: Bool = false
     /// Shared with CardRunnerV3View via UserDefaults — toggling here shows/hides the testing strip.
     @AppStorage("pref_v3ShowDebugTools") private var showDebugTools = false
 
@@ -134,12 +137,15 @@ private struct CardRunnerCommands: Commands {
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
 
-            Divider()
-
-            Button("Toggle Dark / Light Mode") {
-                post(.menuToggleDarkMode)
+            // Dark/Light only applies to the legacy UI — the v3 face is dark-only, so the
+            // shortcut would be a no-op there. Show it only when the legacy UI is active.
+            if isLegacyUI {
+                Divider()
+                Button("Toggle Dark / Light Mode") {
+                    post(.menuToggleDarkMode)
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
         }
 
         // ── Help ─────────────────────────────────────────────────────────────
@@ -202,7 +208,8 @@ struct CardRunnerApp: App {
         .commands {
             CardRunnerCommands(
                 updaterController: appDelegate.updaterController,
-                showDebugMenu: ProcessInfo.processInfo.environment["CR_V3_PREVIEW"] == "1")
+                showDebugMenu: ProcessInfo.processInfo.environment["CR_V3_PREVIEW"] == "1",
+                isLegacyUI: ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1")
         }
     }
 }
