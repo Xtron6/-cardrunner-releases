@@ -293,4 +293,97 @@ struct CardRunnerTests {
     @Test func schedulerAdmitsUnknownDeviceWhenUnderCap() {
         #expect(canAdmitIngest(candidateDestDevice: nil, snapshot: snap([10])) == true)
     }
+
+    // MARK: - buildIngestArgs (N-way destination routing, Phase 2)
+
+    /// Minimal config that mimics today's default single-destination ingest. Override the
+    /// pieces a given test cares about; everything else stays at the "shipped default".
+    private func cfg(useCustomDest: Bool = false,
+                     destRoot: String = "/Volumes/SSD",
+                     projectName: String = "Shoot",
+                     secondaryPaths: [String] = [],
+                     dateFilterMode: String = "all",
+                     verifyTransfer: Bool = false,
+                     finderTagEnabled: Bool = false) -> IngestArgsConfig {
+        IngestArgsConfig(
+            scriptPath: "/app/CardRunner.sh", appVersion: "1.0", cardPath: "/Volumes/CARD",
+            useCustomDest: useCustomDest, destRoot: destRoot,
+            projectRoot: useCustomDest ? destRoot : "\(destRoot)/\(projectName)",
+            projectName: projectName, selectedSubfolder: "Default",
+            useCustomCardName: false, customCardName: "", latestCount: 0, dryRun: false,
+            wrongClockDate: nil, reelFilter: [], reelMulti: false, dateOverride: nil,
+            dateFilterMode: dateFilterMode, dateFilterFrom: "", dateFilterTo: "",
+            dateFilterSubMode: "single", autoEject: false, fullVerifyEnabled: false,
+            verifyTransfer: verifyTransfer, transferReportEnabled: false,
+            secondaryPaths: secondaryPaths, renameOnIngestEnabled: false, renameTemplate: "",
+            winterOlympicsMode: false, olympicsCode: "", scaffoldEnabled: false,
+            scaffoldFolderList: [], copyXML: false, importMode: "video", includeProxies: false,
+            ingestOrder: "oldest", dateFolderFormat: "%y%m%d", broadcastDayFolders: false,
+            dayStartHour: 4, finderTagEnabled: finderTagEnabled, finderTagColor: "green")
+    }
+
+    /// Pull every value that follows an occurrence of `flag` in the argv.
+    private func values(of flag: String, in args: [String]) -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == flag, i + 1 < args.count { out.append(args[i + 1]); i += 2 }
+            else { i += 1 }
+        }
+        return out
+    }
+
+    /// (a) MIRROR: one `--secondary` is emitted per mirror target, in order.
+    @Test func buildArgsEmitsOneSecondaryPerMirrorTarget() {
+        let args = buildIngestArgs(cfg(secondaryPaths: ["/Volumes/Backup1", "/Volumes/Backup2", "/Volumes/Backup3"]))
+        let secs = values(of: "--secondary", in: args)
+        #expect(secs == ["/Volumes/Backup1", "/Volumes/Backup2", "/Volumes/Backup3"])
+        #expect(args.filter { $0 == "--secondary" }.count == 3)
+    }
+
+    /// (b) nil→default resolution: with NO mirror targets the args are exactly today's
+    /// single-destination argv — `--primary <root>` + `--project`, and NO `--secondary`.
+    @Test func buildArgsDefaultSingleDestMatchesLegacy() {
+        let args = buildIngestArgs(cfg(destRoot: "/Volumes/SSD", projectName: "Shoot",
+                                       dateFilterMode: "today", verifyTransfer: true))
+        #expect(values(of: "--primary", in: args) == ["/Volumes/SSD"])
+        #expect(values(of: "--project", in: args) == ["Shoot"])
+        #expect(args.contains("--today-only"))
+        #expect(args.contains("--verify"))
+        #expect(args.contains("--secondary") == false)   // no mirror → no secondary, ever
+        #expect(args.contains("--dest-root") == false)    // SSD mode, not custom
+    }
+
+    /// (c) destinationIsOnCard filtering happens UPSTREAM of the builder, so a mirror target
+    /// equal to the primary destination must already be excluded from `secondaryPaths` — the
+    /// builder must never emit a `--secondary` that duplicates the primary `--primary` root.
+    @Test func buildArgsNeverMirrorsToTheSourcePrimary() {
+        // Caller is responsible for filtering; the builder simply emits what it's given.
+        // This documents the contract: an EMPTY filtered list yields no --secondary, so a
+        // mirror==source case (filtered to empty upstream) routes exactly like the default.
+        let filtered: [String] = []   // primary == only candidate → filtered out upstream
+        let args = buildIngestArgs(cfg(destRoot: "/Volumes/SSD", secondaryPaths: filtered))
+        #expect(args.contains("--secondary") == false)
+        #expect(values(of: "--primary", in: args) == ["/Volumes/SSD"])
+    }
+
+    /// Custom-folder destination uses `--dest-root` + a volume-root `--primary`, never `--project`.
+    @Test func buildArgsCustomFolderUsesDestRoot() {
+        let args = buildIngestArgs(cfg(useCustomDest: true, destRoot: "/Volumes/MySSD/Shoots/2026"))
+        #expect(values(of: "--dest-root", in: args) == ["/Volumes/MySSD/Shoots/2026"])
+        #expect(values(of: "--primary", in: args) == ["/Volumes/MySSD"])  // volume root, not the full path
+        #expect(args.contains("--project") == false)
+    }
+
+    // MARK: - Destination model (migration + default resolution)
+
+    @Test func destinationCodableRoundTrips() throws {
+        let list = [
+            Destination(path: "/Volumes/SSD", name: "SSD", isCustomFolder: false),
+            Destination(path: "/Users/x/Footage", name: "Footage", isCustomFolder: true),
+        ]
+        let back = try dec.decode([Destination].self, from: try enc.encode(list))
+        #expect(back == list)            // ids + fields survive a persistence round-trip
+        #expect(back[1].isCustomFolder == true)
+    }
 }

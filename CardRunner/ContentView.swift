@@ -1162,6 +1162,237 @@ struct Volume: Identifiable, Hashable {
     var volumeUUID: String? = nil   // set at detection time; persists through ingest lifecycle
 }
 
+/// A user-facing footage destination in the N-way routing model.
+///
+/// A destination is either a *mounted drive* (`isCustomFolder == false`, `path` is the
+/// volume root such as `/Volumes/Samsung T7`, footage lands under `<path>/<project>/…`)
+/// or a *custom folder* (`isCustomFolder == true`, `path` is an explicit directory the
+/// user picked, footage lands directly under `<path>/<date>/…`). `id` is stable across
+/// launches so per-card routing (`QueuedIngest.destinationID`, `AwaitingCard.destinationID`)
+/// and the default-destination preference can reference it.
+struct Destination: Identifiable, Hashable, Codable {
+    var id = UUID()
+    var path: String
+    var name: String
+    var isCustomFolder: Bool
+}
+
+/// A card detected while Auto-Ingest is OFF: it is parked "waiting to route" until the
+/// user drags its node onto a destination (or presses Start). `destinationID` is the
+/// drive the user has chosen for it (nil = use the default). Mirrors the demo's
+/// `.awaiting` card state.
+struct AwaitingCard: Identifiable, Hashable {
+    let id = UUID()
+    let card: Volume
+    var destinationID: UUID? = nil
+}
+
+/// Everything the shell-arg builder needs, captured as plain values so the builder is a
+/// pure function (no `@State`, no MainActor) and can be unit-tested in isolation.
+///
+/// `destRoot` / `projectRoot` are the resolved destination for THIS card. `secondaryPaths`
+/// is the N-way mirror list — one `--secondary <path>` is emitted per entry (already filtered
+/// to exclude the primary destination and any path on the source card). When `useCustomDest`
+/// is true the builder emits `--dest-root`+`--primary <volumeRoot>`; otherwise `--primary`+`--project`.
+struct IngestArgsConfig {
+    var scriptPath: String
+    var appVersion: String
+    var cardPath: String
+    var useCustomDest: Bool
+    var destRoot: String
+    var projectRoot: String       // used only to derive the custom-mode --primary volume root
+    var projectName: String
+    var selectedSubfolder: String
+    var useCustomCardName: Bool
+    var customCardName: String
+    var latestCount: Int
+    var dryRun: Bool
+    var wrongClockDate: String?
+    var reelFilter: [String]
+    var reelMulti: Bool
+    var dateOverride: String?
+    var dateFilterMode: String
+    var dateFilterFrom: String
+    var dateFilterTo: String
+    var dateFilterSubMode: String
+    var autoEject: Bool
+    var fullVerifyEnabled: Bool
+    var verifyTransfer: Bool
+    var transferReportEnabled: Bool
+    var secondaryPaths: [String]
+    var renameOnIngestEnabled: Bool
+    var renameTemplate: String
+    var winterOlympicsMode: Bool
+    var olympicsCode: String
+    var scaffoldEnabled: Bool
+    var scaffoldFolderList: [String]
+    var copyXML: Bool
+    var importMode: String
+    var includeProxies: Bool
+    var ingestOrder: String
+    var dateFolderFormat: String
+    var broadcastDayFolders: Bool
+    var dayStartHour: Int
+    var finderTagEnabled: Bool
+    var finderTagColor: String
+}
+
+/// Build the exact CardRunner.sh argument vector for one ingest. Pure & deterministic so
+/// the routing contract is unit-testable. CRITICAL invariant: with `secondaryPaths` empty
+/// and a destination that resolves identically to the legacy config, this emits the SAME
+/// args the app shipped with — so an untouched single-destination user ingests exactly as before.
+func buildIngestArgs(_ c: IngestArgsConfig) -> [String] {
+    var args: [String] = []
+    args.append(c.scriptPath)
+    args.append(contentsOf: ["--app-version", "v\(c.appVersion)"])
+    args.append(contentsOf: ["--card", c.cardPath])
+
+    if c.useCustomDest {
+        args.append(contentsOf: ["--dest-root", c.destRoot])
+        let urlComponents = URL(fileURLWithPath: c.destRoot).pathComponents
+        let volumeRoot: String
+        if urlComponents.count >= 3 && urlComponents[1] == "Volumes" {
+            volumeRoot = "/" + urlComponents[1] + "/" + urlComponents[2]
+        } else {
+            volumeRoot = c.destRoot
+        }
+        args.append(contentsOf: ["--primary", volumeRoot])
+    } else {
+        let trimmedProject = c.projectName.trimmingCharacters(in: .whitespaces)
+        args.append(contentsOf: ["--primary", c.destRoot])
+        args.append(contentsOf: ["--project", trimmedProject])
+    }
+
+    if c.selectedSubfolder != "Default" {
+        args.append(contentsOf: ["--subfolder", c.selectedSubfolder])
+    }
+
+    if c.useCustomCardName {
+        let trimmedLabel = c.customCardName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLabel.isEmpty {
+            args.append(contentsOf: ["--cardlabel", trimmedLabel])
+        }
+    }
+
+    if c.latestCount > 0 {
+        args.append(contentsOf: ["--latest", String(c.latestCount)])
+    }
+
+    if c.dryRun {
+        args.append("--dry-run")
+    }
+
+    if let wcd = c.wrongClockDate {
+        args += ["--date-override", wcd]
+    }
+
+    if !c.reelFilter.isEmpty {
+        args += ["--reels", c.reelFilter.joined(separator: ",")]
+        if c.reelMulti {
+            args.append("--reel-multi")
+        }
+    }
+
+    if let override = c.dateOverride {
+        if override.contains(",") {
+            args += ["--dates", override]
+        } else {
+            args += ["--date-from", override]
+        }
+    } else if c.wrongClockDate == nil {
+        switch c.dateFilterMode {
+        case "today":
+            args.append("--today-only")
+        case "yesterday":
+            let fmt = DateFormatter(); fmt.dateFormat = "yyyyMMdd"
+            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+            args += ["--date-from", fmt.string(from: yesterday)]
+        case "custom":
+            if !c.dateFilterFrom.isEmpty {
+                args += ["--date-from", c.dateFilterFrom]
+                if c.dateFilterSubMode == "range" && !c.dateFilterTo.isEmpty {
+                    args += ["--date-to", c.dateFilterTo]
+                }
+            }
+        default: break
+        }
+    }
+
+    if c.autoEject {
+        args.append("--auto-eject")
+    }
+
+    if c.fullVerifyEnabled {
+        args.append("--full-verify")
+    } else if c.verifyTransfer {
+        args.append("--verify")
+    }
+
+    if c.transferReportEnabled {
+        args.append("--transfer-report")
+    }
+
+    // N-way mirror: one --secondary per mirror target (already filtered upstream to
+    // exclude the primary dest and any path that lands on the source card).
+    for sec in c.secondaryPaths {
+        args.append(contentsOf: ["--secondary", sec])
+    }
+
+    if c.renameOnIngestEnabled {
+        let tmpl = c.renameTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tmpl.isEmpty {
+            args.append(contentsOf: ["--rename-template", tmpl])
+        }
+    }
+
+    if c.winterOlympicsMode {
+        args.append("--winter-olympics")
+        let trimmedCode = c.olympicsCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCode.isEmpty {
+            args.append(contentsOf: ["--olympics-code", trimmedCode])
+        }
+    }
+
+    if c.scaffoldEnabled {
+        let pipeSeparated = c.scaffoldFolderList.joined(separator: "|")
+        if !pipeSeparated.isEmpty {
+            args.append(contentsOf: ["--scaffold", pipeSeparated])
+        }
+    }
+
+    if c.copyXML && c.importMode != "photo" {
+        args.append("--include-xml")
+    }
+
+    if c.includeProxies {
+        args.append("--include-proxies")
+    }
+
+    if c.importMode == "photo" {
+        args.append(contentsOf: ["--mode", "photo"])
+    } else {
+        args.append(contentsOf: ["--mode", "video"])
+    }
+
+    if c.ingestOrder == "newest" {
+        args.append(contentsOf: ["--sort-order", "newest"])
+    }
+
+    if c.dateFolderFormat != "%y%m%d" {
+        args.append(contentsOf: ["--date-format", c.dateFolderFormat])
+    }
+
+    if c.broadcastDayFolders {
+        args.append(contentsOf: ["--broadcast-day-hour", "\(c.dayStartHour)"])
+    }
+
+    if c.finderTagEnabled {
+        args.append(contentsOf: ["--finder-tag-color", c.finderTagColor])
+    }
+
+    return args
+}
+
 /// One distinct capture-date found on a card during pre-ingest scanning.
 struct CardDateInfo: Identifiable {
     var id: String { yyyymmdd }
@@ -1222,14 +1453,19 @@ struct QueuedIngest {
     let reelFilter: [String]
     /// When true and reelFilter has 2+ entries, insert reel name as dest subfolder.
     let reelMulti: Bool
+    /// Which `Destination` this card is routed to (nil = use the default destination).
+    /// Carried through the queue so per-card routing survives the wait for a free drive.
+    let destinationID: UUID?
 
     init(card: Volume, dateOverride: String?,
-         wrongClockDate: String? = nil, reelFilter: [String] = [], reelMulti: Bool = false) {
+         wrongClockDate: String? = nil, reelFilter: [String] = [], reelMulti: Bool = false,
+         destinationID: UUID? = nil) {
         self.card = card
         self.dateOverride = dateOverride
         self.wrongClockDate = wrongClockDate
         self.reelFilter = reelFilter
         self.reelMulti = reelMulti
+        self.destinationID = destinationID
     }
 }
 
@@ -2069,6 +2305,23 @@ struct ContentView: View {
     // Custom destination — bypasses SSD+Project picker entirely
     @AppStorage("pref_useCustomDest")  private var useCustomDest:  Bool   = false
     @AppStorage("pref_customDestPath") private var customDestPath: String = ""
+
+    // ── N-way destination routing (Phase 2) ─────────────────────────────────────
+    // The persisted list of destinations footage can be routed to, the default one,
+    // and the routing policy (mirror = every card copies to every drive; split =
+    // each card lands on its own chosen drive). `destinations` is the live working
+    // copy loaded from `destinationsJSON`; mutations go through `saveDestinations()`.
+    @AppStorage("pref_destinationsJSON") private var destinationsJSON: String = "[]"
+    @AppStorage("pref_defaultDestID")    private var defaultDestIDString: String = ""
+    /// false = SPLIT (per-card routing), true = MIRROR (every card → every drive).
+    @AppStorage("pref_routingMirror")    private var routingMirror: Bool = false
+    @State private var destinations: [Destination] = []
+    /// Cards detected while Auto-Ingest is OFF, parked waiting to be routed.
+    @State private var awaitingCards: [AwaitingCard] = []
+    // Drag-to-link node UI state (bodyV3) — ported from the demo.
+    @State private var destFrames: [UUID: CGRect] = [:]
+    @State private var dragLine: DragLine? = nil
+    @State private var dragOverDest: UUID? = nil
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -2512,6 +2765,7 @@ struct ContentView: View {
                 // checkForStaleCheckpoints() below, so the sweep can skip any drive that
                 // has a resumable checkpoint (its .cardrunner_partial staging is exactly
                 // what a resume needs — deleting it first defeats/races the resume).
+                loadDestinations()
                 refreshDestinations()
                 loadHistory()
                 loadFailedRecords()
@@ -2570,6 +2824,8 @@ struct ContentView: View {
                     AudioEngine.shared.autoIngestEnabled()
                     statusText = "Searching for cards…"
                     startAutoScanLoop()
+                    // Start any cards that were parked "waiting to route" while Auto-Ingest was off.
+                    drainAwaiting()
                     scanForNewCardsAndIngest(forceRescan: true)
                 } else {
                     AudioEngine.shared.autoIngestDisabled()
@@ -8761,6 +9017,107 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - N-way destination routing model (Phase 2)
+
+    /// The default destination — the golden box; where the first/unrouted card lands.
+    /// Resolved from the saved `defaultDestID`, falling back to the first destination.
+    /// nil only when no destinations are configured at all.
+    var defaultDestination: Destination? {
+        if let did = UUID(uuidString: defaultDestIDString),
+           let match = destinations.first(where: { $0.id == did }) {
+            return match
+        }
+        return destinations.first
+    }
+
+    /// Decode the persisted destination list into the live `destinations` @State.
+    /// Runs migration the first time (empty list) so existing single-/dual-dest users
+    /// keep their exact configuration. Idempotent — safe to call on every launch.
+    private func loadDestinations() {
+        if let data = destinationsJSON.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([Destination].self, from: data) {
+            destinations = decoded
+        } else {
+            destinations = []
+        }
+        if destinations.isEmpty {
+            migrateLegacyDestinations()
+        }
+        // Ensure a valid default is always selected when destinations exist.
+        if defaultDestination == nil { defaultDestIDString = "" }
+        else if UUID(uuidString: defaultDestIDString) == nil
+                || !destinations.contains(where: { $0.id.uuidString == defaultDestIDString }) {
+            defaultDestIDString = destinations.first?.id.uuidString ?? ""
+        }
+    }
+
+    /// Persist the current `destinations` list to `destinationsJSON`.
+    private func saveDestinations() {
+        if let data = try? JSONEncoder().encode(destinations),
+           let str = String(data: data, encoding: .utf8) {
+            destinationsJSON = str
+        }
+    }
+
+    /// Seed the destination list from the legacy single-/dual-dest preferences so a user
+    /// who upgrades into Phase 2 keeps the *exact* destination they were already using.
+    ///   • custom folder  → one custom Destination (path = customDestPath)
+    ///   • else primary SSD → one drive Destination (+ secondary drive when dualDest was on)
+    private func migrateLegacyDestinations() {
+        var migrated: [Destination] = []
+        if useCustomDest, !customDestPath.isEmpty {
+            migrated.append(Destination(
+                path: customDestPath,
+                name: URL(fileURLWithPath: customDestPath).lastPathComponent,
+                isCustomFolder: true))
+        } else if !primarySSDPath.isEmpty {
+            migrated.append(Destination(
+                path: primarySSDPath,
+                name: URL(fileURLWithPath: primarySSDPath).lastPathComponent,
+                isCustomFolder: false))
+            if dualDestEnabled, !secondaryPath.isEmpty {
+                migrated.append(Destination(
+                    path: secondaryPath,
+                    name: URL(fileURLWithPath: secondaryPath).lastPathComponent,
+                    isCustomFolder: false))
+            }
+        }
+        destinations = migrated
+        defaultDestIDString = migrated.first?.id.uuidString ?? ""
+        saveDestinations()
+    }
+
+    /// Reconcile the persisted destination list against what's currently mounted:
+    /// drop drive destinations whose volume is no longer present (custom folders are
+    /// kept regardless, since they may live on the internal disk or a remount-later
+    /// drive). Does NOT auto-add every mounted drive — destinations are added explicitly.
+    private func reconcileDestinations() {
+        let fm = FileManager.default
+        var kept: [Destination] = []
+        for d in destinations {
+            if d.isCustomFolder { kept.append(d); continue }
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue {
+                kept.append(d)
+            }
+        }
+        if kept.count != destinations.count {
+            destinations = kept
+            if defaultDestination == nil { defaultDestIDString = destinations.first?.id.uuidString ?? "" }
+            saveDestinations()
+        }
+    }
+
+    /// Resolve the on-disk root and the per-card project root for a destination.
+    /// Custom folders write directly under their path; drives nest under the project name.
+    private func resolvedPaths(for dest: Destination) -> (destRoot: String, projectRoot: String) {
+        if dest.isCustomFolder {
+            return (dest.path, dest.path)
+        }
+        let trimmedProject = projectName.trimmingCharacters(in: .whitespaces)
+        return (dest.path, trimmedProject.isEmpty ? dest.path : "\(dest.path)/\(trimmedProject)")
+    }
+
     private func refreshDestinations() {
         let fm = FileManager.default
         let volumesURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
@@ -8822,6 +9179,7 @@ struct ContentView: View {
 
         refreshProjectFolders()
         updateSSDInfo()
+        reconcileDestinations()
     }
 
     /// Scans every mounted destination volume for `.cardrunner_partial` dirs
@@ -9056,6 +9414,8 @@ struct ContentView: View {
                         }
                             self.routeCardsForIngest(finalCards)
                         } else {
+                            // Auto-Ingest OFF — park every detected card "waiting to route".
+                            self.enqueueAwaiting(finalCards)
                             let label = self.currentCardMatchedName.isEmpty
                                 ? "Card ready"
                                 : "\(self.currentCardMatchedName) ready"
@@ -9070,6 +9430,8 @@ struct ContentView: View {
                 self.seenCardPaths = self.seenCardPaths.intersection(currentPaths)
                 self.seenCardUUIDs = self.seenCardUUIDs.intersection(currentUUIDs)
                 self.cardQueue.removeAll { !currentPaths.contains($0.card.path) }
+                // Drop awaiting cards that have been physically removed.
+                self.awaitingCards.removeAll { !currentPaths.contains($0.card.path) }
 
                 var newCards: [Volume] = []
                 for card in finalCards {
@@ -9098,7 +9460,10 @@ struct ContentView: View {
                     // Auto Ingest on — route cards to the date picker / ingest flow.
                     self.routeCardsForIngest(newCards)
                 } else if !newCards.isEmpty {
-                    // Auto Ingest off — card recognised; let the user decide when to start.
+                    // Auto Ingest off — park the new cards "waiting to route" (drag a node
+                    // onto a drive, or press Start). seen* stays untouched here (handled
+                    // above) so flipping Auto-Ingest on later still picks them up.
+                    self.enqueueAwaiting(newCards)
                     let label = self.currentCardMatchedName.isEmpty
                         ? "Card ready"
                         : "\(self.currentCardMatchedName) ready"
@@ -9111,6 +9476,7 @@ struct ContentView: View {
                     self.currentCardMatchedName  = ""
                     self.currentInsertedCardUUID = nil
                     self.cardNameIsFromMemory    = false
+                    self.awaitingCards.removeAll()
                     self.statusText = self.autoIngest ? "Searching for cards…" : "Waiting for cards…"
                 }
             }
@@ -9510,9 +9876,52 @@ struct ContentView: View {
 
     ///     – 2+ dates → show the multi-select date picker
     ///
+    // MARK: - Awaiting cards (Auto-Ingest OFF — "waiting to route")
+
+    /// Park newly-detected cards in the "waiting to route" list (dedup by mount path).
+    /// Each card starts with no chosen destination (nil = use default until the user
+    /// drags its node onto a drive or presses Start).
+    @MainActor private func enqueueAwaiting(_ cards: [Volume]) {
+        for card in cards where !awaitingCards.contains(where: { $0.card.path == card.path }) {
+            awaitingCards.append(AwaitingCard(card: card))
+        }
+    }
+
+    /// Press "Start" on a waiting card — routes it to its chosen destination (or the
+    /// default) and begins the lifecycle. Marks the card seen so the auto-scan loop
+    /// won't re-park it.
+    @MainActor private func startAwaiting(_ awaitingID: UUID) {
+        guard let item = awaitingCards.first(where: { $0.id == awaitingID }) else { return }
+        let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
+        seenCardPaths.insert(item.card.path)
+        if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
+        awaitingCards.removeAll { $0.id == awaitingID }
+        routeCardsForIngest([item.card], destination: dest)
+    }
+
+    /// Drag-drop a waiting card's node onto a destination: bind it to that drive AND
+    /// start it immediately (mirrors the demo's `route(_:to:)`).
+    @MainActor private func routeAwaiting(_ awaitingID: UUID, to destID: UUID) {
+        guard let idx = awaitingCards.firstIndex(where: { $0.id == awaitingID }) else { return }
+        awaitingCards[idx].destinationID = destID
+        startAwaiting(awaitingID)
+    }
+
+    /// When Auto-Ingest flips ON, start every parked card on its chosen (or default) drive.
+    @MainActor private func drainAwaiting() {
+        let parked = awaitingCards
+        awaitingCards.removeAll()
+        for item in parked {
+            let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
+            seenCardPaths.insert(item.card.path)
+            if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
+            routeCardsForIngest([item.card], destination: dest)
+        }
+    }
+
     /// Called from every scan path (auto-ingest loop, 30-s fallback loop, force-rescan)
     /// so the behaviour is consistent regardless of how a card is detected.
-    @MainActor private func routeCardsForIngest(_ cards: [Volume]) {
+    @MainActor private func routeCardsForIngest(_ cards: [Volume], destination: Destination? = nil) {
         guard !cards.isEmpty else { return }
 
         // Capture mode on the main actor before entering the unstructured task
@@ -9569,7 +9978,7 @@ struct ContentView: View {
 
                 // ── Today-only mode: ingest immediately; shell handles date filter ─
                 if currentDateMode == "today" {
-                    await MainActor.run { self.startIngest(for: card) }
+                    await MainActor.run { self.startIngest(for: card, destination: destination) }
                     continue
                 }
 
@@ -9579,7 +9988,7 @@ struct ContentView: View {
                     // Dates found — handle without loading state
                     await MainActor.run {
                         if dates.count == 1 {
-                            self.startIngest(for: card, dateOverride: dates[0].yyyymmdd)
+                            self.startIngest(for: card, dateOverride: dates[0].yyyymmdd, destination: destination)
                         } else {
                             let todayMatches = dates.filter { $0.isToday }.map { $0.yyyymmdd }
                             self.datePickerCards    = [card]
@@ -9697,20 +10106,27 @@ struct ContentView: View {
 
     /// Append a card to the queue unless an equivalent entry is already waiting.
     private func enqueueIfNew(card: Volume, dateOverride: String?,
-                             wrongClockDate: String?, reelFilter: [String], reelMulti: Bool) {
+                             wrongClockDate: String?, reelFilter: [String], reelMulti: Bool,
+                             destinationID: UUID? = nil) {
         if !cardQueue.contains(where: {
             cardIdentifier(for: $0.card) == cardIdentifier(for: card)
                 && $0.dateOverride == dateOverride
         }) {
             cardQueue.append(QueuedIngest(card: card, dateOverride: dateOverride,
                                           wrongClockDate: wrongClockDate,
-                                          reelFilter: reelFilter, reelMulti: reelMulti))
+                                          reelFilter: reelFilter, reelMulti: reelMulti,
+                                          destinationID: destinationID))
         }
     }
 
     /// The physical volume a new ingest would write to under the current destination config.
-    /// (Per-card routing is a later slice; today all cards share the configured destination.)
-    private func currentDestRootForScheduling() -> String? {
+    /// With N-way routing, a queued item may carry its own `destinationID`; resolve that
+    /// when present, else the default destination, else the legacy custom/primary prefs.
+    private func currentDestRootForScheduling(destinationID: UUID? = nil) -> String? {
+        if let did = destinationID, let d = destinations.first(where: { $0.id == did }) {
+            return d.path.isEmpty ? nil : d.path
+        }
+        if let d = defaultDestination { return d.path.isEmpty ? nil : d.path }
         if useCustomDest { return customDestPath.isEmpty ? nil : customDestPath }
         return selectedPrimary?.path
     }
@@ -9732,29 +10148,67 @@ struct ContentView: View {
         while safety > 0, !cardQueue.isEmpty, demoTask == nil,
               runningCount < max(1, maxConcurrentCards) {
             safety -= 1
-            let dev = volumeDeviceID(of: currentDestRootForScheduling() ?? "")
-            guard canAdmitIngest(candidateDestDevice: dev, snapshot: currentSchedulerSnapshot()) else { break }
-            let item = cardQueue.removeFirst()
+            // SPLIT parallelism: don't stall on a head-of-line item whose drive is busy.
+            // Scan for the FIRST queued item whose destination drive is currently free and
+            // start that one; items bound for a busy drive stay queued (don't break early).
+            let snapshot = currentSchedulerSnapshot()
+            guard let idx = cardQueue.firstIndex(where: { item in
+                let dev = volumeDeviceID(of: currentDestRootForScheduling(destinationID: item.destinationID) ?? "")
+                return canAdmitIngest(candidateDestDevice: dev, snapshot: snapshot)
+            }) else { break }   // nothing admissible right now
+            let item = cardQueue.remove(at: idx)
+            let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
             startIngest(for: item.card, dateOverride: item.dateOverride,
                         wrongClockDate: item.wrongClockDate,
-                        reelFilter: item.reelFilter, reelMulti: item.reelMulti)
+                        reelFilter: item.reelFilter, reelMulti: item.reelMulti,
+                        destination: dest)
         }
     }
 
     private func startIngest(for card: Volume, dateOverride: String? = nil,
                               wrongClockDate: String? = nil,
-                              reelFilter: [String] = [], reelMulti: Bool = false) {
+                              reelFilter: [String] = [], reelMulti: Bool = false,
+                              destination: Destination? = nil,
+                              mirrorTargets: [Destination] = []) {
         // The onboarding demo owns the engine exclusively — queue real cards behind it.
         if demoTask != nil {
             enqueueIfNew(card: card, dateOverride: dateOverride,
-                         wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti)
+                         wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
+                         destinationID: destination?.id)
             return
         }
 
-        // Resolve destination — custom folder takes priority over SSD+Project
+        // ── Resolve the destination for THIS card ──────────────────────────────────
+        // Explicit per-card destination wins; otherwise the configured default. When NO
+        // destination is configured at all (untouched fresh-list user), fall back to the
+        // legacy custom-dest / primary-SSD prefs so behavior is byte-identical to before.
         let resolvedDestRoot: String
         let resolvedProjectRoot: String
-        if useCustomDest {
+        let useCustomDestForThisCard: Bool
+        if let dest = destination ?? defaultDestination {
+            if dest.isCustomFolder {
+                var isDestDir: ObjCBool = false
+                guard !dest.path.isEmpty,
+                      FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDestDir),
+                      isDestDir.boolValue else {
+                    statusText = "Custom destination folder not found."
+                    return
+                }
+                useCustomDestForThisCard = true
+                resolvedDestRoot    = dest.path
+                resolvedProjectRoot = dest.path
+            } else {
+                let trimmedProject = projectName.trimmingCharacters(in: .whitespaces)
+                guard !trimmedProject.isEmpty else {
+                    statusText = "Project name required."
+                    return
+                }
+                useCustomDestForThisCard = false
+                resolvedDestRoot    = dest.path
+                resolvedProjectRoot = "\(dest.path)/\(trimmedProject)"
+            }
+        } else if useCustomDest {
+            // Legacy fallback — no Destination list configured. Custom folder.
             var isDestDir: ObjCBool = false
             guard !customDestPath.isEmpty,
                   FileManager.default.fileExists(atPath: customDestPath, isDirectory: &isDestDir),
@@ -9762,9 +10216,11 @@ struct ContentView: View {
                 statusText = "Custom destination folder not found."
                 return
             }
+            useCustomDestForThisCard = true
             resolvedDestRoot    = customDestPath
             resolvedProjectRoot = customDestPath
         } else {
+            // Legacy fallback — primary SSD + project.
             guard let primary = selectedPrimary else {
                 statusText = "Select a primary SSD."
                 return
@@ -9774,6 +10230,7 @@ struct ContentView: View {
                 statusText = "Project name required."
                 return
             }
+            useCustomDestForThisCard = false
             resolvedDestRoot    = primary.path   // passed as --primary to shell
             resolvedProjectRoot = "\(primary.path)/\(trimmedProject)"
         }
@@ -9796,8 +10253,33 @@ struct ContentView: View {
         let candidateDestDevice = volumeDeviceID(of: resolvedDestRoot)
         if !canAdmitIngest(candidateDestDevice: candidateDestDevice, snapshot: currentSchedulerSnapshot()) {
             enqueueIfNew(card: card, dateOverride: dateOverride,
-                         wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti)
+                         wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
+                         destinationID: destination?.id)
             return
+        }
+
+        // ── N-way mirror targets ───────────────────────────────────────────────────
+        // MIRROR mode: every OTHER destination is a mirror target (copy this card there too).
+        // SPLIT mode: only the explicitly-passed `mirrorTargets` are mirrored. In both cases
+        // skip targets that land on the source card or duplicate the primary destination.
+        // When the destination list is empty (legacy), fall back to the dual-dest secondary.
+        let resolvedDest = destination ?? defaultDestination
+        var mirrorPaths: [String] = []
+        if resolvedDest != nil {
+            let candidates: [Destination] = routingMirror
+                ? destinations.filter { $0.id != resolvedDest?.id }
+                : mirrorTargets
+            for m in candidates {
+                let (mRoot, _) = resolvedPaths(for: m)
+                if mRoot == resolvedDestRoot { continue }
+                if destinationIsOnCard(card: card, destPath: mRoot) { continue }
+                if mirrorPaths.contains(mRoot) { continue }
+                mirrorPaths.append(mRoot)
+            }
+        } else if dualDestEnabled, let secondary = selectedSecondary,
+                  !destinationIsOnCard(card: card, destPath: secondary.path) {
+            // Legacy single-/dual-dest fallback (no Destination list configured).
+            mirrorPaths.append(secondary.path)
         }
 
         guard let scriptPath = Bundle.main.path(forResource: "CardRunner", ofType: "sh") else {
@@ -9824,170 +10306,52 @@ struct ContentView: View {
         lastReportPath      = ""
         showCompletionState = false
 
-        var args: [String] = []
-        args.append(scriptPath)
         // Pass the real app version so it appears correctly in log files.
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        args.append(contentsOf: ["--app-version", "v\(appVersion)"])
-        args.append(contentsOf: ["--card", card.path])
-
-        if useCustomDest {
-            // --dest-root bypasses PRIMARY_ROOT/PROJECT_NAME construction in the shell
-            args.append(contentsOf: ["--dest-root", resolvedDestRoot])
-            // Pass --primary as the volume root so the shell can derive secondary-dest paths.
-            // e.g. /Users/xavier/Desktop/ClientA  →  volume root is /  (local disk)
-            // e.g. /Volumes/MySSD/Shoots/2026     →  volume root is /Volumes/MySSD
-            let urlComponents = URL(fileURLWithPath: resolvedDestRoot).pathComponents
-            let volumeRoot: String
-            if urlComponents.count >= 3 && urlComponents[1] == "Volumes" {
-                volumeRoot = "/" + urlComponents[1] + "/" + urlComponents[2]  // /Volumes/DriveName
-            } else {
-                volumeRoot = resolvedDestRoot   // non-external path — just use the custom dest itself
-            }
-            args.append(contentsOf: ["--primary", volumeRoot])
-        } else {
-            let trimmedProject = projectName.trimmingCharacters(in: .whitespaces)
-            args.append(contentsOf: ["--primary", resolvedDestRoot])
-            args.append(contentsOf: ["--project", trimmedProject])
-        }
-
-        if selectedSubfolder != "Default" {
-            args.append(contentsOf: ["--subfolder", selectedSubfolder])
-        }
-
-        if useCustomCardName {
-            // Only create a subfolder when the field has a name.
-            // Empty field → no --cardlabel → files land directly in the date folder.
-            let trimmedLabel = customCardName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedLabel.isEmpty {
-                args.append(contentsOf: ["--cardlabel", trimmedLabel])
-            }
-        }
-
-        if latestCount > 0 {
-            args.append(contentsOf: ["--latest", String(latestCount)])
-        }
-
-        if dryRun {
-            args.append("--dry-run")
-        }
-
-        // Wrong-clock date override: use real ingest date for dest folders
-        if let wcd = wrongClockDate {
-            args += ["--date-override", wcd]
-        }
-
-        // Reel filter: restrict ingest to selected top-level capture folders
-        if !reelFilter.isEmpty {
-            args += ["--reels", reelFilter.joined(separator: ",")]
-            if reelMulti {
-                args.append("--reel-multi")
-            }
-        }
-
-        if let override = dateOverride {
-            if override.contains(",") {
-                // Multiple dates from the picker — single pass via --dates DATE1,DATE2,...
-                args += ["--dates", override]
-            } else {
-                // Single date (picker chose one, or Case 2 single-date card)
-                args += ["--date-from", override]
-            }
-        } else if wrongClockDate == nil {
-            // Normal date filtering (skip when wrong-clock override is active)
-            switch dateFilterMode {
-            case "today":
-                args.append("--today-only")
-            case "yesterday":
-                let fmt = DateFormatter(); fmt.dateFormat = "yyyyMMdd"
-                let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
-                args += ["--date-from", fmt.string(from: yesterday)]
-            case "custom":
-                if !dateFilterFrom.isEmpty {
-                    args += ["--date-from", dateFilterFrom]
-                    if dateFilterSubMode == "range" && !dateFilterTo.isEmpty {
-                        args += ["--date-to", dateFilterTo]
-                    }
-                }
-            default: break  // "all" — no filter
-            }
-        }
-
-        if autoEject {
-            args.append("--auto-eject")
-        }
-
-        if fullVerifyEnabled {
-            args.append("--full-verify")
-        } else if verifyTransfer {
-            args.append("--verify")
-        }
-
-        if transferReportEnabled {
-            args.append("--transfer-report")
-        }
-
-        if dualDestEnabled, let secondary = selectedSecondary,
-           !destinationIsOnCard(card: card, destPath: secondary.path) {
-            args.append(contentsOf: ["--secondary", secondary.path])
-        }
-
-        if renameOnIngestEnabled {
-            let tmpl = renameTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !tmpl.isEmpty {
-                args.append(contentsOf: ["--rename-template", tmpl])
-            }
-        }
-
-        // Use Winter Olympics folder layout when enabled, and pass custom code for the middle segment
-        if winterOlympicsMode {
-            args.append("--winter-olympics")
-            let trimmedCode = olympicsCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedCode.isEmpty {
-                args.append(contentsOf: ["--olympics-code", trimmedCode])
-            }
-        }
-
-        // Project scaffold — create sibling folders at the project root level
-        if scaffoldEnabled {
-            let pipeSeparated = scaffoldFolderList.joined(separator: "|")
-            if !pipeSeparated.isEmpty {
-                args.append(contentsOf: ["--scaffold", pipeSeparated])
-            }
-        }
-
-        // Include XML sidecars when requested – VIDEO MODE ONLY
-        if copyXML && importMode != "photo" {
-            args.append("--include-xml")
-        }
-
-        if includeProxies {
-            args.append("--include-proxies")
-        }
-
-        // IMPORTANT: tell the shell script whether we're in video or photo mode
-        if importMode == "photo" {
-            args.append(contentsOf: ["--mode", "photo"])
-        } else {
-            args.append(contentsOf: ["--mode", "video"])
-        }
-
-        // Ingest order — only pass when non-default so old shell versions ignore it gracefully
-        if ingestOrder == "newest" {
-            args.append(contentsOf: ["--sort-order", "newest"])
-        }
-
-        if dateFolderFormat != "%y%m%d" {
-            args.append(contentsOf: ["--date-format", dateFolderFormat])
-        }
-
-        if broadcastDayFolders {
-            args.append(contentsOf: ["--broadcast-day-hour", "\(dayStartHour)"])
-        }
-
-        if finderTagEnabled {
-            args.append(contentsOf: ["--finder-tag-color", finderTagColor])
-        }
+        // Build the exact CardRunner.sh argv via the pure, unit-tested builder. Per-card
+        // routing + N-way mirror are folded in via destRoot / secondaryPaths; everything
+        // else is the same configuration the legacy inline builder produced.
+        let args = buildIngestArgs(IngestArgsConfig(
+            scriptPath: scriptPath,
+            appVersion: appVersion,
+            cardPath: card.path,
+            useCustomDest: useCustomDestForThisCard,
+            destRoot: resolvedDestRoot,
+            projectRoot: resolvedProjectRoot,
+            projectName: projectName,
+            selectedSubfolder: selectedSubfolder,
+            useCustomCardName: useCustomCardName,
+            customCardName: customCardName,
+            latestCount: latestCount,
+            dryRun: dryRun,
+            wrongClockDate: wrongClockDate,
+            reelFilter: reelFilter,
+            reelMulti: reelMulti,
+            dateOverride: dateOverride,
+            dateFilterMode: dateFilterMode,
+            dateFilterFrom: dateFilterFrom,
+            dateFilterTo: dateFilterTo,
+            dateFilterSubMode: dateFilterSubMode,
+            autoEject: autoEject,
+            fullVerifyEnabled: fullVerifyEnabled,
+            verifyTransfer: verifyTransfer,
+            transferReportEnabled: transferReportEnabled,
+            secondaryPaths: mirrorPaths,
+            renameOnIngestEnabled: renameOnIngestEnabled,
+            renameTemplate: renameTemplate,
+            winterOlympicsMode: winterOlympicsMode,
+            olympicsCode: olympicsCode,
+            scaffoldEnabled: scaffoldEnabled,
+            scaffoldFolderList: scaffoldFolderList,
+            copyXML: copyXML,
+            importMode: importMode,
+            includeProxies: includeProxies,
+            ingestOrder: ingestOrder,
+            dateFolderFormat: dateFolderFormat,
+            broadcastDayFolders: broadcastDayFolders,
+            dayStartHour: dayStartHour,
+            finderTagEnabled: finderTagEnabled,
+            finderTagColor: finderTagColor))
 
         if showLog { appendLog("=== Starting ingest for card: \(card.name) ===\n") }
         statusText = "Ingesting \(card.name)…"
@@ -10023,11 +10387,11 @@ struct ContentView: View {
         // Derive readable path info for notifications and checkpoint (works in both modes)
         let checkpointPrimaryPath: String
         let checkpointProjectName: String
-        if useCustomDest {
+        if useCustomDestForThisCard {
             checkpointPrimaryPath = resolvedProjectRoot
             checkpointProjectName = URL(fileURLWithPath: resolvedProjectRoot).lastPathComponent
         } else {
-            checkpointPrimaryPath = selectedPrimary?.path ?? ""
+            checkpointPrimaryPath = resolvedDestRoot
             checkpointProjectName = projectName.trimmingCharacters(in: .whitespaces)
         }
 
@@ -10048,7 +10412,8 @@ struct ContentView: View {
             dateFormat:       dateFolderFormat,
             finderTagColor:   finderTagEnabled ? finderTagColor : "",
             mode:             importMode,
-            secondaryPath:    dualDestEnabled ? (selectedSecondary?.path ?? "") : "",
+            // First mirror target (if any) — the crash-recovery cleanup keys off this path.
+            secondaryPath:    mirrorPaths.first ?? "",
             verifyEnabled:    verifyTransfer || fullVerifyEnabled,
             newFiles:         0,
             startedAt:        Date(),
@@ -14520,6 +14885,68 @@ extension ContentView {
         }
     }
 
+    // MARK: N-way destination actions (bodyV3)
+
+    /// Add a *custom folder* destination via the open panel.
+    private func v3AddFolderDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use this folder"
+        panel.message = "Choose a folder to add as a destination"
+        if panel.runModal() == .OK, let url = panel.url {
+            // Skip exact-duplicate paths.
+            guard !destinations.contains(where: { $0.path == url.path }) else { return }
+            let d = Destination(path: url.path, name: url.lastPathComponent, isCustomFolder: true)
+            destinations.append(d)
+            if defaultDestination == nil { defaultDestIDString = d.id.uuidString }
+            saveDestinations()
+        }
+    }
+
+    /// Add a mounted drive (from the detected destination volumes) as a destination.
+    private func v3AddDriveDestination(_ vol: Volume) {
+        guard !destinations.contains(where: { $0.path == vol.path }) else { return }
+        let d = Destination(path: vol.path, name: vol.name, isCustomFolder: false)
+        destinations.append(d)
+        if defaultDestination == nil { defaultDestIDString = d.id.uuidString }
+        saveDestinations()
+    }
+
+    /// Mounted drives not already in the destination list (offered in the "Add destination" menu).
+    private var v3UnusedDrives: [Volume] {
+        availableDestinations.filter { vol in !destinations.contains(where: { $0.path == vol.path }) }
+    }
+
+    /// Remove a destination (never the last one). Reassigns the default if needed.
+    private func v3RemoveDestination(_ id: UUID) {
+        guard destinations.count > 1 else { return }
+        destinations.removeAll { $0.id == id }
+        awaitingCards = awaitingCards.map { aw in
+            var a = aw; if a.destinationID == id { a.destinationID = nil }; return a
+        }
+        if defaultDestIDString == id.uuidString {
+            defaultDestIDString = destinations.first?.id.uuidString ?? ""
+        }
+        saveDestinations()
+    }
+
+    /// Make a destination the default (golden box). Locked while a transfer is running so a
+    /// card mid-flight can't have its routing reinterpreted.
+    @discardableResult private func v3MakeDefault(_ id: UUID) -> Bool {
+        guard runningCount == 0, destinations.contains(where: { $0.id == id }) else { return false }
+        defaultDestIDString = id.uuidString
+        return true
+    }
+
+    /// True when at least one card is parked waiting to route and nothing is actively copying.
+    private var v3WaitingToRoute: Bool { !awaitingCards.isEmpty && !v3AnyActive }
+
+    /// Free-space label for a destination tile.
+    private func v3DestFree(_ d: Destination) -> String { v3FreeSpace(d.path) }
+
     // MARK: Derived (all from real state)
 
     /// Live transfers, oldest first (stable lane order).
@@ -14621,8 +15048,20 @@ extension ContentView {
         .preferredColorScheme(.dark)
     }
 
-    /// Animated neon connectors: each active lane → ring, and ring → destination.
+    /// Animated neon connectors: drag-link cursor line, each active lane → ring,
+    /// and ring → every destination tile. Ported from the demo's drawFunnel.
     private func v3DrawFunnel(_ ctx: inout GraphicsContext, rects: [String: CGRect], phase: CGFloat) {
+        // Live drag-to-link line follows the cursor from the node to the drop point.
+        if let dl = dragLine {
+            var p = Path(); p.move(to: dl.from)
+            p.addCurve(to: dl.to,
+                       control1: CGPoint(x: (dl.from.x + dl.to.x)/2, y: dl.from.y),
+                       control2: CGPoint(x: (dl.from.x + dl.to.x)/2, y: dl.to.y))
+            ctx.stroke(p, with: .color(v3Cyan.opacity(0.85)),
+                       style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [2, 6]))
+            ctx.fill(Path(ellipseIn: CGRect(x: dl.to.x - 5, y: dl.to.y - 5, width: 10, height: 10)),
+                     with: .color(v3Cyan))
+        }
         guard let ring = rects["ring"], v3ActiveLanes.count <= 6 else { return }
         let rc = CGPoint(x: ring.midX, y: ring.midY)
         let rad = ring.width / 2
@@ -14639,14 +15078,21 @@ extension ContentView {
             let col: Color = item.ing.phase == .failed ? v3Red : v3Mag
             ctx.stroke(p, with: .color(col.opacity(0.6)), style: dash)
         }
-        if let dr = rects["dest-default"] {
-            let to = CGPoint(x: dr.minX, y: dr.midY)
-            var p = Path(); p.move(to: rightPort)
-            p.addCurve(to: to,
-                       control1: CGPoint(x: (rightPort.x + to.x) / 2, y: rightPort.y),
-                       control2: CGPoint(x: (rightPort.x + to.x) / 2, y: to.y))
-            let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
-            ctx.stroke(p, with: .color(col.opacity(0.6)), style: dash)
+        // Ring → each destination (default box + every tile), while footage is flowing.
+        let flowing = v3ActiveLanes.count > 0
+        let destKeys: [String] = ["dest-default"] + destinations
+            .filter { $0.id != defaultDestination?.id }.map { "dest-\($0.id)" }
+        if flowing {
+            for key in destKeys {
+                guard let dr = rects[key] else { continue }
+                let to = CGPoint(x: dr.minX, y: dr.midY)
+                var p = Path(); p.move(to: rightPort)
+                p.addCurve(to: to,
+                           control1: CGPoint(x: (rightPort.x + to.x) / 2, y: rightPort.y),
+                           control2: CGPoint(x: (rightPort.x + to.x) / 2, y: to.y))
+                let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
+                ctx.stroke(p, with: .color(col.opacity(0.6)), style: dash)
+            }
         }
     }
 
@@ -14686,15 +15132,17 @@ extension ContentView {
         }
     }
 
-    // MARK: Sources (real lanes)
+    // MARK: Sources (real lanes + awaiting "drag to route" lanes)
     private var v3Sources: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("SOURCES").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
-            if v3Lanes.isEmpty {
-                Text(autoIngest ? "Waiting for a card…" : "Auto-ingest is off")
+            if v3Lanes.isEmpty && awaitingCards.isEmpty {
+                Text(autoIngest ? "Waiting for a card…" : "Auto-ingest is off — plug a card to route it")
                     .font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
                     .frame(width: 360, alignment: .leading).padding(.vertical, 8)
             }
+            // Awaiting cards first — they're what the user acts on (drag node → drive, or Start).
+            ForEach(awaitingCards) { aw in v3AwaitingLane(aw) }
             ForEach(v3ActiveLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
             if !v3DoneLanes.isEmpty { v3DonePile }
             Spacer(minLength: 0)
@@ -14726,6 +15174,88 @@ extension ContentView {
             ing.phase == .failed ? v3Red.opacity(0.4) : .white.opacity(0.10)))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(id)": $0] }
+    }
+
+    /// The destination name an awaiting card would land on (its chosen drive, or the default).
+    private func v3AwaitingDestName(_ aw: AwaitingCard) -> String {
+        if let id = aw.destinationID, let d = destinations.first(where: { $0.id == id }) { return d.name }
+        return defaultDestination?.name ?? "default"
+    }
+
+    /// Cycle an awaiting card through the available destinations without starting it.
+    private func v3CycleAwaitingDest(_ awaitingID: UUID) {
+        guard !destinations.isEmpty,
+              let idx = awaitingCards.firstIndex(where: { $0.id == awaitingID }) else { return }
+        let cur = awaitingCards[idx].destinationID ?? defaultDestination?.id
+        let di = destinations.firstIndex { $0.id == cur } ?? -1
+        awaitingCards[idx].destinationID = destinations[(di + 1) % destinations.count].id
+    }
+
+    /// A card detected with Auto-Ingest OFF — parked "waiting to route". Faithful port of the
+    /// demo's awaiting lane: route label + CHOOSE-DEST cycle + "Drag node · or Start", with the
+    /// amber draggable node on the trailing edge that links + starts on drop.
+    private func v3AwaitingLane(_ aw: AwaitingCard) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(v3Amber)
+                    .frame(width: 32, height: 32).background(v3Amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(aw.card.name.isEmpty ? "Card" : aw.card.name)
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    Text("\(aw.card.cameraModel)  ·  → \(v3AwaitingDestName(aw))")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                Spacer()
+                Button { v3CycleAwaitingDest(aw.id) } label: {
+                    Text(aw.destinationID == nil ? "CHOOSE DEST" : "→ \(v3AwaitingDestName(aw))")
+                        .font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(v3Amber)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .overlay(Capsule().strokeBorder(v3Amber.opacity(0.5)))
+                }.buttonStyle(.plain)
+                .help("Tap to cycle drives, or drag the node onto a drive")
+            }
+            HStack(spacing: 7) {
+                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.system(size: 11)).foregroundStyle(v3Amber)
+                Text("Drag the node to a drive · or").font(.system(size: 11)).foregroundStyle(v3Amber.opacity(0.9))
+                Spacer()
+                Button { startAwaiting(aw.id) } label: {
+                    Text("Start").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(v3Green, in: Capsule())
+                }.buttonStyle(.plain).help("Start now using \(v3AwaitingDestName(aw))")
+            }
+        }
+        .padding(14).frame(width: 360)
+        .background(.white.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(v3Amber.opacity(0.5)))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .trailing) { v3RouteDot(aw) }
+        .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(aw.id)": $0] }
+    }
+
+    /// The draggable amber NODE on a waiting card. Drag it onto a destination tile to LINK
+    /// the card to that drive AND start it (routeAwaiting). Ports the demo's routeDot gesture.
+    private func v3RouteDot(_ aw: AwaitingCard) -> some View {
+        Circle().fill(v3Amber).frame(width: 18, height: 18)
+            .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 2))
+            .shadow(color: v3Amber.opacity(0.8), radius: 8)
+            .offset(x: 9)
+            .help("Drag onto a drive to link & start this card")
+            .gesture(
+                DragGesture(coordinateSpace: .named("stage"))
+                    .onChanged { v in
+                        dragLine = DragLine(from: v.startLocation, to: v.location)
+                        dragOverDest = destFrames.first { $0.value.contains(v.location) }?.key
+                    }
+                    .onEnded { v in
+                        if let did = destFrames.first(where: { $0.value.contains(v.location) })?.key {
+                            routeAwaiting(aw.id, to: did)
+                        }
+                        dragLine = nil; dragOverDest = nil
+                    }
+            )
     }
 
     /// Collapsed "N cards safe to pull" pile (matches the design's green ready strip).
@@ -14813,6 +15343,15 @@ extension ContentView {
             }
             .padding(.horizontal, 16).padding(.vertical, 11)
             .background(v3Purple.opacity(0.18), in: Capsule()).overlay(Capsule().strokeBorder(v3Purple.opacity(0.4)))
+            if v3WaitingToRoute {
+                HStack(spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
+                    Text("\(awaitingCards.count) card\(awaitingCards.count == 1 ? "" : "s") waiting — drag to a drive, or press Start")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(v3Amber).padding(.horizontal, 16).padding(.vertical, 10)
+                .background(v3Amber.opacity(0.12), in: Capsule()).overlay(Capsule().strokeBorder(v3Amber.opacity(0.45)))
+            }
             if v3DestRoot.isEmpty && v3AnyActive {
                 HStack(spacing: 7) {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
@@ -14834,11 +15373,19 @@ extension ContentView {
     }
     private var v3RingStroke: AnyShapeStyle {
         if v3FailedCount > 0 { return AnyShapeStyle(v3Amber) }
+        if v3WaitingToRoute { return AnyShapeStyle(v3Amber) }
         if v3AllDone { return AnyShapeStyle(v3Green) }
         return AnyShapeStyle(v3Brand)
     }
     @ViewBuilder private var v3RingCenter: some View {
-        if !v3AnyActive {
+        if v3WaitingToRoute {
+            VStack(spacing: 6) {
+                Text("\(awaitingCards.count)").font(.system(size: 48, weight: .bold)).foregroundStyle(v3Amber)
+                Text("card\(awaitingCards.count == 1 ? "" : "s") waiting to route")
+                    .font(.system(size: 15, weight: .medium)).foregroundStyle(.white)
+                Text("Drag each to a destination to start").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+            }.frame(width: 220)
+        } else if !v3AnyActive {
             VStack(spacing: 6) {
                 Text("Ready for cards").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
                 Text(autoIngest ? "Auto-ingest armed" : "Auto-ingest off").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
@@ -14875,16 +15422,170 @@ extension ContentView {
         return p.joined(separator: " · ")
     }
 
-    // MARK: Destinations (DEFAULT DESTINATION golden box — bound to the real primary dest)
+    // MARK: Destinations — golden DEFAULT box + a tile per other destination (N-way routing)
     private var v3Destinations: some View {
         VStack(alignment: .trailing, spacing: 14) {
-            Text("DESTINATIONS").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
-            v3DefaultDestBox
+            HStack {
+                Text("DESTINATIONS").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
+                Spacer()
+                if destinations.count >= 2 { v3RoutingToggle }
+            }
+            .frame(width: 348)
+            if let def = defaultDestination {
+                v3DefaultDestBox(def)
+                ForEach(destinations.filter { $0.id != def.id }) { d in v3DestTile(d) }
+            } else {
+                v3LegacyDefaultDestBox   // no Destination list yet — legacy folder picker box
+            }
+            v3AddDestinationMenu
             Spacer(minLength: 0)
         }
     }
 
-    private var v3DefaultDestBox: some View {
+    /// Split / Mirror routing-policy toggle (the real `routingMirror` pref).
+    private var v3RoutingToggle: some View {
+        HStack(spacing: 0) {
+            ForEach([("Split", false), ("Mirror", true)], id: \.0) { label, mirror in
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(routingMirror == mirror ? .black : .white.opacity(0.7))
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(routingMirror == mirror ? AnyShapeStyle(v3Cyan) : AnyShapeStyle(Color.clear), in: Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture { if runningCount == 0 { routingMirror = mirror } }
+            }
+        }
+        .padding(2).background(.white.opacity(0.06), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.10)))
+        .help(runningCount == 0 ? "Split = each card to its own drive · Mirror = every card to all drives"
+                                : "Locked while a transfer is running")
+    }
+
+    /// The golden DEFAULT box, bound to a real `Destination`. Doubles as a drop target:
+    /// drop a tile's handle here to make it the default; drop an awaiting card's node to
+    /// route+start it to the default.
+    private func v3DefaultDestBox(_ d: Destination) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "bolt.fill").font(.system(size: 10)).foregroundStyle(v3Amber)
+                    Text("DEFAULT DESTINATION").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(v3Amber)
+                }
+                Spacer()
+                Text("Auto-routes the first card").font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.7))
+            }
+            v3DestTileBody(d, isDefault: true)
+        }
+        .padding(12).frame(width: 348)
+        .background((dragOverDest == d.id ? v3Cyan : v3Amber).opacity(dragOverDest == d.id ? 0.10 : 0.04),
+                    in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(
+            dragOverDest == d.id ? v3Cyan.opacity(0.7) : v3Amber.opacity(0.5),
+            style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
+        .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["dest-default": $0] }
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
+                .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
+        })
+        .dropDestination(for: String.self) { items, _ in
+            guard let s = items.first, let id = UUID(uuidString: s) else { return false }
+            return v3MakeDefault(id)
+        } isTargeted: { dragOverDest = $0 ? d.id : (dragOverDest == d.id ? nil : dragOverDest) }
+    }
+
+    /// A non-default destination tile (drop target for routing; drag handle to swap default).
+    private func v3DestTile(_ d: Destination) -> some View {
+        v3DestTileBody(d, isDefault: false)
+            .padding(14).frame(width: 324, alignment: .leading)
+            .background(.white.opacity(dragOverDest == d.id ? 0.09 : 0.04), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
+                dragOverDest == d.id ? v3Cyan.opacity(0.7) : .white.opacity(0.10)))
+            .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["dest-\(d.id)": $0] }
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
+                    .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
+            })
+            .if(runningCount == 0) { $0.draggable("\(d.id.uuidString)") { v3DestDragPreview(d) } }
+    }
+
+    /// Shared tile contents (icon, name, free space, role/route line, remove control).
+    private func v3DestTileBody(_ d: Destination, isDefault: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: d.isCustomFolder ? "folder.fill" : "externaldrive.fill")
+                .font(.system(size: 18)).foregroundStyle(v3Purple)
+                .frame(width: 38, height: 38).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(d.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    if isDefault {
+                        Text("DEFAULT").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
+                            .padding(.horizontal, 7).padding(.vertical, 3).background(v3Amber.opacity(0.14), in: Capsule())
+                    }
+                }
+                Text(v3DestFree(d)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                Text(isDefault ? "Default target"
+                     : (routingMirror ? "Mirror copy of every card" : "Routed target"))
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+            }
+            Spacer()
+            if runningCount > 0 && isDefault {
+                Text(v3SpeedText(v3CombinedMBps)).font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundStyle(v3Cyan)
+            }
+            if !isDefault {
+                Image(systemName: runningCount == 0 ? "line.3.horizontal" : "lock.fill")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.25))
+                    .help(runningCount == 0 ? "Drag onto the default box to make this the default"
+                                            : "Locked while a transfer is running")
+                if destinations.count > 1 {
+                    Image(systemName: "minus").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+                        .contentShape(Rectangle()).onTapGesture { v3RemoveDestination(d.id) }
+                }
+            }
+        }
+    }
+
+    private func v3DestDragPreview(_ d: Destination) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: d.isCustomFolder ? "folder.fill" : "externaldrive.fill")
+                .font(.system(size: 14)).foregroundStyle(v3Purple)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(d.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                Text("Drop on default to swap").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color(hex: "#1a1430"), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(v3Cyan.opacity(0.7), lineWidth: 1.5))
+    }
+
+    /// "Add destination" — pick a mounted drive or a folder. Shown as a menu.
+    private var v3AddDestinationMenu: some View {
+        Menu {
+            ForEach(v3UnusedDrives) { vol in
+                Button { v3AddDriveDestination(vol) } label: {
+                    Label(vol.name, systemImage: "externaldrive.fill")
+                }
+            }
+            if !v3UnusedDrives.isEmpty { Divider() }
+            Button { v3AddFolderDestination() } label: {
+                Label("Choose a folder…", systemImage: "folder.badge.plus")
+            }
+        } label: {
+            HStack(spacing: 6) { Image(systemName: "plus"); Text("Add destination") }
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .frame(width: 324, alignment: .center)
+                .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12)))
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    /// Legacy fallback box — shown only when NO Destination list is configured yet (untouched
+    /// pre-Phase-2 user). Opens the original folder picker; the migration seeds the list on first launch.
+    private var v3LegacyDefaultDestBox: some View {
         let unset = v3DestRoot.isEmpty
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -14900,25 +15601,12 @@ extension ContentView {
                 Image(systemName: "externaldrive.fill").font(.system(size: 18)).foregroundStyle(v3Purple)
                     .frame(width: 38, height: 38).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(unset ? "No destination" : v3DestDriveName)
-                            .font(.system(size: 14, weight: .semibold)).foregroundStyle(unset ? v3Amber : .white)
-                        if !unset {
-                            Text("DEFAULT").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
-                                .padding(.horizontal, 7).padding(.vertical, 3).background(v3Amber.opacity(0.14), in: Capsule())
-                        }
-                    }
+                    Text(unset ? "No destination" : v3DestDriveName)
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(unset ? v3Amber : .white)
                     Text(unset ? "Open the picker to choose a drive & folder" : v3FreeSpace(v3DestDrivePath))
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                    if !unset {
-                        Text(URL(fileURLWithPath: v3DestRoot).lastPathComponent + "  ·  default target")
-                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1).truncationMode(.head)
-                    }
                 }
                 Spacer()
-                if runningCount > 0 && !unset {
-                    Text(v3SpeedText(v3CombinedMBps)).font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundStyle(v3Cyan)
-                }
             }
             Button { v3ChooseDestination() } label: {
                 HStack(spacing: 6) { Image(systemName: "folder.badge.gearshape"); Text(unset ? "Choose a folder…" : "Change destination") }
@@ -14936,6 +15624,10 @@ extension ContentView {
     private var v3BottomStatus: String {
         let lead = v3Summary.isEmpty ? (autoIngest ? "Ready" : "Auto-ingest off") : v3Summary
         let speed = runningCount > 0 ? "  ·  \(v3SpeedText(v3CombinedMBps)) combined" : ""
+        if let def = defaultDestination {
+            let policy = routingMirror ? "Mirror" : "Split"
+            return "\(lead)\(speed)   ·   \(policy) · \(destinations.count) destination\(destinations.count == 1 ? "" : "s") · default \(def.name)"
+        }
         let dest = v3DestRoot.isEmpty ? "no destination" : "default \(v3DestDriveName)"
         return "\(lead)\(speed)  ·  \(dest)"
     }
@@ -14951,8 +15643,8 @@ extension ContentView {
                 dateFilterMode = dateFilterMode == "today" ? "all" : "today"
             }
             v3Chip("Auto-eject  \(autoEject ? "On" : "Off")", "eject", autoEject ? v3Green : .white.opacity(0.6)) { autoEject.toggle() }
-            Button { v3ChooseDestination() } label: {
-                HStack(spacing: 6) { Image(systemName: "plus"); Text("Add destination") }
+            Button { v3AddFolderDestination() } label: {
+                HStack(spacing: 6) { Image(systemName: "folder.badge.plus"); Text("Add folder") }
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 9).background(v3Brand, in: Capsule())
             }.buttonStyle(.plain)
