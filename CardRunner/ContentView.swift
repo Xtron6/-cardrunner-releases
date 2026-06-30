@@ -15809,12 +15809,13 @@ extension ContentView {
         HStack(spacing: 12) {
             Image("CardRunnerLogo")
                 .resizable().renderingMode(.original).aspectRatio(contentMode: .fit)
-                .frame(width: 46, height: 46)
-                .shadow(color: v3Purple.opacity(0.45), radius: 12)
+                .frame(width: 84, height: 84)
+                .shadow(color: v3Purple.opacity(0.45), radius: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text("CARDRUNNER").font(.custom("Tech Headlines Italic", size: 24)).foregroundStyle(v3Brand)
+                // Saira ExtraBold Italic (weight 800) — bundled static cut, PostScript name below.
+                Text("CARDRUNNER").font(.custom("SairaItalic-ExtraBoldItalic", size: 30)).foregroundStyle(v3Brand)
                 Text("a smoother ingest workflow for creators")
-                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
             }
         }
     }
