@@ -425,4 +425,43 @@ struct CardRunnerTests {
         let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: "UUID-A", friendlyName: "", projectName: "ProjectTwo")
         #expect(survive.count == 1)                      // different project → warning KEPT
     }
+
+    // MARK: - Awaiting-card dedup (Auto-Ingest OFF "waiting to route" surfacing)
+    // A detected card must surface as an awaiting lane unless it's already on screen.
+    // Critical: two UUID-less same-named cards must BOTH surface (match path, not name).
+
+    @Test func awaitingFreshCardSurfaces() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled", cardUUID: "U-A",
+                                     awaitingPaths: [], activeUUIDs: [], activePaths: []) == false)
+    }
+
+    @Test func awaitingSuppressedWhenAlreadyParked() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled", cardUUID: "U-A",
+                                     awaitingPaths: ["/Volumes/Untitled"], activeUUIDs: [], activePaths: []) == true)
+    }
+
+    @Test func awaitingSuppressedWhenLiveLaneSamePath() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled", cardUUID: nil,
+                                     awaitingPaths: [], activeUUIDs: [], activePaths: ["/Volumes/Untitled"]) == true)
+    }
+
+    @Test func awaitingSuppressedWhenLiveLaneSameUUID() {
+        // Same physical card (UUID) even if its mount path differs from the recorded one.
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled 1", cardUUID: "U-A",
+                                     awaitingPaths: [], activeUUIDs: ["U-A"], activePaths: ["/Volumes/Untitled"]) == true)
+    }
+
+    /// The P1 fix: two DIFFERENT UUID-less "Untitled" cards mount at distinct paths.
+    /// One is mid-ingest; the second must STILL surface (name collision must not hide it).
+    @Test func awaitingTwoDistinctUUIDlessSameNameCardsBothSurface() {
+        // Card 2 at a distinct path while card 1 ("/Volumes/Untitled") is a live lane.
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled 1", cardUUID: nil,
+                                     awaitingPaths: [], activeUUIDs: [], activePaths: ["/Volumes/Untitled"]) == false)
+    }
+
+    /// A finished/pulled card is no longer in activeIngests, so re-inserting it re-surfaces.
+    @Test func awaitingFinishedCardReSurfacesOnReinsert() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled", cardUUID: "U-A",
+                                     awaitingPaths: [], activeUUIDs: [], activePaths: []) == false)
+    }
 }

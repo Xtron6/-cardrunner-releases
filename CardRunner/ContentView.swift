@@ -1722,6 +1722,7 @@ enum IngestPhase: String {
 struct ActiveIngest {
     var cardName: String = ""
     var volumeUUID: String? = nil    // source card's volume UUID — lets a lane persist a nickname
+    var sourcePath: String = ""      // source card's mount path — distinguishes two same-named UUID-less cards
     var cameraModel: String = "Camera"
     var projectRoot: String = ""     // primary.path/projectName — used for partial cleanup on cancel
     var ingestStartTime: Date = Date()
@@ -1993,6 +1994,26 @@ func canAdmitIngest(candidateDestDevice: dev_t?, snapshot: SchedulerSnapshot) ->
     // Never two ingests writing to the same physical volume simultaneously.
     if let dev = candidateDestDevice, snapshot.runningDestDevices.contains(dev) { return false }
     return true
+}
+
+/// Pure decision: is a detected card ALREADY tracked on screen — either parked as a
+/// "waiting to route" entry or represented by a live ingest lane — so the Auto-Ingest-OFF
+/// scan must NOT park a duplicate? Identity rules (in order):
+///   • already parked at this mount path → tracked
+///   • a live lane copies from this exact mount path → tracked (handles UUID-less
+///     exFAT/FAT cards: two different "Untitled" cards mount at distinct paths, so each
+///     still surfaces — we match the PATH, never the bare name)
+///   • a live lane has the same source volume UUID → tracked (belt-and-suspenders)
+/// Otherwise the card is fresh-to-the-UI and should be parked. Never starts a copy.
+func cardIsAlreadyTracked(cardPath: String,
+                          cardUUID: String?,
+                          awaitingPaths: Set<String>,
+                          activeUUIDs: Set<String>,
+                          activePaths: Set<String>) -> Bool {
+    if awaitingPaths.contains(cardPath) { return true }
+    if activePaths.contains(cardPath)   { return true }
+    if let u = cardUUID, activeUUIDs.contains(u) { return true }
+    return false
 }
 
 // MARK: - Main View
@@ -2865,6 +2886,12 @@ struct ContentView: View {
                     scanForNewCardsAndIngest()
                 }
 
+                // Keep the 30-s fallback scan running for the whole app lifetime — the
+                // app is "armed and watching" even with Auto-Ingest OFF (it just parks
+                // detected cards as "waiting to route" instead of auto-starting them).
+                // Without this, a missed mount notification leaves a plugged card invisible.
+                startAutoScanLoop()
+
                 setupShortcutMonitor()
                 checkFDA()   // always probe — banner must show even after wizard is dismissed
             }
@@ -2875,13 +2902,15 @@ struct ContentView: View {
                 if autoIngest {
                     AudioEngine.shared.autoIngestEnabled()
                     statusText = "Searching for cards…"
-                    startAutoScanLoop()
+                    // Scan loop already runs for the whole app lifetime (started in onAppear).
                     // Start any cards that were parked "waiting to route" while Auto-Ingest was off.
                     drainAwaiting()
                     scanForNewCardsAndIngest(forceRescan: true)
                 } else {
                     AudioEngine.shared.autoIngestDisabled()
-                    stopAutoScanLoop()
+                    // NOTE: do NOT stop the scan loop here — detection must keep running
+                    // so plugged cards still surface as "waiting to route" while OFF.
+                    // (Card routing/auto-start is already gated on autoIngest in the scan.)
                     if runningCount > 0 {
                         cancelAllIngests()
                     }
@@ -9507,23 +9536,30 @@ struct ContentView: View {
                     newCards.append(card)
                 }
 
-                // Always apply nickname / badge — passive, no transfers started.
-                if !newCards.isEmpty {
-                    self.applyNicknameIfKnown(from: newCards, nicknames: capturedNicknames)
-                }
-
                 if self.autoIngest {
-                    // Auto Ingest on — route cards to the date picker / ingest flow.
-                    self.routeCardsForIngest(newCards)
-                } else if !newCards.isEmpty {
-                    // Auto Ingest off — park the new cards "waiting to route" (drag a node
-                    // onto a drive, or press Start). seen* stays untouched here (handled
-                    // above) so flipping Auto-Ingest on later still picks them up.
-                    self.enqueueAwaiting(newCards)
-                    let label = self.currentCardMatchedName.isEmpty
-                        ? "Card ready"
-                        : "\(self.currentCardMatchedName) ready"
-                    self.statusText = "\(label) — start transfer when you're ready"
+                    // Auto Ingest on — route NEW (unseen) cards to the ingest flow.
+                    if !newCards.isEmpty {
+                        self.applyNicknameIfKnown(from: newCards, nicknames: capturedNicknames)
+                        self.routeCardsForIngest(newCards)
+                    }
+                } else {
+                    // Auto Ingest off — park EVERY currently-detected card "waiting to route",
+                    // independent of seen-dedup. A card the app already handled this session
+                    // (manually Started, or auto-ingested before Auto-Ingest was switched off)
+                    // must re-appear when re-inserted, so the operator can run it again.
+                    // enqueueAwaiting skips cards already parked or already shown as a
+                    // live lane (a finished lane is removed from activeIngests, so a pulled-
+                    // and-reinserted card correctly re-surfaces). seen* is left untouched so flipping
+                    // Auto-Ingest on later still picks these up.
+                    self.applyNicknameIfKnown(from: finalCards, nicknames: capturedNicknames)
+                    let before = self.awaitingCards.count
+                    self.enqueueAwaiting(finalCards)
+                    if self.awaitingCards.count > before {
+                        let label = self.currentCardMatchedName.isEmpty
+                            ? "Card ready"
+                            : "\(self.currentCardMatchedName) ready"
+                        self.statusText = "\(label) — start transfer when you're ready"
+                    }
                 }
 
                 if finalCards.isEmpty && self.runningCount == 0 {
@@ -9938,8 +9974,19 @@ struct ContentView: View {
     /// Each card starts with no chosen destination (nil = use default until the user
     /// drags its node onto a drive or presses Start).
     @MainActor private func enqueueAwaiting(_ cards: [Volume]) {
-        for card in cards where !awaitingCards.contains(where: { $0.card.path == card.path }) {
+        // Snapshot what's already on screen so a card never shows as both an awaiting
+        // entry and a live lane. Active lanes are matched by source PATH (so two distinct
+        // UUID-less "Untitled" cards mounted at different paths each still surface) plus
+        // source UUID as a backstop. See cardIsAlreadyTracked.
+        var awaitingPaths = Set(awaitingCards.map { $0.card.path })
+        let activeUUIDs   = Set(activeIngests.values.compactMap { $0.volumeUUID })
+        let activePaths   = Set(activeIngests.values.map { $0.sourcePath }.filter { !$0.isEmpty })
+        for card in cards {
+            if cardIsAlreadyTracked(cardPath: card.path, cardUUID: card.volumeUUID,
+                                    awaitingPaths: awaitingPaths,
+                                    activeUUIDs: activeUUIDs, activePaths: activePaths) { continue }
             awaitingCards.append(AwaitingCard(card: card))
+            awaitingPaths.insert(card.path)
         }
     }
 
@@ -10352,6 +10399,7 @@ struct ContentView: View {
         )
         activeIngests[processID]?.friendlyName = useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         activeIngests[processID]?.volumeUUID = card.volumeUUID
+        activeIngests[processID]?.sourcePath = card.path
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
 
@@ -11583,6 +11631,7 @@ struct ContentView: View {
             cameraModel: cardVolume.cameraModel,
             projectRoot: "\(primary.path)/\(cp.projectName)"
         )
+        activeIngests[processID]?.sourcePath = cp.cardPath
         lastNewFiles = 0; lastAvgMBps = 0; lastDurationSec = 0
         lastDestPath = ""; lastReportPath = ""
         showCompletionState = false
