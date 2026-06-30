@@ -2150,6 +2150,11 @@ struct ContentView: View {
     @AppStorage("pref_maxConcurrentCards") private var maxConcurrentCards: Int = 3
     // Per-ingest progress — one entry per active card, keyed by process UUID
     @State private var activeIngests: [UUID: ActiveIngest] = [:]
+    /// Per-ingest App-Nap suppression tokens. macOS App Nap suspends a backgrounded app's
+    /// helper processes (the ingest shell gets Mach-task-suspended → cardcopy never runs and
+    /// the transfer hangs at 0%). beginActivity(.userInitiated) tells the OS this is important
+    /// work; the token is held for the life of each ingest and released on termination.
+    @State private var ingestActivities: [UUID: NSObjectProtocol] = [:]
 
     // Failed ingest records — persisted across restarts
     @State private var failedIngestRecords: [FailedIngestRecord] = []
@@ -10656,6 +10661,10 @@ struct ContentView: View {
                 }
                 self.activeProcesses.removeValue(forKey: processID)
                 self.runningCount = max(0, self.runningCount - 1)
+                // Release the App-Nap suppression token for this ingest.
+                if let act = self.ingestActivities.removeValue(forKey: processID) {
+                    ProcessInfo.processInfo.endActivity(act)
+                }
 
                 if wasCancelled {
                     self.cancelledProcessIDs.remove(processID)   // consumed — clean up
@@ -10936,6 +10945,10 @@ struct ContentView: View {
         do {
             try process.run()
             activeProcesses[processID] = process
+            // Keep macOS from App-Napping (and Mach-suspending) this ingest while it runs.
+            ingestActivities[processID] = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled],
+                reason: "CardRunner ingest: \(card.name)")
         } catch {
             appendLog("❌ Failed to run script for card \(card.name): \(error.localizedDescription)\n")
             statusText = "Error starting ingest."
@@ -15037,12 +15050,21 @@ extension ContentView {
                 .backgroundPreferenceValue(V3AnchorKey.self) { anchors in
                     GeometryReader { geo in
                         let rects = anchors.mapValues { geo[$0] }
-                        TimelineView(.animation) { tl in
-                            Canvas { ctx, _ in
-                                let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
-                                    .truncatingRemainder(dividingBy: 0.7)) / 0.7 * 14
-                                v3DrawFunnel(&ctx, rects: rects, phase: phase)
+                        // Animate the flowing connectors ONLY while there's real flow (copying or
+                        // a drag), and cap the rate at 20 fps — NOT display refresh — so the Canvas
+                        // can never peg a core. When idle, draw ONE static frame (no redraw loop).
+                        // The previous TimelineView(.animation) ran at 120 fps forever and burned
+                        // a whole core, starving the ingest pipe.
+                        if runningCount > 0 || dragLine != nil {
+                            TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
+                                Canvas { ctx, _ in
+                                    let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
+                                        .truncatingRemainder(dividingBy: 0.7)) / 0.7 * 14
+                                    v3DrawFunnel(&ctx, rects: rects, phase: phase)
+                                }
                             }
+                        } else {
+                            Canvas { ctx, _ in v3DrawFunnel(&ctx, rects: rects, phase: 0) }
                         }
                     }
                 }
