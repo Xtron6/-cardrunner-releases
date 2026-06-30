@@ -386,4 +386,43 @@ struct CardRunnerTests {
         #expect(back == list)            // ids + fields survive a persistence round-trip
         #expect(back[1].isCustomFolder == true)
     }
+
+    // MARK: - Failure-record clearing (footage safety — a success must only clear ITS OWN card)
+
+    private func fr(_ name: String, uuid: String?, nick: String, proj: String) -> FailedIngestRecord {
+        FailedIngestRecord(id: UUID(), cardName: name, volumeUUID: uuid, friendlyName: nick,
+                           projectName: proj, failedAt: Date(), filesToCopy: 3, mbToCopy: 9, reason: "Error")
+    }
+
+    @Test func failureClearedBySameVolumeUUID() {
+        let recs = [fr("Untitled", uuid: "UUID-A", nick: "", proj: "P")]
+        let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: "UUID-A", friendlyName: "", projectName: "P")
+        #expect(survive.isEmpty)                         // exact same card → record cleared
+    }
+
+    @Test func failureKeptForDifferentVolumeUUID() {
+        let recs = [fr("Untitled", uuid: "UUID-A", nick: "", proj: "P")]
+        let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: "UUID-B", friendlyName: "", projectName: "P")
+        #expect(survive.count == 1)                      // different physical card → warning KEPT
+    }
+
+    @Test func failureKeptForFATCardSameNameNoNickname() {
+        // The footage-safety bug: two un-nicknamed exFAT "Untitled" cards (no UUID) in one project.
+        // A success of one must NEVER clear the other's "do not format" warning.
+        let recs = [fr("Untitled", uuid: nil, nick: "", proj: "P")]
+        let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: nil, friendlyName: "", projectName: "P")
+        #expect(survive.count == 1)                      // un-nicknamed, no UUID → KEPT (safe direction)
+    }
+
+    @Test func failureClearedWhenNameAndNicknameMatch() {
+        let recs = [fr("Untitled", uuid: nil, nick: "Lucas", proj: "P")]
+        let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: nil, friendlyName: "Lucas", projectName: "P")
+        #expect(survive.isEmpty)                         // same name + same nickname → cleared
+    }
+
+    @Test func failureKeptForDifferentProject() {
+        let recs = [fr("Untitled", uuid: "UUID-A", nick: "", proj: "ProjectOne")]
+        let survive = failureRecordsSurviving(recs, afterSuccessOf: "Untitled", volumeUUID: "UUID-A", friendlyName: "", projectName: "ProjectTwo")
+        #expect(survive.count == 1)                      // different project → warning KEPT
+    }
 }

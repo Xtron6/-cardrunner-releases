@@ -1669,6 +1669,28 @@ struct FailedIngestRecord: Codable, Identifiable {
     let reason: String         // "Cancelled" or "Error"
 }
 
+/// FOOTAGE-SAFETY (pure, unit-tested): which failure records SURVIVE when a card succeeds.
+/// A record is cleared ONLY on positive same-card identity:
+///   • matching volume UUID (APFS/HFS+ cards), OR
+///   • when no UUID (FAT/exFAT camera cards, which share default names like "Untitled"),
+///     a matching volume name AND a non-empty matching nickname.
+/// It is NEVER cleared on a volume-name match alone — otherwise a successful un-nicknamed card
+/// would wipe a DIFFERENT un-nicknamed card's "do not format" warning. When in doubt, KEEP the
+/// record (the operator can dismiss it manually). Records in other projects always survive.
+func failureRecordsSurviving(_ records: [FailedIngestRecord],
+                             afterSuccessOf cardName: String, volumeUUID: String?,
+                             friendlyName: String, projectName: String) -> [FailedIngestRecord] {
+    let pn = projectName.trimmingCharacters(in: .whitespaces).lowercased()
+    let cn = cardName.trimmingCharacters(in: .whitespaces).lowercased()
+    let nick = friendlyName.trimmingCharacters(in: .whitespaces).lowercased()
+    return records.filter { rec in
+        guard rec.projectName.lowercased() == pn else { return true }          // different project → survives
+        if let u = volumeUUID, let ru = rec.volumeUUID { return ru != u }      // same UUID → cleared
+        guard !nick.isEmpty else { return true }                              // no UUID + un-nicknamed → keep
+        return !(rec.cardName.lowercased() == cn && rec.friendlyName.lowercased() == nick)
+    }
+}
+
 // MARK: - Ingest Phase
 
 enum IngestPhase: String {
@@ -11005,6 +11027,16 @@ struct ContentView: View {
             historyEntries.insert(entry, at: 0)
             saveHistory()   // saveHistory trims to 24 h window
 
+            // Footage safety: cardcopy failed to even launch → nothing was copied. Leave a
+            // PERSISTENT "do not format" record (not just a transient history row), so the v3
+            // failure strip / ring warn the operator that this card was NOT offloaded.
+            let failRec = FailedIngestRecord(
+                id: UUID(), cardName: card.name, volumeUUID: card.volumeUUID,
+                friendlyName: useCustomCardName ? customCardName.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                projectName: self.projectName, failedAt: Date(),
+                filesToCopy: 0, mbToCopy: 0, reason: "Error")
+            saveFailedRecord(failRec)
+
             // Drain the queue — without this, cards queued behind this one sit
             // stranded until the next mount event when process.run() fails (O2).
             drainQueue()
@@ -11628,17 +11660,10 @@ struct ContentView: View {
     /// failure. Now we require the card's volume UUID to match (exact identity), falling back to
     /// the volume name (+ nickname if one is set) when no UUID is available.
     private func clearFailedRecords(cardName: String, volumeUUID: String?, friendlyName: String, projectName: String) {
-        let pn = projectName.trimmingCharacters(in: .whitespaces).lowercased()
-        let cn = cardName.trimmingCharacters(in: .whitespaces).lowercased()
-        let nick = friendlyName.trimmingCharacters(in: .whitespaces).lowercased()
         let before = failedIngestRecords.count
-        failedIngestRecords.removeAll { rec in
-            guard rec.projectName.lowercased() == pn else { return false }
-            if let u = volumeUUID, let ru = rec.volumeUUID { return ru == u }   // exact card identity
-            // No UUID to compare — fall back to the volume name; never clear on an empty nickname alone.
-            let nameMatch = rec.cardName.lowercased() == cn && !cn.isEmpty
-            return nick.isEmpty ? nameMatch : (nameMatch && rec.friendlyName.lowercased() == nick)
-        }
+        failedIngestRecords = failureRecordsSurviving(
+            failedIngestRecords, afterSuccessOf: cardName, volumeUUID: volumeUUID,
+            friendlyName: friendlyName, projectName: projectName)
         if failedIngestRecords.count != before {
             if let data = try? JSONEncoder().encode(failedIngestRecords) {
                 UserDefaults.standard.set(data, forKey: failedRecordsKey)
