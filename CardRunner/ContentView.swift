@@ -3097,6 +3097,20 @@ struct ContentView: View {
     /// must be gated off here and rendered by bodyV3 instead.
     private var isLegacyUI: Bool { ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1" }
 
+    /// Finish the first-launch onboarding (shared by the legacy + v3 presentations). The one
+    /// footage-safety-relevant line: seed the v3 Destination LIST from the drive/folder+project the
+    /// user just chose (onboarding wrote the SAME legacy @AppStorage keys migrateLegacyDestinations
+    /// reads). Without it the v3 list stays empty until relaunch and a card plugged in right after
+    /// onboarding would have NO configured destination. Guarded on `destinations.isEmpty` so a
+    /// returning user hitting "Preview onboarding" can never clobber their existing destinations.
+    private func completeOnboarding() {
+        withAnimation(.easeInOut(duration: 0.55)) { showOnboarding = false }
+        onboardingCompleted = true
+        onboardingDemoStatus = ""
+        if destinations.isEmpty { migrateLegacyDestinations() }
+        refreshDestinations()
+    }
+
     var body: some View {
         // The v3 node UI is now CardRunner's REAL face — the default, no flag required.
         // The legacy body stays mounted but invisible so ALL its proven wiring (card detection
@@ -3109,6 +3123,17 @@ struct ContentView: View {
             ZStack {
                 legacyBody.opacity(0).allowsHitTesting(false)
                 bodyV3
+                // First-launch onboarding — the top-most surface, above all v3 chrome/modals/settings.
+                // (The legacy body's own onboarding at ~3448 is gated to isLegacyUI so it can't double-mount.)
+                if showOnboarding {
+                    OnboardingView(
+                        runDemo:    { runDemoIngest() },
+                        demoStatus: $onboardingDemoStatus,
+                        onComplete: { completeOnboarding() }
+                    )
+                    .transition(.opacity)
+                    .zIndex(1000)
+                }
             }
         }
     }
@@ -3445,19 +3470,13 @@ struct ContentView: View {
             }
 
             // ── Onboarding flow — first-launch walkthrough ────────────────────
-            if showOnboarding {
+            // Under v3 this legacy copy is gated OFF (bodyV3 renders onboarding at the top level);
+            // only the legacy face (CR_LEGACY_UI=1) shows it here.
+            if showOnboarding && isLegacyUI {
                 OnboardingView(
                     runDemo:    { runDemoIngest() },
                     demoStatus: $onboardingDemoStatus,
-                    onComplete: {
-                        withAnimation(.easeInOut(duration: 0.55)) { showOnboarding = false }
-                        onboardingCompleted = true
-                        onboardingDemoStatus = ""
-                        // Re-scan destinations so selectedPrimary picks up the SSD the
-                        // user chose during onboarding (commitScreen2 saved the path to
-                        // @AppStorage but selectedPrimary is @State and needs a refresh).
-                        refreshDestinations()
-                    }
+                    onComplete: { completeOnboarding() }
                 )
                 .transition(.opacity)
                 .zIndex(60)
