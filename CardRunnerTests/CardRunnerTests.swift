@@ -467,6 +467,22 @@ struct CardRunnerTests {
                                      awaitingPaths: [], activeUUIDs: [], activePaths: []) == false)
     }
 
+    /// The custom-name-memory fix: a UUID-bearing card already parked is treated as tracked
+    /// even if it remounts at a NEW path — so its lane (and the operator's typed name) is not
+    /// torn down and re-prefilled by a re-scan.
+    @Test func awaitingSameUUIDAtNewPathStaysTracked() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled 1", cardUUID: "U-A",
+                                     awaitingPaths: ["/Volumes/Untitled"], awaitingUUIDs: ["U-A"],
+                                     activeUUIDs: [], activePaths: []) == true)
+    }
+
+    /// A genuinely different UUID-less card at a distinct path is still fresh (not falsely deduped).
+    @Test func awaitingDifferentUUIDlessCardStillSurfaces() {
+        #expect(cardIsAlreadyTracked(cardPath: "/Volumes/Untitled 1", cardUUID: nil,
+                                     awaitingPaths: ["/Volumes/Untitled"], awaitingUUIDs: [],
+                                     activeUUIDs: [], activePaths: []) == false)
+    }
+
     // MARK: - Per-card folder label (--cardlabel) resolution
 
     @Test func cardLabelPerCardOverridesGlobal() {

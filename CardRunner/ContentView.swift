@@ -1186,6 +1186,7 @@ struct AwaitingCard: Identifiable, Hashable {
     let card: Volume
     var destinationID: UUID? = nil
     var customName: String = ""   // per-card folder name (--cardlabel). Empty = no per-card subfolder.
+    var userEdited: Bool = false  // the operator typed here — protects the edit from re-scan/prefill
 }
 
 /// Everything the shell-arg builder needs, captured as plain values so the builder is a
@@ -2018,9 +2019,11 @@ func canAdmitIngest(candidateDestDevice: dev_t?, snapshot: SchedulerSnapshot) ->
 func cardIsAlreadyTracked(cardPath: String,
                           cardUUID: String?,
                           awaitingPaths: Set<String>,
+                          awaitingUUIDs: Set<String> = [],
                           activeUUIDs: Set<String>,
                           activePaths: Set<String>) -> Bool {
     if awaitingPaths.contains(cardPath) { return true }
+    if let u = cardUUID, awaitingUUIDs.contains(u) { return true }   // same card, mount path shuffled
     if activePaths.contains(cardPath)   { return true }
     if let u = cardUUID, activeUUIDs.contains(u) { return true }
     return false
@@ -2224,6 +2227,9 @@ struct ContentView: View {
     @State private var v3AddCustomPath = ""
     @State private var v3SettingsCat: V3SettingsCat = .general   // selected icon-rail category
     @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
+    @FocusState private var editingAwaitingID: UUID?             // which awaiting lane's name field is live
+    @FocusState private var editingActiveID: UUID?              // which active lane's name field is live
+    @State private var v3PreEditName: String = ""               // value captured on focus-gain, for Esc-revert
     @State private var v3SheenTrigger = 0                        // bump to fire one gloss sweep
     // Stable timer (a fresh Timer.publish in onReceive would resubscribe every body eval).
     private let v3SheenTimer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
@@ -9581,8 +9587,14 @@ struct ContentView: View {
                 self.seenCardPaths = self.seenCardPaths.intersection(currentPaths)
                 self.seenCardUUIDs = self.seenCardUUIDs.intersection(currentUUIDs)
                 self.cardQueue.removeAll { !currentPaths.contains($0.card.path) }
-                // Drop awaiting cards that have been physically removed.
-                self.awaitingCards.removeAll { !currentPaths.contains($0.card.path) }
+                // Drop awaiting cards that have been PHYSICALLY removed — but key on identity
+                // (UUID when present, else path). A UUID-bearing card that merely remounts at a new
+                // path (classic for "Untitled" cards) is NOT gone, so its lane (and the operator's
+                // typed name) is preserved instead of being torn down and re-prefilled.
+                self.awaitingCards.removeAll { aw in
+                    if let u = aw.card.volumeUUID { return !currentUUIDs.contains(u) }
+                    return !currentPaths.contains(aw.card.path)
+                }
 
                 var newCards: [Volume] = []
                 for card in finalCards {
@@ -10091,17 +10103,21 @@ struct ContentView: View {
         // UUID-less "Untitled" cards mounted at different paths each still surface) plus
         // source UUID as a backstop. See cardIsAlreadyTracked.
         var awaitingPaths = Set(awaitingCards.map { $0.card.path })
+        var awaitingUUIDs = Set(awaitingCards.compactMap { $0.card.volumeUUID })
         let activeUUIDs   = Set(activeIngests.values.compactMap { $0.volumeUUID })
         let activePaths   = Set(activeIngests.values.map { $0.sourcePath }.filter { !$0.isEmpty })
         for card in cards {
+            // Dedup on UUID-or-path: an existing lane (with the operator's typed name) is
+            // NEVER re-created just because a UUID-bearing card's mount path shuffled.
             if cardIsAlreadyTracked(cardPath: card.path, cardUUID: card.volumeUUID,
-                                    awaitingPaths: awaitingPaths,
+                                    awaitingPaths: awaitingPaths, awaitingUUIDs: awaitingUUIDs,
                                     activeUUIDs: activeUUIDs, activePaths: activePaths) { continue }
             // Pre-fill the per-card folder name with this card's saved nickname (if any) or its
             // volume name, so each lane shows an editable folder name out of the box.
             let prefill = card.volumeUUID.flatMap { knownCardNicknames[$0] } ?? card.name
             awaitingCards.append(AwaitingCard(card: card, customName: prefill))
             awaitingPaths.insert(card.path)
+            if let u = card.volumeUUID { awaitingUUIDs.insert(u) }
         }
     }
 
@@ -15793,6 +15809,17 @@ extension ContentView {
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
         .onReceive(v3SheenTimer) { _ in v3SheenTrigger += 1 }   // fire one gloss sweep, ~every 20 s
+        // Focus move: commit the lane we LEFT (only if the operator actually edited it — Esc
+        // resets userEdited so a cancelled edit doesn't persist), and capture the ENTERED lane's
+        // current value so Esc can restore it. Never starts a copy.
+        .onChange(of: editingAwaitingID) { old, new in
+            if let old, awaitingCards.first(where: { $0.id == old })?.userEdited == true { persistAwaitingName(old) }
+            if let new, let aw = awaitingCards.first(where: { $0.id == new }) { v3PreEditName = aw.customName }
+        }
+        .onChange(of: editingActiveID) { old, new in
+            if let old, activeIngests[old]?.pendingRename != nil { v3CommitActiveRename(old) }
+            if let new { v3PreEditName = activeIngests[new]?.pendingRename ?? "" }
+        }
         .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
         .sheet(isPresented: $showV3History) { v3HistorySheet }
@@ -16502,17 +16529,30 @@ extension ContentView {
                     // copy is a safety valve: the rename is applied when the card finishes (the
                     // copy can't be safely renamed live), so footage still lands and gets the
                     // corrected name. For a card with no per-card folder, this persists a nickname.
+                    let editing = (editingActiveID == id)
                     HStack(spacing: 6) {
-                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(col.opacity(0.85))
+                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : col.opacity(0.85))
                         TextField("Folder name", text: v3ActiveNameBinding(id))
                             .textFieldStyle(.plain).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
                             .frame(minWidth: 60).fixedSize()
-                            .onSubmit { v3CommitActiveRename(id) }
-                        Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                            .focused($editingActiveID, equals: id)
+                            .onSubmit { v3CommitActiveRename(id); editingActiveID = nil }   // Enter LOCKS (applies at completion)
+                            .onExitCommand { activeIngests[id]?.pendingRename = nil; editingActiveID = nil }  // Esc reverts
+                        if editing {
+                            Button { v3CommitActiveRename(id); editingActiveID = nil } label: {
+                                Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(v3Green)
+                            }.buttonStyle(.plain).help("Lock in this folder name (applied when the copy finishes)")
+                        } else {
+                            Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                        }
                     }
                     .padding(.horizontal, 9).padding(.vertical, 4)
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.18),
-                             style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .background(editing ? v3Cyan.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(
+                        editing ? AnyShapeStyle(v3Cyan) : AnyShapeStyle(.white.opacity(0.18)),
+                        style: StrokeStyle(lineWidth: editing ? 1.5 : 1, dash: editing ? [] : [4, 3])))
+                    .shadow(color: editing ? v3Cyan.opacity(0.4) : .clear, radius: editing ? 6 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: editing)
                     .help("Edit the folder name — applied when this card finishes copying")
                     HStack(spacing: 5) {
                         Text(ing.cameraModel.isEmpty ? "Camera" : ing.cameraModel)
@@ -16586,9 +16626,37 @@ extension ContentView {
             set: { newVal in
                 if let idx = self.awaitingCards.firstIndex(where: { $0.id == id }) {
                     self.awaitingCards[idx].customName = newVal
+                    self.awaitingCards[idx].userEdited = true   // protect this edit from re-scan/prefill
                 }
             }
         )
+    }
+
+    /// Persist an awaiting card's name — trims it and (for UUID-bearing cards) saves it as the
+    /// card's nickname so a re-insert prefills the name the operator last confirmed. Does NOT
+    /// start the transfer and does NOT change focus (safe to call on click-away).
+    private func persistAwaitingName(_ id: UUID) {
+        guard let idx = awaitingCards.firstIndex(where: { $0.id == id }) else { return }
+        let name = awaitingCards[idx].customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        awaitingCards[idx].customName = name
+        if let uuid = awaitingCards[idx].card.volumeUUID {
+            if name.isEmpty { knownCardNicknames.removeValue(forKey: uuid) }
+            else            { knownCardNicknames[uuid] = name }
+            persistCardNicknames()
+        }
+    }
+
+    /// Confirm/lock the name (green check or Enter): persist it and drop focus. Never starts a copy.
+    private func commitAwaitingName(_ id: UUID) {
+        persistAwaitingName(id)
+        if editingAwaitingID == id { editingAwaitingID = nil }
+    }
+
+    /// Live preview of the folder the footage will land in, shown while editing the name.
+    private func v3FolderPreview(_ aw: AwaitingCard) -> String {
+        let dest = v3AwaitingDestName(aw)
+        let name = aw.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Lands in  \(dest)/…/  (no name folder)" : "Lands in  \(dest)/…/\(name)/"
     }
 
     /// The destination name an awaiting card would land on (its chosen drive, or the default).
@@ -16615,22 +16683,49 @@ extension ContentView {
                 Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(v3Amber)
                     .frame(width: 32, height: 32).background(v3Amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 4) {
-                    // Editable per-card FOLDER NAME (--cardlabel). Folder icon + field + pencil,
-                    // dashed amber pill — this is the name the footage's folder gets on the drive.
+                    // Editable per-card FOLDER NAME (--cardlabel). Idle = dashed amber pill (reads as
+                    // "editable"); focused = solid cyan + fill + glow (reads as "typing now") with a
+                    // green ✓ to lock it in. Enter/✓/click-away COMMIT the name (persist, no copy);
+                    // Start is the only thing that begins the transfer.
+                    let editing = (editingAwaitingID == aw.id)
                     HStack(spacing: 6) {
-                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(v3Amber.opacity(0.85))
+                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : v3Amber.opacity(0.85))
                         TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
                             .textFieldStyle(.plain).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
                             .frame(minWidth: 70).fixedSize()
-                            .onSubmit { startAwaiting(aw.id) }
-                        Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                            .focused($editingAwaitingID, equals: aw.id)
+                            .onSubmit { commitAwaitingName(aw.id) }        // Enter LOCKS the name (never starts)
+                            .onExitCommand {                               // Esc reverts to the pre-edit value
+                                if let idx = awaitingCards.firstIndex(where: { $0.id == aw.id }) {
+                                    awaitingCards[idx].customName = v3PreEditName
+                                    awaitingCards[idx].userEdited = false
+                                }
+                                editingAwaitingID = nil
+                            }
+                        if editing {
+                            Button { commitAwaitingName(aw.id) } label: {
+                                Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(v3Green)
+                            }.buttonStyle(.plain).help("Lock in this folder name")
+                        } else {
+                            Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                        }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
-                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(v3Amber.opacity(0.5),
-                             style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-                    Text("\(aw.card.cameraModel)  ·  → \(v3AwaitingDestName(aw))")
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
-                        .lineLimit(1).truncationMode(.tail)
+                    .background(editing ? v3Cyan.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
+                        editing ? AnyShapeStyle(v3Cyan) : AnyShapeStyle(v3Amber.opacity(0.5)),
+                        style: StrokeStyle(lineWidth: editing ? 1.5 : 1, dash: editing ? [] : [4, 3])))
+                    .shadow(color: editing ? v3Cyan.opacity(0.4) : .clear, radius: editing ? 6 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: editing)
+                    if editing {
+                        // Live path preview — shows exactly where the footage will land before commit.
+                        Text(v3FolderPreview(aw)).font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.head)
+                    } else {
+                        Text("\(aw.card.cameraModel)  ·  → \(v3AwaitingDestName(aw))")
+                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                 }
                 Spacer()
                 Button { v3CycleAwaitingDest(aw.id) } label: {
@@ -16642,9 +16737,16 @@ extension ContentView {
                 .help("Tap to cycle drives, or drag the node onto a drive")
             }
             HStack(spacing: 7) {
-                Text("Name the folder, then Start").font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
+                Text("✓ locks the name · Start begins the copy")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
                 Spacer()
-                Button { startAwaiting(aw.id) } label: {
+                Button {
+                    // Remember the typed name for next time even without an explicit ✓/Enter —
+                    // must run while the card is still in awaitingCards (startAwaiting removes it).
+                    persistAwaitingName(aw.id)
+                    editingAwaitingID = nil
+                    startAwaiting(aw.id)
+                } label: {
                     Text("Start").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 16).padding(.vertical, 6)
                         .background(v3Green, in: Capsule())
