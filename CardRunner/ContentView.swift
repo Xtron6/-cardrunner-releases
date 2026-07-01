@@ -1175,6 +1175,31 @@ struct Destination: Identifiable, Hashable, Codable {
     var path: String
     var name: String
     var isCustomFolder: Bool
+    // Per-destination project structure (SSD destinations). Empty projectFolder → fall back to the
+    // global projectName (migration-safe: an upgraded user's footage lands exactly where it did
+    // before). Ignored for custom-folder destinations (the path IS the project root).
+    var projectFolder: String = ""
+    var subfolder: String = "Default"   // "Default" → the shell's "clips" (matches buildIngestArgs)
+
+    init(id: UUID = UUID(), path: String, name: String, isCustomFolder: Bool,
+         projectFolder: String = "", subfolder: String = "Default") {
+        self.id = id; self.path = path; self.name = name; self.isCustomFolder = isCustomFolder
+        self.projectFolder = projectFolder; self.subfolder = subfolder
+    }
+
+    enum CodingKeys: String, CodingKey { case id, path, name, isCustomFolder, projectFolder, subfolder }
+
+    // Custom decoder so Destinations persisted BEFORE projectFolder/subfolder existed still load
+    // (synthesized Codable throws keyNotFound on missing keys — that would wipe the saved list).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id             = (try? c.decode(UUID.self,   forKey: .id)) ?? UUID()
+        path           = try  c.decode(String.self,  forKey: .path)
+        name           = try  c.decode(String.self,  forKey: .name)
+        isCustomFolder = (try? c.decode(Bool.self,   forKey: .isCustomFolder)) ?? false
+        projectFolder  = (try c.decodeIfPresent(String.self, forKey: .projectFolder)) ?? ""
+        subfolder      = (try c.decodeIfPresent(String.self, forKey: .subfolder)) ?? "Default"
+    }
 }
 
 /// A card detected while Auto-Ingest is OFF: it is parked "waiting to route" until the
@@ -2037,6 +2062,15 @@ func cardIsAlreadyTracked(cardPath: String,
 func resolveCardLabel(perCard: String?, globalEnabled: Bool, globalName: String) -> String {
     let candidate = perCard ?? (globalEnabled ? globalName : "")
     return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Pure: resolve the effective project-folder name for a routed SSD destination. A per-destination
+/// projectFolder wins; empty falls back to the GLOBAL project name (migration-safe — an upgraded
+/// destination with no per-dest project lands footage exactly where it did before). Trimmed; an
+/// empty result means "no project set" and the caller must refuse the ingest ("Project name required").
+func resolveProjectFolder(destProject: String, globalProject: String) -> String {
+    let d = destProject.trimmingCharacters(in: .whitespacesAndNewlines)
+    return d.isEmpty ? globalProject.trimmingCharacters(in: .whitespacesAndNewlines) : d
 }
 
 /// Animatable state for the v3 gloss sheen sweep (KeyframeAnimator drives x + opacity).
@@ -9228,15 +9262,18 @@ struct ContentView: View {
                 name: URL(fileURLWithPath: customDestPath).lastPathComponent,
                 isCustomFolder: true))
         } else if !primarySSDPath.isEmpty {
+            // Seed the migrated SSD destination's subfolder from the current GLOBAL subfolder so an
+            // upgraded user who set a non-Default subfolder keeps landing footage in {project}/{that}/
+            // — subfolder has no runtime fallback (unlike projectFolder), so it must be seeded here.
             migrated.append(Destination(
                 path: primarySSDPath,
                 name: URL(fileURLWithPath: primarySSDPath).lastPathComponent,
-                isCustomFolder: false))
+                isCustomFolder: false, subfolder: selectedSubfolder))
             if dualDestEnabled, !secondaryPath.isEmpty {
                 migrated.append(Destination(
                     path: secondaryPath,
                     name: URL(fileURLWithPath: secondaryPath).lastPathComponent,
-                    isCustomFolder: false))
+                    isCustomFolder: false, subfolder: selectedSubfolder))
             }
         }
         destinations = migrated
@@ -10450,6 +10487,7 @@ struct ContentView: View {
         let resolvedDestRoot: String
         let resolvedProjectRoot: String
         let useCustomDestForThisCard: Bool
+        let resolvedSubfolder: String   // per-destination subfolder (SSD), else global/Default
         if let dest = destination ?? defaultDestination {
             if dest.isCustomFolder {
                 var isDestDir: ObjCBool = false
@@ -10462,8 +10500,10 @@ struct ContentView: View {
                 useCustomDestForThisCard = true
                 resolvedDestRoot    = dest.path
                 resolvedProjectRoot = dest.path
+                resolvedSubfolder   = "Default"   // custom mode ignores subfolder (footage → dest/date)
             } else {
-                let trimmedProject = projectName.trimmingCharacters(in: .whitespaces)
+                // Per-destination project folder wins; empty falls back to the global project.
+                let trimmedProject = resolveProjectFolder(destProject: dest.projectFolder, globalProject: projectName)
                 guard !trimmedProject.isEmpty else {
                     statusText = "Project name required."
                     return
@@ -10471,6 +10511,7 @@ struct ContentView: View {
                 useCustomDestForThisCard = false
                 resolvedDestRoot    = dest.path
                 resolvedProjectRoot = "\(dest.path)/\(trimmedProject)"
+                resolvedSubfolder   = dest.subfolder.isEmpty ? "Default" : dest.subfolder
             }
         } else if useCustomDest {
             // Legacy fallback — no Destination list configured. Custom folder.
@@ -10484,6 +10525,7 @@ struct ContentView: View {
             useCustomDestForThisCard = true
             resolvedDestRoot    = customDestPath
             resolvedProjectRoot = customDestPath
+            resolvedSubfolder   = "Default"
         } else {
             // Legacy fallback — primary SSD + project.
             guard let primary = selectedPrimary else {
@@ -10498,6 +10540,7 @@ struct ContentView: View {
             useCustomDestForThisCard = false
             resolvedDestRoot    = primary.path   // passed as --primary to shell
             resolvedProjectRoot = "\(primary.path)/\(trimmedProject)"
+            resolvedSubfolder   = selectedSubfolder   // legacy global subfolder
         }
 
         // Safety gate: never copy a card onto its own volume. If the destination
@@ -10594,7 +10637,7 @@ struct ContentView: View {
             destRoot: resolvedDestRoot,
             projectRoot: resolvedProjectRoot,
             projectName: projectName,
-            selectedSubfolder: selectedSubfolder,
+            selectedSubfolder: resolvedSubfolder,   // per-destination subfolder (SSD) — see resolution above
             // Per-card folder name (--cardlabel): see resolveCardLabel. Empty → no --cardlabel.
             useCustomCardName: !effectiveCardLabel.isEmpty,
             customCardName: effectiveCardLabel,
@@ -10672,7 +10715,7 @@ struct ContentView: View {
             checkpointProjectName = projectName.trimmingCharacters(in: .whitespaces)
         }
 
-        let startSub = (selectedSubfolder == "Default" || selectedSubfolder.isEmpty) ? "clips" : selectedSubfolder
+        let startSub = (resolvedSubfolder == "Default" || resolvedSubfolder.isEmpty) ? "clips" : resolvedSubfolder
         let startRelPath = "\(checkpointProjectName)/\(startSub)/\(startDateStr)"
         notifyIfBackgrounded(title: "Transfer started", body: "Transferring files to \(startRelPath)")
 
@@ -10684,7 +10727,7 @@ struct ContentView: View {
             cardName:         card.name,
             primaryPath:      checkpointPrimaryPath,
             projectName:      checkpointProjectName,
-            subfolder:        selectedSubfolder == "Default" ? "" : selectedSubfolder,
+            subfolder:        resolvedSubfolder == "Default" ? "" : resolvedSubfolder,   // per-destination
             cardLabel:        effectiveCardLabel,   // the per-card label this ingest actually ran with
             dateFormat:       dateFolderFormat,
             finderTagColor:   finderTagEnabled ? finderTagColor : "",

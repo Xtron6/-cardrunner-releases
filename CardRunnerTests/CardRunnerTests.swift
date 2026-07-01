@@ -305,12 +305,13 @@ struct CardRunnerTests {
                      dateFilterMode: String = "all",
                      verifyTransfer: Bool = false,
                      finderTagEnabled: Bool = false,
-                     ignoreManifest: Bool = false) -> IngestArgsConfig {
+                     ignoreManifest: Bool = false,
+                     subfolder: String = "Default") -> IngestArgsConfig {
         IngestArgsConfig(
             scriptPath: "/app/CardRunner.sh", appVersion: "1.0", cardPath: "/Volumes/CARD",
             useCustomDest: useCustomDest, destRoot: destRoot,
             projectRoot: useCustomDest ? destRoot : "\(destRoot)/\(projectName)",
-            projectName: projectName, selectedSubfolder: "Default",
+            projectName: projectName, selectedSubfolder: subfolder,
             useCustomCardName: false, customCardName: "", ignoreManifest: ignoreManifest,
             latestCount: 0, dryRun: false,
             wrongClockDate: nil, reelFilter: [], reelMulti: false, dateOverride: nil,
@@ -517,5 +518,49 @@ struct CardRunnerTests {
     @Test func buildArgsOmitsIgnoreManifestByDefault() {
         let args = buildIngestArgs(cfg())
         #expect(!args.contains("--ignore-manifest"))
+    }
+
+    // MARK: - Per-destination project folder resolution
+
+    @Test func projectFolderPerDestWins() {
+        #expect(resolveProjectFolder(destProject: "NWSL_Columbus", globalProject: "GLOBAL") == "NWSL_Columbus")
+    }
+
+    @Test func projectFolderEmptyFallsBackToGlobal() {
+        #expect(resolveProjectFolder(destProject: "", globalProject: "GLOBAL") == "GLOBAL")
+        #expect(resolveProjectFolder(destProject: "   ", globalProject: "GLOBAL") == "GLOBAL")
+    }
+
+    @Test func projectFolderTrims() {
+        #expect(resolveProjectFolder(destProject: "  Shoot A ", globalProject: "GLOBAL") == "Shoot A")
+    }
+
+    /// Migration: a Destination JSON persisted BEFORE the projectFolder/subfolder fields existed
+    /// must decode cleanly with defaults (empty project → global fallback; subfolder → Default).
+    @Test func destinationDecodesLegacyJSONWithDefaults() throws {
+        let legacy = #"{"id":"00000000-0000-0000-0000-000000000001","path":"/Volumes/Gallo 8TB","name":"Gallo 8TB","isCustomFolder":false}"#
+        let d = try JSONDecoder().decode(Destination.self, from: Data(legacy.utf8))
+        #expect(d.projectFolder == "")          // empty → falls back to global project at ingest
+        #expect(d.subfolder == "Default")       // Default → shell "clips"
+        #expect(d.name == "Gallo 8TB")
+    }
+
+    @Test func destinationRoundTripsWithNewFields() throws {
+        let d = Destination(path: "/Volumes/SSD", name: "SSD", isCustomFolder: false,
+                            projectFolder: "260630_Show", subfolder: "footage")
+        let back = try JSONDecoder().decode(Destination.self, from: JSONEncoder().encode(d))
+        #expect(back.projectFolder == "260630_Show")
+        #expect(back.subfolder == "footage")
+    }
+
+    /// The migration-subfolder chain end: a non-Default subfolder (seeded on the migrated
+    /// destination from the global) must flow to --subfolder; Default omits it (→ shell "clips").
+    @Test func buildArgsEmitsSubfolderWhenNonDefault() {
+        #expect(buildIngestArgs(cfg(subfolder: "footage")).contains("--subfolder"))
+        #expect(values(of: "--subfolder", in: buildIngestArgs(cfg(subfolder: "footage"))) == ["footage"])
+    }
+
+    @Test func buildArgsOmitsSubfolderForDefault() {
+        #expect(!buildIngestArgs(cfg(subfolder: "Default")).contains("--subfolder"))
     }
 }
