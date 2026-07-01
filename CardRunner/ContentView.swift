@@ -12962,6 +12962,7 @@ private struct OnboardingView: View {
     @State private var illustrationVisible = false
     @State private var iconPulse           = false
     @State private var arrowPulse          = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // ── Screen 2 ──────────────────────────────────────────────────────────────
     @AppStorage("pref_primarySSDPath")  private var savedDrivePath:  String = ""
@@ -13097,6 +13098,7 @@ private struct OnboardingView: View {
                 .animation(.easeInOut(duration: 0.8).delay(1.5), value: illustrationVisible)
                 .onAppear {
                     illustrationVisible = true
+                    guard !reduceMotion else { return }   // honor Reduce Motion — no perpetual pulse
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
                         withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
                             iconPulse = true
@@ -13503,7 +13505,9 @@ private struct OnboardingView: View {
     private func ob3AddFolder() {
         let n = ob3NewFolder.trimmingCharacters(in: .whitespaces)
         ob3NewFolder = ""
-        guard !n.isEmpty, !n.contains("/"), !n.contains("..") else { return }
+        // Allow a nested subpath ("Footage/A-Camera") for parity with the Settings editor, but never a
+        // path-escape (.. or a leading /). The shell independently rejects escapes too (defense in depth).
+        guard !n.isEmpty, !n.contains(".."), !n.hasPrefix("/") else { return }
         var list = ob3FolderList()
         guard !list.contains(where: { $0.lowercased() == n.lowercased() }) else { return }
         list.append(n)
