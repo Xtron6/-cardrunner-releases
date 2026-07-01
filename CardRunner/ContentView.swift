@@ -16284,8 +16284,11 @@ extension ContentView {
         .sheet(isPresented: $showV3DateRange) { v3DateRangeSheet }
     }
 
-    /// Animated neon connectors: drag-link cursor line, each active lane → ring,
-    /// and ring → every destination tile. Ported from the demo's drawFunnel.
+    /// Neon connectors: drag-link cursor line, each active lane → ring and ring → destinations while
+    /// copying (animated), PLUS a STATIC amber line from every waiting-to-route card → its chosen (or
+    /// default) destination so the operator can see where each parked card will land even at idle. The
+    /// awaiting lines render in the idle static Canvas frame too (this fn runs in both branches) — they
+    /// never widen the animated 20fps branch, so a parked linked card costs one static frame, not a loop.
     private func v3DrawFunnel(_ ctx: inout GraphicsContext, rects: [String: CGRect], phase: CGFloat) {
         // Live drag-to-link line follows the cursor from the node to the drop point.
         if let dl = dragLine {
@@ -16298,37 +16301,52 @@ extension ContentView {
             ctx.fill(Path(ellipseIn: CGRect(x: dl.to.x - 5, y: dl.to.y - 5, width: 10, height: 10)),
                      with: .color(v3Cyan))
         }
-        guard let ring = rects["ring"], v3ActiveLanes.count <= 6 else { return }
+        guard let ring = rects["ring"] else { return }
         let rc = CGPoint(x: ring.midX, y: ring.midY)
         let rad = ring.width / 2
         let leftPort = CGPoint(x: rc.x - rad, y: rc.y)
         let rightPort = CGPoint(x: rc.x + rad, y: rc.y)
-        let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 9], dashPhase: -phase)
-        for item in v3ActiveLanes {
-            guard let lr = rects["lane-\(item.id)"] else { continue }
-            let from = CGPoint(x: lr.maxX, y: lr.midY)
+
+        // Curve helper (S-curve between two horizontal ports).
+        func curve(_ from: CGPoint, _ to: CGPoint) -> Path {
             var p = Path(); p.move(to: from)
-            p.addCurve(to: leftPort,
-                       control1: CGPoint(x: (from.x + leftPort.x) / 2, y: from.y),
-                       control2: CGPoint(x: (from.x + leftPort.x) / 2, y: leftPort.y))
-            let col: Color = item.ing.phase == .failed ? v3Red : v3Mag
-            ctx.stroke(p, with: .color(col.opacity(0.6)), style: dash)
+            p.addCurve(to: to,
+                       control1: CGPoint(x: (from.x + to.x) / 2, y: from.y),
+                       control2: CGPoint(x: (from.x + to.x) / 2, y: to.y))
+            return p
         }
-        // Ring → each destination (default box + every tile), while footage is flowing.
-        let flowing = v3ActiveLanes.count > 0
-        let destKeys: [String] = ["dest-default"] + destinations
-            .filter { $0.id != defaultDestination?.id }.map { "dest-\($0.id)" }
-        if flowing {
-            for key in destKeys {
-                guard let dr = rects[key] else { continue }
-                let to = CGPoint(x: dr.minX, y: dr.midY)
-                var p = Path(); p.move(to: rightPort)
-                p.addCurve(to: to,
-                           control1: CGPoint(x: (rightPort.x + to.x) / 2, y: rightPort.y),
-                           control2: CGPoint(x: (rightPort.x + to.x) / 2, y: to.y))
-                let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
-                ctx.stroke(p, with: .color(col.opacity(0.6)), style: dash)
+
+        // Active flow (animated), capped at 6 lanes to avoid clutter.
+        if v3ActiveLanes.count <= 6 {
+            let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 9], dashPhase: -phase)
+            for item in v3ActiveLanes {
+                guard let lr = rects["lane-\(item.id)"] else { continue }
+                let col: Color = item.ing.phase == .failed ? v3Red : v3Mag
+                ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(col.opacity(0.6)), style: dash)
             }
+            if !v3ActiveLanes.isEmpty {
+                let destKeys: [String] = ["dest-default"] + destinations
+                    .filter { $0.id != defaultDestination?.id }.map { "dest-\($0.id)" }
+                let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
+                for key in destKeys {
+                    guard let dr = rects[key] else { continue }
+                    ctx.stroke(curve(rightPort, CGPoint(x: dr.minX, y: dr.midY)), with: .color(col.opacity(0.6)), style: dash)
+                }
+            }
+        }
+
+        // Waiting-to-route cards: STATIC amber line lane → ring → chosen (or default) destination.
+        let staticDash = StrokeStyle(lineWidth: 2, lineCap: .round, dash: [3, 7])
+        for aw in awaitingCards.prefix(8) {
+            guard let lr = rects["lane-\(aw.id)"],
+                  let destID = aw.destinationID ?? defaultDestination?.id else { continue }
+            let destKey = destID == defaultDestination?.id ? "dest-default" : "dest-\(destID)"
+            guard let dr = rects[destKey] else { continue }
+            let to = CGPoint(x: dr.minX, y: dr.midY)
+            ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(v3Amber.opacity(0.5)), style: staticDash)
+            ctx.stroke(curve(rightPort, to), with: .color(v3Amber.opacity(0.5)), style: staticDash)
+            ctx.fill(Path(ellipseIn: CGRect(x: to.x - 3.5, y: to.y - 3.5, width: 7, height: 7)),
+                     with: .color(v3Amber.opacity(0.75)))
         }
     }
 
@@ -17225,7 +17243,9 @@ extension ContentView {
             .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 2))
             .shadow(color: v3Amber.opacity(0.8), radius: 8)
             .offset(x: 9)
-            .help("Drag onto a drive to link & start this card")
+            // Grab area is larger than the 18pt dot so the node isn't finicky to pick up.
+            .contentShape(Circle().inset(by: -12))
+            .help("Drag onto a destination to route this card there (then press Start)")
             .gesture(
                 DragGesture(coordinateSpace: .named("stage"))
                     .onChanged { v in
