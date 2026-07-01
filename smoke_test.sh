@@ -216,6 +216,24 @@ landed10=$(find "$D10c" -type f -name '*.MP4' | wc -l | tr -d ' ')
 [[ "$(field new_files)" == "4" ]]  && ok "--ignore-manifest re-copied all 4 (manifest bypassed)" || bad "new_files=$(field new_files) (expected 4)"
 [[ "$landed10" == "4" ]]           && ok "4 files landed at the new destination"            || bad "$landed10 landed (expected 4)"
 
+# ── Check 11: explicit --subfolder routes footage to {project}/{subfolder}/ ───
+# Guards the destination subfolder rework (UI can now pick a non-"clips" footage
+# subfolder). A non-default subfolder must land the footage in THAT folder — never
+# leak into the default clips/ tree.
+print -r -- "${BOLD}[11] explicit --subfolder routes to {project}/{subfolder}/${RST}"
+C11="$(mktemp -d /tmp/cr_card11.XXXXXX)"
+P11="$(mktemp -d /tmp/cr_prim11.XXXXXX)"
+make_files "$C11/DCIM/100MEDIA" 3 XG_SUB
+RUN_OUT="$(mktemp /tmp/cr_smoke_out.XXXXXX)"
+/bin/zsh "$INGEST" --app-version vSMOKE --card "$C11" \
+  --primary "$P11" --project SMOKE --subfolder footage --today-only > "$RUN_OUT" 2>&1
+EC11=$?
+(( EC11 == 0 ))       && ok "exit 0 with --subfolder footage"              || bad "exit $EC11 with --subfolder"
+insub=$(find "$P11/SMOKE/footage" -type f -name '*.MP4' 2>/dev/null | wc -l | tr -d ' ')
+inclips=$(find "$P11" -type d -name clips 2>/dev/null | wc -l | tr -d ' ')
+[[ "$insub" == 3 ]]   && ok "all 3 files landed under {project}/footage/"    || bad "$insub/3 landed under footage/"
+[[ "$inclips" == 0 ]] && ok "nothing leaked into the default clips/ tree"    || bad "footage leaked into a clips/ dir"
+
 # ── Check 7: no fatal shell errors slipped through any run ───────────────────
 print -r -- "${BOLD}[7] no fatal shell errors${RST}"
 # This is the exact class that broke every transfer: arithmetic/function errors
@@ -236,6 +254,7 @@ rm -rf /tmp/cr_card1.* /tmp/cr_dest1.* /tmp/cr_card3.* /tmp/cr_dest3.* \
        /tmp/cr_card6a.* /tmp/cr_dest6a.* /tmp/cr_card6b.* /tmp/cr_dest6b.* \
        /tmp/cr_card8.* /tmp/cr_prim8.* /tmp/cr_mir8a.* /tmp/cr_mir8b.* \
        /tmp/cr_card9.* /tmp/cr_prim9.* \
+       /tmp/cr_card11.* /tmp/cr_prim11.* \
        /tmp/cr_smoke_out.* 2>/dev/null
 
 print -r -- ""

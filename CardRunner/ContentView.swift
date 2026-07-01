@@ -2081,6 +2081,15 @@ private let kDestNameConnectors: Set<String> = [
     "in", "on", "vs", "via", "per", "with", "from", "into", "onto", "off"
 ]
 
+/// Media file extensions used to auto-pick the subfolder that already holds footage when a project
+/// has no "clips" folder (destination subfolder picker). Lowercase, no dot.
+let kFootageExtensions: Set<String> = [
+    "mov", "mp4", "m4v", "mxf", "avi", "braw", "r3d", "ari", "arri", "dpx", "mts", "m2ts", "avchd",
+    "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "srw", "gpr",
+    "jpg", "jpeg", "heic", "heif", "png", "tif", "tiff",
+    "wav", "aif", "aiff"
+]
+
 /// Split a chunk on camelCase / acronym boundaries: "HOKAFestival" → ["HOKA", "Festival"],
 /// "SteadicamBRoll" → ["Steadicam", "B", "Roll"]. Digits stay attached to their word.
 private func splitCamelCase(_ str: String) -> [String] {
@@ -15476,6 +15485,31 @@ extension ContentView {
             .map { $0.lastPathComponent }.filter { !$0.hasPrefix(".") }.sorted()
     }
 
+    /// First existing subfolder (shallow) that already contains a media file — used to auto-pick the
+    /// footage subfolder when there's no "clips". Read-only scan; never creates or moves anything.
+    private func v3SubfolderWithFootage(drive: String, project: String, subs: [String]) -> String? {
+        let base = ((drive as NSString).appendingPathComponent(project)) as NSString
+        let fm = FileManager.default
+        for sub in subs {
+            let items = (try? fm.contentsOfDirectory(atPath: base.appendingPathComponent(sub))) ?? []
+            if items.contains(where: { kFootageExtensions.contains(($0 as NSString).pathExtension.lowercased()) }) {
+                return sub
+            }
+        }
+        return nil
+    }
+
+    /// Resolve the DEFAULT subfolder target for a freshly-picked project (Add / new-project only —
+    /// NEVER on Edit, which must keep the destination's stored value so footage can't relocate).
+    /// Returns the canonical "Default" sentinel (→ shell's `clips` dir) when a `clips` folder exists
+    /// or nothing else looks like footage; otherwise the literal footage-bearing subfolder.
+    private func v3ResolveSubfolderTarget(drive: String, project: String) -> String {
+        let subs = v3Subfolders(drive: drive, project: project)
+        if subs.contains(where: { $0.lowercased() == "clips" }) { return "Default" }
+        if let footage = v3SubfolderWithFootage(drive: drive, project: project, subs: subs) { return footage }
+        return "Default"
+    }
+
     /// Live `{drive}/{project}/{sub}/{date}/{card}` preview — shared by the Add and Edit sheets.
     private func v3PathPreview(drivePath: String, project: String, subfolder: String) -> String {
         let drive = v3AllDrives.first { $0.path == drivePath }?.name
@@ -15508,45 +15542,20 @@ extension ContentView {
 
     /// Project-folder + subfolder + destination-name fields, shared by the Add and Edit sheets so both
     /// pickers behave identically. `drivePath` is fixed by the caller (chosen in Add, locked in Edit);
-    /// this group never re-picks the drive. Typing/picking a project auto-derives the name until the
-    /// user edits it (`nameEdited`); picking an existing project folder resets the subfolder to Default.
+    /// this group never re-picks the drive. The project is a DROPDOWN of existing folders only (no
+    /// free typing — new folders are created via "New project folder"); picking one auto-picks the
+    /// footage subfolder and auto-derives the name until the user edits it.
     @ViewBuilder
     private func v3DestFieldGroup(drivePath: String,
                                   project: Binding<String>, subfolder: Binding<String>,
                                   name: Binding<String>, nameEdited: Binding<Bool>,
                                   error: Binding<String>) -> some View {
         v3SheetLabel("Project folder")
-        HStack(spacing: 8) {
-            TextField("Project name…", text: Binding(
-                get: { project.wrappedValue },
-                set: { project.wrappedValue = $0; error.wrappedValue = ""
-                       if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: $0) } }))
-                .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-            let folders = v3ProjectFolders(on: drivePath)
-            if !folders.isEmpty {
-                Menu {
-                    ForEach(folders, id: \.self) { f in Button(f) {
-                        project.wrappedValue = f; subfolder.wrappedValue = "Default"; error.wrappedValue = ""
-                        if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: f) }
-                    } }
-                } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-                        .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                }.menuStyle(.borderlessButton).fixedSize().help("Pick an existing project folder on this drive")
-            }
-        }
+        v3ProjectPicker(drivePath: drivePath, project: project, subfolder: subfolder,
+                        name: name, nameEdited: nameEdited, error: error)
 
         v3SheetLabel("Subfolder")
-        Menu {
-            Button("Default (clips)") { subfolder.wrappedValue = "Default" }
-            ForEach(v3Subfolders(drive: drivePath, project: project.wrappedValue), id: \.self) { s in
-                Button(s) { subfolder.wrappedValue = s }
-            }
-        } label: {
-            v3AddFieldLabel(subfolder.wrappedValue == "Default" ? "Default (clips)" : subfolder.wrappedValue, sub: nil)
-        }.menuStyle(.borderlessButton)
+        v3SubfolderPicker(drivePath: drivePath, project: project, subfolder: subfolder)
 
         v3SheetLabel("Destination name")
         TextField("Name", text: Binding(get: { name.wrappedValue }, set: { name.wrappedValue = $0; nameEdited.wrappedValue = true }))
@@ -15557,6 +15566,65 @@ extension ContentView {
         Text(v3PathPreview(drivePath: drivePath, project: project.wrappedValue, subfolder: subfolder.wrappedValue))
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.middle)
+    }
+
+    /// Project folder = a DROPDOWN of existing folders on the drive (no free text). Picking one
+    /// auto-picks the footage subfolder + auto-derives the name (until the user edits it). A stored
+    /// project that no longer exists on disk (Edit of a moved/reformatted drive) is shown as a
+    /// selected "(not found)" entry so editing never silently blanks it.
+    private func v3ProjectPicker(drivePath: String, project: Binding<String>, subfolder: Binding<String>,
+                                 name: Binding<String>, nameEdited: Binding<Bool>, error: Binding<String>) -> some View {
+        let folders = v3ProjectFolders(on: drivePath)
+        let cur = project.wrappedValue.trimmingCharacters(in: .whitespaces)
+        let missing = !cur.isEmpty && !folders.contains(cur)
+        return VStack(alignment: .leading, spacing: 6) {
+            Menu {
+                if missing {
+                    Button { } label: { Label("\(cur) (not found)", systemImage: "checkmark") }.disabled(true)
+                }
+                ForEach(folders, id: \.self) { f in
+                    Button {
+                        project.wrappedValue = f
+                        subfolder.wrappedValue = v3ResolveSubfolderTarget(drive: drivePath, project: f)
+                        error.wrappedValue = ""
+                        if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: f) }
+                    } label: {
+                        if f == cur { Label(f, systemImage: "checkmark") } else { Text(f) }
+                    }
+                }
+                if folders.isEmpty && !missing {
+                    Button("No project folders on this drive") { }.disabled(true)
+                }
+            } label: {
+                v3AddFieldLabel(cur.isEmpty ? "Choose a project folder"
+                                            : (missing ? "\(cur) (not found)" : cur), sub: nil)
+            }.menuStyle(.borderlessButton)
+            if folders.isEmpty {
+                Label("No project folders here yet — create one with “New project folder”.", systemImage: "info.circle")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+            }
+        }
+    }
+
+    /// Subfolder picker: real folders on disk, with the target highlighted (checkmark). The "clips"
+    /// row maps to the canonical "Default" sentinel (→ shell's `clips` dir) so the common path emits
+    /// byte-identical ingest args; any other row stores its literal name.
+    private func v3SubfolderPicker(drivePath: String, project: Binding<String>, subfolder: Binding<String>) -> some View {
+        let subs = v3Subfolders(drive: drivePath, project: project.wrappedValue)
+        let curSub = subfolder.wrappedValue
+        let clipsSelected = curSub == "Default" || curSub.lowercased() == "clips"
+        return Menu {
+            Button { subfolder.wrappedValue = "Default" } label: {
+                if clipsSelected { Label("clips", systemImage: "checkmark") } else { Text("clips") }
+            }
+            ForEach(subs.filter { $0.lowercased() != "clips" }, id: \.self) { s in
+                Button { subfolder.wrappedValue = s } label: {
+                    if curSub == s { Label(s, systemImage: "checkmark") } else { Text(s) }
+                }
+            }
+        } label: {
+            v3AddFieldLabel(clipsSelected ? "clips" : curSub, sub: nil)
+        }.menuStyle(.borderlessButton)
     }
 
     /// Open the per-destination editor for an SSD destination (click a tile). The drive is fixed —
