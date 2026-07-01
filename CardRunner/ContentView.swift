@@ -2277,6 +2277,14 @@ struct ContentView: View {
     @State private var v3AddName = ""           // destination display name (auto-derived, editable)
     @State private var v3AddNameEdited = false  // don't stomp a name the user typed
     @State private var v3AddError = ""          // duplicate-leaf / validation message
+    // v3 per-destination EDITOR (click a tile) — reuses the Add sheet's project/subfolder/name fields.
+    @State private var showV3EditDest = false
+    @State private var v3EditDestID: UUID? = nil   // which destination is being edited
+    @State private var v3EditProject = ""
+    @State private var v3EditSubfolder = "Default"
+    @State private var v3EditName = ""
+    @State private var v3EditNameEdited = true  // an existing dest already has a chosen name — don't auto-stomp it
+    @State private var v3EditError = ""
     @State private var v3SettingsCat: V3SettingsCat = .general   // selected icon-rail category
     @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
     @FocusState private var editingAwaitingID: UUID?             // which awaiting lane's name field is live
@@ -15404,11 +15412,12 @@ extension ContentView {
             .map { $0.lastPathComponent }.filter { !$0.hasPrefix(".") }.sorted()
     }
 
-    /// Live path preview for the Add-destination sheet.
-    private var v3AddPreview: String {
-        let drive = v3AllDrives.first { $0.path == v3AddDrivePath }?.name ?? "drive"
-        let proj = v3AddProject.trimmingCharacters(in: .whitespaces)
-        let sub  = (v3AddSubfolder == "Default" || v3AddSubfolder.isEmpty) ? "clips" : v3AddSubfolder
+    /// Live `{drive}/{project}/{sub}/{date}/{card}` preview — shared by the Add and Edit sheets.
+    private func v3PathPreview(drivePath: String, project: String, subfolder: String) -> String {
+        let drive = v3AllDrives.first { $0.path == drivePath }?.name
+            ?? (drivePath.isEmpty ? "drive" : URL(fileURLWithPath: drivePath).lastPathComponent)
+        let proj = project.trimmingCharacters(in: .whitespaces)
+        let sub  = (subfolder == "Default" || subfolder.isEmpty) ? "clips" : subfolder
         return proj.isEmpty ? "Pick a project folder" : "\(drive) / \(proj) / \(sub) / {date} / {card}"
     }
 
@@ -15433,15 +15442,122 @@ extension ContentView {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.10)))
     }
 
-    /// True if adding this drive+project+subfolder would duplicate an existing destination's resolved
-    /// leaf (same footage tree). Same drive with a DIFFERENT project is allowed.
-    private func v3AddIsDuplicate() -> Bool {
-        let proj = v3AddProject.trimmingCharacters(in: .whitespaces)
-        return destinations.contains { d in
-            !d.isCustomFolder && d.path == v3AddDrivePath
-                && resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName) == (proj.isEmpty ? projectName.trimmingCharacters(in: .whitespaces) : proj)
-                && (d.subfolder.isEmpty ? "Default" : d.subfolder) == v3AddSubfolder
+    /// Project-folder + subfolder + destination-name fields, shared by the Add and Edit sheets so both
+    /// pickers behave identically. `drivePath` is fixed by the caller (chosen in Add, locked in Edit);
+    /// this group never re-picks the drive. Typing/picking a project auto-derives the name until the
+    /// user edits it (`nameEdited`); picking an existing project folder resets the subfolder to Default.
+    @ViewBuilder
+    private func v3DestFieldGroup(drivePath: String,
+                                  project: Binding<String>, subfolder: Binding<String>,
+                                  name: Binding<String>, nameEdited: Binding<Bool>,
+                                  error: Binding<String>) -> some View {
+        v3SheetLabel("Project folder")
+        HStack(spacing: 8) {
+            TextField("Project name…", text: Binding(
+                get: { project.wrappedValue },
+                set: { project.wrappedValue = $0; error.wrappedValue = ""
+                       if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: $0) } }))
+                .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+            let folders = v3ProjectFolders(on: drivePath)
+            if !folders.isEmpty {
+                Menu {
+                    ForEach(folders, id: \.self) { f in Button(f) {
+                        project.wrappedValue = f; subfolder.wrappedValue = "Default"; error.wrappedValue = ""
+                        if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: f) }
+                    } }
+                } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                }.menuStyle(.borderlessButton).fixedSize().help("Pick an existing project folder on this drive")
+            }
         }
+
+        v3SheetLabel("Subfolder")
+        Menu {
+            Button("Default (clips)") { subfolder.wrappedValue = "Default" }
+            ForEach(v3Subfolders(drive: drivePath, project: project.wrappedValue), id: \.self) { s in
+                Button(s) { subfolder.wrappedValue = s }
+            }
+        } label: {
+            v3AddFieldLabel(subfolder.wrappedValue == "Default" ? "Default (clips)" : subfolder.wrappedValue, sub: nil)
+        }.menuStyle(.borderlessButton)
+
+        v3SheetLabel("Destination name")
+        TextField("Name", text: Binding(get: { name.wrappedValue }, set: { name.wrappedValue = $0; nameEdited.wrappedValue = true }))
+            .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+            .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+
+        Text(v3PathPreview(drivePath: drivePath, project: project.wrappedValue, subfolder: subfolder.wrappedValue))
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.middle)
+    }
+
+    /// Open the per-destination editor for an SSD destination (click a tile). The drive is fixed —
+    /// only the project/subfolder/name are editable. Locked while a transfer runs (like Make Default),
+    /// and skipped for custom-folder destinations (their path IS the project root, nothing to edit).
+    private func v3OpenEditDest(_ d: Destination) {
+        guard runningCount == 0, !d.isCustomFolder else { return }
+        v3EditDestID = d.id
+        v3EditProject = d.projectFolder
+        v3EditSubfolder = d.subfolder.isEmpty ? "Default" : d.subfolder
+        v3EditName = d.name
+        v3EditNameEdited = true
+        v3EditError = ""
+        refreshFreeSpaceCache()
+        showV3EditDest = true
+    }
+
+    /// Save the destination editor. Mutates the existing `Destination` in place (never re-routes an
+    /// in-flight card — guarded on `runningCount == 0`) and mkdir's the project folder so it shows in
+    /// Finder (mkdir only, no footage touched — same guards as Add).
+    private func v3CommitEditDest() {
+        guard runningCount == 0, let id = v3EditDestID,
+              let idx = destinations.firstIndex(where: { $0.id == id }) else { showV3EditDest = false; return }
+        let drivePath = destinations[idx].path
+        let proj = v3EditProject.trimmingCharacters(in: .whitespaces)
+        let typed = v3EditName.trimmingCharacters(in: .whitespaces)
+        let driveName = v3AllDrives.first { $0.path == drivePath }?.name ?? destinations[idx].name
+        let name = !typed.isEmpty ? typed : (proj.isEmpty ? driveName : deriveDestName(fromProject: proj))
+        destinations[idx].projectFolder = proj
+        destinations[idx].subfolder = v3EditSubfolder
+        destinations[idx].name = name
+        if !proj.isEmpty, !proj.contains("/"), !proj.contains("..") {
+            try? FileManager.default.createDirectory(
+                atPath: (drivePath as NSString).appendingPathComponent(proj), withIntermediateDirectories: true)
+        }
+        saveDestinations()
+        showV3EditDest = false
+    }
+
+    /// Canonical subfolder key. The shell maps the "Default" subfolder to a literal `clips` directory,
+    /// so a destination whose subfolder is explicitly "clips" lands in the SAME tree as one using
+    /// Default. Collapse them to one key so the two aren't treated as distinct footage trees.
+    private func v3CanonSubfolder(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return (t.isEmpty || t == "Default" || t.lowercased() == "clips") ? "Default" : t
+    }
+
+    /// True if a drive+project+subfolder would land in the SAME footage tree as an existing SSD
+    /// destination (same resolved project + canonical subfolder on the same drive). `excluding` skips
+    /// the destination being edited so saving an unchanged edit isn't flagged as a self-duplicate.
+    /// Same drive with a DIFFERENT project is allowed.
+    private func v3DestLeafConflicts(drivePath: String, project: String, subfolder: String, excluding id: UUID?) -> Bool {
+        let proj = project.trimmingCharacters(in: .whitespaces)
+        let resolvedNew = proj.isEmpty ? projectName.trimmingCharacters(in: .whitespaces) : proj
+        let subNew = v3CanonSubfolder(subfolder)
+        return destinations.contains { d in
+            d.id != id && !d.isCustomFolder && d.path == drivePath
+                && resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName) == resolvedNew
+                && v3CanonSubfolder(d.subfolder) == subNew
+        }
+    }
+
+    /// True if the Add-destination form would duplicate an existing destination's leaf.
+    private func v3AddIsDuplicate() -> Bool {
+        v3DestLeafConflicts(drivePath: v3AddDrivePath, project: v3AddProject, subfolder: v3AddSubfolder, excluding: nil)
     }
 
     private func v3CommitAddDest() {
@@ -15526,43 +15642,9 @@ extension ContentView {
                                     sub: v3AddDrivePath.isEmpty ? nil : v3FreeSpace(v3AddDrivePath))
                 }.menuStyle(.borderlessButton)
 
-                v3SheetLabel("Project folder")
-                HStack(spacing: 8) {
-                    TextField("Project name…", text: Binding(
-                        get: { v3AddProject },
-                        set: { v3AddProject = $0; v3AddError = ""; if !v3AddNameEdited { v3AddName = deriveDestName(fromProject: $0) } }))
-                        .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                        .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-                    let folders = v3ProjectFolders(on: v3AddDrivePath)
-                    if !folders.isEmpty {
-                        Menu {
-                            ForEach(folders, id: \.self) { f in Button(f) { v3SetAddProject(f) } }
-                        } label: {
-                            Image(systemName: "chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-                                .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                        }.menuStyle(.borderlessButton).fixedSize().help("Pick an existing project folder on this drive")
-                    }
-                }
-
-                v3SheetLabel("Subfolder")
-                Menu {
-                    Button("Default (clips)") { v3AddSubfolder = "Default" }
-                    ForEach(v3Subfolders(drive: v3AddDrivePath, project: v3AddProject), id: \.self) { s in
-                        Button(s) { v3AddSubfolder = s }
-                    }
-                } label: {
-                    v3AddFieldLabel(v3AddSubfolder == "Default" ? "Default (clips)" : v3AddSubfolder, sub: nil)
-                }.menuStyle(.borderlessButton)
-
-                v3SheetLabel("Destination name")
-                TextField("Name", text: Binding(get: { v3AddName }, set: { v3AddName = $0; v3AddNameEdited = true }))
-                    .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                    .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-
-                Text(v3AddPreview).font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.middle)
+                v3DestFieldGroup(drivePath: v3AddDrivePath,
+                                 project: $v3AddProject, subfolder: $v3AddSubfolder,
+                                 name: $v3AddName, nameEdited: $v3AddNameEdited, error: $v3AddError)
             } else {
                 v3SheetLabel("Folder path")
                 Button { v3PickCustomFolderForAdd() } label: {
@@ -15595,6 +15677,66 @@ extension ContentView {
                 }
             }
             .padding(.top, 4)
+        }
+        .padding(26).frame(width: 460)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+    }
+
+    // MARK: Edit-destination sheet (click a tile)
+
+    private var v3EditDestSheet: some View {
+        let dest = v3EditDestID.flatMap { id in destinations.first { $0.id == id } }
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Edit destination").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Spacer(); v3SheetClose { showV3EditDest = false }
+            }
+            if let dest {
+                // Drive is fixed for an existing destination — shown read-only (edit where footage lands
+                // on it, not which drive). Locked in the UI too if a transfer starts while the sheet is open.
+                v3SheetLabel("Drive")
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(v3AllDrives.first { $0.path == dest.path }?.name
+                             ?? URL(fileURLWithPath: dest.path).lastPathComponent)
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                        Text(v3FreeSpace(dest.path)).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                    }
+                    Spacer()
+                    Image(systemName: "lock.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+                        .help("The drive can't be changed here — remove and re-add to move a destination to a different drive.")
+                }
+                .padding(14).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.10)))
+
+                v3DestFieldGroup(drivePath: dest.path,
+                                 project: $v3EditProject, subfolder: $v3EditSubfolder,
+                                 name: $v3EditName, nameEdited: $v3EditNameEdited, error: $v3EditError)
+
+                if !v3EditError.isEmpty {
+                    Label(v3EditError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber)
+                } else if runningCount > 0 {
+                    Label("A transfer is running — save is locked until it finishes.", systemImage: "lock.fill")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber)
+                } else {
+                    Text("Editing changes where FUTURE cards to this destination land. Cards already copying are unaffected.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 12) {
+                    v3SheetCancel { showV3EditDest = false }
+                    v3SheetPrimary("Save changes", icon: "checkmark", enabled: runningCount == 0) {
+                        if v3DestLeafConflicts(drivePath: dest.path, project: v3EditProject,
+                                               subfolder: v3EditSubfolder, excluding: v3EditDestID) {
+                            v3EditError = "Another destination already uses that project + subfolder on this drive."
+                        } else { v3CommitEditDest() }
+                    }
+                }
+                .padding(.top, 4)
+            } else {
+                Text("This destination is no longer available.").font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
+                v3SheetCancel { showV3EditDest = false }
+            }
         }
         .padding(26).frame(width: 460)
         .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
@@ -16003,6 +16145,7 @@ extension ContentView {
             if let new { v3PreEditName = activeIngests[new]?.pendingRename ?? "" }
         }
         .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
+        .sheet(isPresented: $showV3EditDest) { v3EditDestSheet }
         .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
         .sheet(isPresented: $showV3History) { v3HistorySheet }
         .sheet(isPresented: $showV3Log) { v3LogSheet }
@@ -17191,6 +17334,8 @@ extension ContentView {
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(
             dragOverDest == d.id ? v3Cyan.opacity(0.7) : v3Amber.opacity(0.5),
             style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
+        .contentShape(Rectangle())
+        .onTapGesture { if runningCount == 0 && !d.isCustomFolder { v3OpenEditDest(d) } }
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["dest-default": $0] }
         .background(GeometryReader { g in
             Color.clear
@@ -17210,6 +17355,8 @@ extension ContentView {
             .background(.white.opacity(dragOverDest == d.id ? 0.09 : 0.04), in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
                 dragOverDest == d.id ? v3Cyan.opacity(0.7) : .white.opacity(0.10)))
+            .contentShape(Rectangle())
+            .onTapGesture { if runningCount == 0 && !d.isCustomFolder { v3OpenEditDest(d) } }
             .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["dest-\(d.id)": $0] }
             .background(GeometryReader { g in
                 Color.clear
@@ -17239,6 +17386,11 @@ extension ContentView {
                     .foregroundStyle(v3Cyan.opacity(0.7)).lineLimit(1).truncationMode(.middle)
             }
             Spacer()
+            // Edit affordance — the whole tile is clickable to edit its project/subfolder (SSD dests only).
+            if runningCount == 0 && !d.isCustomFolder {
+                Image(systemName: "pencil").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+                    .help("Click the tile to edit its project & subfolder")
+            }
             if runningCount > 0 && isDefault {
                 Text(v3SpeedText(v3CombinedMBps)).font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundStyle(v3Cyan)
             }
