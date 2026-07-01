@@ -2152,21 +2152,24 @@ struct V3HoverModifier: ViewModifier {
     var scale: CGFloat
     var glow: Color?
     var brighten: Bool
+    var enabled: Bool
     @State private var hovering = false
+    private var active: Bool { hovering && enabled }
     func body(content: Content) -> some View {
         content
-            .brightness(hovering && brighten ? 0.06 : 0)
-            .scaleEffect(hovering ? scale : 1)
-            .shadow(color: (glow ?? .clear).opacity(hovering ? 0.5 : 0), radius: 12)
-            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovering)
+            .brightness(active && brighten ? 0.06 : 0)
+            .scaleEffect(active ? scale : 1)
+            .shadow(color: (glow ?? .clear).opacity(active ? 0.5 : 0), radius: 12)
+            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: active)
             .onHover { hovering = $0 }
     }
 }
 extension View {
     /// Tactile hover (scale + optional glow/brighten). Use `.contentShape(Rectangle())` on the label
-    /// first when the control needs a bigger hit target than its visible content.
-    func v3Hover(scale: CGFloat = 1.03, glow: Color? = nil, brighten: Bool = true) -> some View {
-        modifier(V3HoverModifier(scale: scale, glow: glow, brighten: brighten))
+    /// first when the control needs a bigger hit target than its visible content. Pass `enabled: false`
+    /// for a disabled control so it doesn't bounce/glow while being unclickable.
+    func v3Hover(scale: CGFloat = 1.03, glow: Color? = nil, brighten: Bool = true, enabled: Bool = true) -> some View {
+        modifier(V3HoverModifier(scale: scale, glow: glow, brighten: brighten, enabled: enabled))
     }
 }
 
@@ -8454,15 +8457,17 @@ struct ContentView: View {
                 AudioEngine.shared.modeSwitch()
             }
             // View → Show History  (⌘⇧H) — route to the v3 history sheet (the legacy inline
-            // panel renders invisibly under v3); legacy UI keeps its inline panel.
+            // panel renders invisibly under v3); legacy UI keeps its inline panel. Ignored while
+            // Settings is open so a module can't render BEHIND the settings scrim (which would also
+            // put two Escape/.cancelAction handlers on screen at once).
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleHistory)) { _ in
                 if isLegacyUI { withAnimation(spring2) { showHistory.toggle() } }
-                else { showV3History.toggle() }
+                else if !isShowingSettings { showV3History.toggle() }
             }
             // View → Show Log  (⌘⇧G)
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleLog)) { _ in
                 if isLegacyUI { withAnimation(spring2) { showLog.toggle() } }
-                else { showV3Log.toggle() }
+                else if !isShowingSettings { showV3Log.toggle() }
             }
             // Help → Report an Issue…
             .onReceive(NotificationCenter.default.publisher(for: .menuReportIssue)) { _ in
@@ -16030,7 +16035,7 @@ extension ContentView {
                 .background(v3Brand, in: RoundedRectangle(cornerRadius: 11))
                 .opacity(enabled ? 1 : 0.4)
                 .contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(!enabled).v3Hover(glow: v3Purple)
+        }.buttonStyle(.plain).disabled(!enabled).v3Hover(glow: v3Purple, enabled: enabled)
     }
 
     // MARK: Ingest-history sheet
@@ -16288,6 +16293,11 @@ extension ContentView {
                             Canvas { ctx, _ in v3DrawFunnel(&ctx, rects: rects, phase: 0) }
                         }
                     }
+                    // The funnel Canvas is the background of the central columns, so this catches taps
+                    // on the empty central stage too — click there to leave (and commit) a lane-name
+                    // edit. It sits BEHIND the lanes/tiles/ring/dots, so their taps + drags win.
+                    .contentShape(Rectangle())
+                    .onTapGesture { editingAwaitingID = nil; editingActiveID = nil }
                 }
                 v3BottomBar
             }
@@ -16837,7 +16847,7 @@ extension ContentView {
                 Label("Run UI Demo", systemImage: "play.circle.fill")
                     .font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(demoBlocked ? .white.opacity(0.3) : v3Cyan)
-                .disabled(demoBlocked).v3Hover(scale: 1.05)
+                .disabled(demoBlocked).v3Hover(scale: 1.05, enabled: !demoBlocked)
                 .help(awaitingCards.isEmpty ? "Simulate a full ingest (no card needed) — exercises every lane/ring state"
                                             : "Unavailable while cards are waiting to route — the demo would auto-start them")
 
