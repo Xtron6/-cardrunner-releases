@@ -4476,7 +4476,6 @@ struct ContentView: View {
                 refreshDestinations()
                 refreshFreeSpaceCache()  // a new drive changes available capacity tiles
                 cleanupOrphanPartialDirs()
-                restoreProjectForCurrentSSD()
                 revalidateCustomDest()   // a newly mounted volume may satisfy a stale path
                 // Primary card detection path: fire a scan ~0.6 s after mount so the
                 // filesystem has fully settled. This replaces the 2-second poll as the
@@ -5332,22 +5331,10 @@ struct ContentView: View {
         return nil
     }
 
-    private func saveProjectForCurrentSSD() {
-        guard let ssd = selectedPrimary else { return }
-        let name = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        var map = UserDefaults.standard.dictionary(forKey: "pref_ssdProjectMap") as? [String: String] ?? [:]
-        map[ssd.path] = name
-        UserDefaults.standard.set(map, forKey: "pref_ssdProjectMap")
-    }
-
-    private func restoreProjectForCurrentSSD() {
-        guard let ssd = selectedPrimary else { return }
-        let map = UserDefaults.standard.dictionary(forKey: "pref_ssdProjectMap") as? [String: String] ?? [:]
-        if let remembered = map[ssd.path], !remembered.isEmpty {
-            projectName = remembered
-        }
-    }
+    // (Removed: saveProjectForCurrentSSD / restoreProjectForCurrentSSD + the legacy
+    //  pref_ssdProjectMap. The v3 per-destination `projectFolder` is now the single source
+    //  of truth for project routing; the legacy SSD→project auto-restore was redundant and
+    //  could override the current project from a now-frozen map on drive mount.)
 
     private func refreshProjectFolders() {
         availableProjects = []
@@ -6381,6 +6368,11 @@ struct ContentView: View {
         let resolvedProjectRoot: String
         let useCustomDestForThisCard: Bool
         let resolvedSubfolder: String   // per-destination subfolder (SSD), else global/Default
+        // The project folder NAME actually passed to the shell as --project. MUST be the
+        // resolved per-destination value (same as resolvedProjectRoot's leaf), NOT the raw
+        // global projectName — otherwise footage lands under a different folder than the UI
+        // shows for a destination whose projectFolder differs from the global project.
+        let resolvedProjectName: String
         if let dest = destination ?? defaultDestination {
             if dest.isCustomFolder {
                 var isDestDir: ObjCBool = false
@@ -6393,6 +6385,7 @@ struct ContentView: View {
                 useCustomDestForThisCard = true
                 resolvedDestRoot    = dest.path
                 resolvedProjectRoot = dest.path
+                resolvedProjectName = ""          // custom mode emits --dest-root, no --project
                 resolvedSubfolder   = "Default"   // custom mode ignores subfolder (footage → dest/date)
             } else {
                 // Per-destination project folder wins; empty falls back to the global project.
@@ -6404,6 +6397,7 @@ struct ContentView: View {
                 useCustomDestForThisCard = false
                 resolvedDestRoot    = dest.path
                 resolvedProjectRoot = "\(dest.path)/\(trimmedProject)"
+                resolvedProjectName = trimmedProject   // shell --project = the per-dest project
                 resolvedSubfolder   = dest.subfolder.isEmpty ? "Default" : dest.subfolder
             }
         } else if useCustomDest {
@@ -6418,6 +6412,7 @@ struct ContentView: View {
             useCustomDestForThisCard = true
             resolvedDestRoot    = customDestPath
             resolvedProjectRoot = customDestPath
+            resolvedProjectName = ""          // custom mode emits --dest-root, no --project
             resolvedSubfolder   = "Default"
         } else {
             // Legacy fallback — primary SSD + project.
@@ -6433,6 +6428,7 @@ struct ContentView: View {
             useCustomDestForThisCard = false
             resolvedDestRoot    = primary.path   // passed as --primary to shell
             resolvedProjectRoot = "\(primary.path)/\(trimmedProject)"
+            resolvedProjectName = trimmedProject   // shell --project = the resolved project
             resolvedSubfolder   = selectedSubfolder   // legacy global subfolder
         }
 
@@ -6529,7 +6525,7 @@ struct ContentView: View {
             useCustomDest: useCustomDestForThisCard,
             destRoot: resolvedDestRoot,
             projectRoot: resolvedProjectRoot,
-            projectName: projectName,
+            projectName: resolvedProjectName,   // resolved per-dest project — NOT the raw global
             selectedSubfolder: resolvedSubfolder,   // per-destination subfolder (SSD) — see resolution above
             // Per-card folder name (--cardlabel): see resolveCardLabel. Empty → no --cardlabel.
             useCustomCardName: !effectiveCardLabel.isEmpty,
@@ -6607,7 +6603,7 @@ struct ContentView: View {
             checkpointProjectName = URL(fileURLWithPath: resolvedProjectRoot).lastPathComponent
         } else {
             checkpointPrimaryPath = resolvedDestRoot
-            checkpointProjectName = projectName.trimmingCharacters(in: .whitespaces)
+            checkpointProjectName = resolvedProjectName   // match the resolved per-dest project
         }
 
         let startSub = (resolvedSubfolder == "Default" || resolvedSubfolder.isEmpty) ? "clips" : resolvedSubfolder
