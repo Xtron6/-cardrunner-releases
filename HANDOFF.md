@@ -1,187 +1,155 @@
 # CardRunner — Session Handoff
 
-**For:** the next coding agent / chat (context is filling up).
+**For:** the next coding agent / chat (context reset).
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `HEAD` (batch2 UI polish, reviewer-verified). Build + **~67 unit** + **40 smoke** all green.
+**Latest commit:** `88f61a8`. Build + **67 unit** + **40 smoke** all green.
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
-> Read `MEMORY.md` + `cardrunner-roadmap.md` first — they hold the full chronology + locked decisions. This file is the fast snapshot.
+> Read `MEMORY.md` (index) → `cardrunner-roadmap.md` (full chronology + locked decisions) → this file (fast snapshot) → `UI-future.md` (repo root; design North Star for later). The roadmap memory is the deepest record; skim its newest entries first.
 
 ---
 
 ## 0. WHAT THE APP IS (30-second history)
 
-CardRunner is a **camera-card offload tool** for video/photo shooters: plug an SD/CFexpress card, and it copies the footage to your SSD(s) **instantly and safely** — verified, never losing footage, never reporting a failed transfer as success. The core promise: *"armed and watching; auto-starts the instant a card is plugged in."*
+CardRunner is a **camera-card offload tool** for video/photo shooters: plug an SD/CFexpress card and it copies footage to your SSD(s) **instantly and safely** — verified, never losing footage, never reporting a failed transfer as success. Core promise: *"armed and watching; auto-starts the instant a card is plugged in."*
 
-- **The engine is unchanged and battle-tested:** `CardRunner.sh` (~2.5k-line zsh) drives `cardcopy` (native C, fcopyfile/clonefile — no rsync/cp fallback). It handles scan/filter, a source-keyed **manifest** (never re-copy the same card's clips), atomic-partial + inline verify, N-way `--secondary` mirror, broadcast-day date filtering, project scaffolding, Finder tags, rename templates.
-- **The UI was rebuilt** into the "v3" node-based dashboard (the big center **ring** = app identity + live progress; source **lanes** on the left; **destinations** on the right; funnel connectors between). v3 is now the **default app face**; the legacy UI is an escape hatch (`CR_LEGACY_UI=1`).
-- **Proven on real hardware:** a 26-clip / 17.7 GB ingest at 227 MB/s, Status=OK.
-
-Tiers 1–3 (history/stats, keyboard+menu wiring, footage-safety completion chain, N-way per-card routing, and a large batch of v3 parity/polish) are **complete and reviewer-verified**. See §6 for the recent feature list.
+- **Engine (unchanged, battle-tested):** `CardRunner.sh` (~2.5k-line zsh) drives `cardcopy` (native C, fcopyfile/clonefile — no rsync/cp fallback). Scan/filter, source-keyed **manifest** (never re-copy a card's clips), atomic-partial + inline verify, N-way `--secondary` mirror, broadcast-day date filtering, project scaffolding, Finder tags, rename templates, `--subfolder`, `--cardlabel`, `--ignore-manifest`.
+- **The v3 UI** is now the REAL app face: the node-based dashboard (center **ring** = identity + live progress; source **lanes** left; **destinations** right; funnel connectors between). Fully polished across many batches (liquid-glass, hover on every control, reorder-drag, completion celebration, onboarding).
+- Proven on real hardware: 26-clip / 17.7 GB ingest at 227 MB/s, Status=OK.
 
 ---
 
-## 1. ★ ACTIVE WORK — Destination selection/refinement redesign (IN PROGRESS)
+## 1. ★ ACTIVE / NEXT TASK — Archive the legacy UI, pivot fully to v3
 
-This is the live task. Design-first: a reviewer sub-agent proposed the design, Xavier aligned on the decisions, then coding.
+**Xavier's decision (this session):** he's happy with the v3 UI and wants to **fully transition** — retire the legacy UI. His exact framing: *"archive the old layout … just to keep it for the next little bit, just in case, but I'd like to fully transition to the new UI. Whatever needs to be done in the back end. Make sure you review it with our review agent so we're fully clear as a team."*
 
-**Problem being solved:** v3's destination handling was incomplete. (1) BUG: the "Add destination" SSD tab showed "No drives available" because the sole SSD was already the default destination (filtered out of the "unused drives" list). (2) A `Destination` was just a drive path — it had **lost the old per-drive project folder + subfolder**, so per-card routing only routed the *drive*, not the project structure. (3) No way to edit a destination after creating it.
+**Why this is a careful REFACTOR, not a delete — the crux:**
+`ContentView.body` (~3100) is:
+```swift
+if CR_LEGACY_UI { legacyBody }
+else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3 } }
+```
+The **invisible legacy body is the HOST of load-bearing wiring**, not just old visuals: card **detection** (`didMount → scanForNewCardsAndIngest`), the 30-s scan **timers**, menu/keyboard **handlers** (the menu-notification bus), engine-triggered **`.sheet`/`.alert`** (transfer-failed, resume-checkpoint, wrong-clock, setup wizard, support bundle), and many `.onChange`/`.onReceive`/`.onAppear` modifiers. `bodyV3` is PURE presentation over the same `@State`. So removing legacyBody requires **migrating that wiring onto v3 first**.
 
-**Xavier's locked decisions:** per-destination project/subfolder = YES; **allow the same drive twice** with different projects; **edit by clicking the tile**. Auto-derive the destination NAME from the project folder = **CLEANED RAW** (strip leading date token like `260626_`, no camelCase spacing), editable.
+**Plan (agreed approach — do it in the reviewer loop):**
+1. **Reviewer audits** everything attached to `legacyBody` and classifies each modifier/handler as **migrate** (still needed — re-home onto bodyV3 or a neutral host), **delete** (legacy-visual-only), or **already-in-v3** (bodyV3 already renders it, e.g. settings).
+2. Lead migrates the "migrate" set onto bodyV3 (or a small shared wiring host), keeping build + 67 unit + 40 smoke green each step.
+3. Delete the legacy VISUAL layout (the old ring/lanes/settings-sheet views — thousands of lines).
+4. **Keep the `CR_LEGACY_UI` flag as an escape hatch for "the next little bit"** (Xavier's call) — remove it in a LATER cycle once he's confirmed on hardware that nothing regressed. Optionally keep the deleted layout on a git tag/branch for reference.
+5. **Engine untouched** — `CardRunner.sh`, `cardcopy`, all pure tested fns stay. This is UI-host surgery only.
 
-**STAGE A — COMMITTED (`f632071`), reviewer-verified behavior-preserving.** The engine core:
-- `Destination` grew `projectFolder: String = ""` + `subfolder: String = "Default"`, with a **custom Codable decoder** (`try decodeIfPresent ?? default`) — synthesized Codable throws `keyNotFound` on old JSON and would have **WIPED the saved destinations list** (caught by a migration unit test).
-- Pure `resolveProjectFolder(destProject:globalProject:)` — per-dest wins, empty → global fallback. `startIngest` now resolves the ROUTED destination's project/subfolder (new `resolvedSubfolder` threaded into `buildIngestArgs`). Empty-project refusal preserved.
-- Migration is behavior-preserving: `migrateLegacyDestinations` seeds the migrated SSD dest's `subfolder` from the global (subfolder has no runtime fallback). Checkpoint + notification use the resolved subfolder.
+**FOOTAGE-SAFETY:** dropping a detection handler or a failure alert = a real regression. This is the whole reason it goes through the reviewer loop. Verify: plug a card → still auto-detects/routes/ingests; a failed transfer → still shows the "do not format" record + alert; resume/wrong-clock/support flows still fire.
 
-**STAGE B — COMMITTED (`dda08df`), reviewer-verified production-ready.** The Add-destination UI:
-- Fix the "No drives available" bug: the Add-dest SSD Drive menu now lists `v3AllDrives` (ALL mounted drives). Removed `v3UnusedDrives`/`v3AddDriveDestination`.
-- SSD tab: Drive + **Project folder** (type new or pick existing via `v3ProjectFolders`) + **Subfolder** (`v3Subfolders`) + **Destination name** (auto-derived, editable) + **live path preview** (`v3AddPreview`).
-- Pure `deriveDestName(fromProject:)` (cleaned-raw), wired via `v3SetAddProject`; `v3AddNameEdited` flag stops it stomping a typed name. 5 tests.
-- `v3CommitAddDest` writes the fields + `mkdir`s `{drive}/{project}` (guarded vs `/`+`..`, idempotent — no footage touched); allows same drive twice.
-- `v3AddIsDuplicate()` blocks an identical drive+resolvedProject+subfolder leaf (amber inline error); same drive + different project OK.
-- Tiles show `v3DestPathLabel(d)` = `{project} / {subfolder}` so same-drive dests are distinguishable.
+**Persistent reviewer to resume:** SendMessage to `a8671aecd45cdbc6a` (it has this whole session's context). Kick it off with the legacy-wiring audit as an ASSESS pass, align, then execute.
 
-**STAGE C — COMMITTED (`7ce935b`), reviewer-verified production-ready.** The click-tile editor:
-- Clicking a `v3DestTile` OR the golden `v3DefaultDestBox` opens `v3EditDestSheet` to edit that dest's project/subfolder/name. Drive shown **read-only** (remove+re-add to move drives). Pencil affordance on tiles; whole tile is the hit target (tap gated on `runningCount == 0 && !isCustomFolder`; custom-folder dests skip the editor).
-- Locked while running: `v3OpenEditDest` + `v3CommitEditDest` both guard `runningCount == 0`; Save disabled w/ amber "transfer running" hint. `v3CommitEditDest` mutates `destinations[idx]` in place (id/path/isCustomFolder preserved → default never orphaned) + `saveDestinations` + mkdir's the project folder (guarded vs `/`+`..`, mkdir-only).
-- **Reused Stage-B fields via a shared `v3DestFieldGroup` @ViewBuilder** now used by BOTH Add + Edit sheets (Add refactored onto it, behavior-preserving). Old `v3AddPreview` → parameterized `v3PathPreview`.
-- **P2 fold-in DONE:** `v3CanonSubfolder` collapses `""`/`"Default"`/`"clips"` to one key, used ONLY in the generalized `v3DestLeafConflicts(...excluding:)` dup guard (saved subfolder + shell args untouched). `v3AddIsDuplicate` delegates with `excluding: nil`; editor passes `excluding: v3EditDestID` so an unchanged self-save isn't flagged.
-
-**NEXT-CHAT TODO (the destination redesign is now feature-complete; these are optional polish):**
-1. Possible polish: a "New project folder…" affordance with scaffold/color inside Add/Edit (currently you type the project name and it's `mkdir`'d bare on commit); camelCase-spacing name option (deferred — Xavier wants cleaned-raw on real folder names first).
-2. Move on to **Settings Stage 2** (§8.2) — the next real work item.
+*(Two smaller open follow-ups, both deferred: Reduce-Motion pass across the app generally; the `UI-future.md` polish batch — edge-aware scrollbar, module blur-in transitions, gradient-border on the golden box, expandable settings rail, proximity scaling — all optional, not now.)*
 
 ---
 
-## 2. How to build / run / test
+## 2. ★ WORKING PROCESS — READ THIS (changed this session)
+
+### 2a. Build / run / test — Xavier now runs via Xcode (NEW)
+**Xavier drives Xcode: he hits ⌘R to build + live-preview.** Do NOT resume the old "copy to Desktop + ad-hoc re-sign" refresh — we stopped it this session. Reasons: Xcode signs with a **stable dev identity**, so Full Disk Access + keychain permissions PERSIST (the ad-hoc re-sign each refresh changed the cdhash → macOS re-asked for FDA and re-prompted for the Mac password every launch — that churn is GONE with Xcode Run). The old SIGTTIN/App-Nap reasons for needing a Finder-launched app were fixed in code long ago, so Xcode Run works cleanly.
+
+**Your job as the agent:** make code changes, then **compile-check + run tests** to keep green. Do NOT copy/sign the Desktop app anymore.
 
 ```bash
 cd "/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner"
 
-# Build (Debug, no signing)
+# Build (Debug, no signing) — to VERIFY compilation
 xcodebuild -project CardRunner.xcodeproj -scheme CardRunner -configuration Debug \
   -destination 'platform=macOS' CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO build 2>&1 \
   | grep -iE 'error:|BUILD SUCCEEDED|BUILD FAILED'
 
-# Unit tests (~62). MUST skip the UITests target — its runner hangs headless.
+# Unit tests (67). MUST skip the UITests target — its runner hangs headless.
 xcodebuild test -project CardRunner.xcodeproj -scheme CardRunner -destination 'platform=macOS' \
   -only-testing:CardRunnerTests -skip-testing:CardRunnerUITests \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1 | grep -iE 'TEST SUCCEEDED|TEST FAILED'
 
-# Smoke test (37) — runs the REAL shell + cardcopy against synthetic cards. The footage-safety gate.
+# Smoke test (40) — runs the REAL shell + cardcopy against synthetic cards. The footage-safety gate.
 ./smoke_test.sh
 ```
+⚠️ **FLAKY UNIT-TEST HOST:** the FIRST `xcodebuild test` after a build sometimes reports `** TEST FAILED **` with *"The test runner hung before establishing connection"* — an ENVIRONMENTAL degraded-session issue, NOT a code failure. Re-run; it passes. A REAL failure names the test (grep `recorded an issue`). The **smoke test is the real footage-safety gate** (runs via `/bin/zsh` directly).
 
-⚠️ **FLAKY UNIT-TEST HOST:** the FIRST `xcodebuild test` after a build often reports `** TEST FAILED **` with *"The test runner hung before establishing connection."* — this is an ENVIRONMENTAL degraded-session issue (handoff §7 of old doc), **not a code failure**. Re-run; it passes. If it keeps failing, capture full output and grep for `recorded an issue`/`XCTAssert` — a REAL failure names the failing test. The **smoke test is the footage-safety gate** and runs via `/bin/zsh` directly (not the xctest host), so it's reliable.
+### 2b. The agent review loop (Xavier's REQUIRED working mode)
+Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`general-purpose`, read-only, reviews the working-tree/committed `git diff` by absolute path) checks it. **Resume the SAME reviewer** via SendMessage each round: agentId **`a8671aecd45cdbc6a`** (has full session context). It returns prioritized P0/P1/P2; fix P0 (footage-safety) first; re-verify; loop until "no P0/P1" BEFORE (or right after) committing. For design-heavy tasks it does an **ASSESS/BRAINSTORM plan FIRST**, Xavier aligns on decisions, then the lead codes. This loop has caught a real footage-safety or migration bug in nearly every batch — **keep using it.** Commit in checkpoints; keep build+tests green.
 
-**Running the real app (Xavier does this; do NOT screen-control unless asked):** after building, refresh + ad-hoc sign the Desktop app so it launches from Finder as a real foreground GUI:
-```bash
-SRC="/Users/xaviergallo/Library/Developer/Xcode/DerivedData/CardRunner-hbuwejbtuggdywgriapcyvzklrwt/Build/Products/Debug/CardRunner.app"
-DST="$HOME/Desktop/CardRunner.app"
-pkill -9 -f "MacOS/CardRunner"; rm -rf "$DST"; cp -R "$SRC" "$DST"
-codesign --force --deep --sign - "$DST"; xattr -dr com.apple.quarantine "$DST"
-```
-Xavier **double-clicks `~/Desktop/CardRunner.app`** (never launch from a terminal — see §7). DerivedData hash `CardRunner-hbuwejbtuggdywgriapcyvzklrwt` has been stable; re-derive if it changes.
-
-**Launch flags:** none for v3 (default). `CR_LEGACY_UI=1` = old UI escape hatch. `CR_V3_DEMO=1` = pure-sim demo.
+**Xcode launch note for the agent:** DerivedData path (if you ever need the built app) is `~/Library/Developer/Xcode/DerivedData/CardRunner-hbuwejbtuggdywgriapcyvzklrwt/Build/Products/Debug/CardRunner.app` — but you shouldn't need it now that Xavier runs via Xcode.
 
 ---
 
 ## 3. Architecture — the graft (v3 UI on the proven engine)
 
-`ContentView.swift` (~17k lines) is ONE giant `struct ContentView: View` holding ALL engine logic AND the UI. We did NOT extract a controller.
+`ContentView.swift` (~18.4k lines) is ONE giant `struct ContentView: View` holding ALL engine logic AND the UI. No separate controller.
 
-- **`ContentView.body`**: `if CR_LEGACY_UI { legacyBody } else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3 } }`. The **legacy body stays mounted-invisible** so its proven wiring keeps running: card detection (`didMount → scanForNewCardsAndIngest`), the 30-s fallback scan loop, timers, menu-notification handlers, and `.sheet`/`.alert` modifiers (which float OVER v3).
-- **`bodyV3`** (an `extension ContentView` at the END of the file — must be same file; reads `private @State`). Pure presentation over the real `@State`; actions via direct `@State` mutation or the **menu-notification bus**.
-- **Gotcha:** any legacy *inline overlay* (not a `.sheet`/`.alert`) renders INVISIBLY under v3. If a menu command "does nothing," it's almost always this — render a v3 equivalent, gate the legacy copy behind `isLegacyUI`.
-- **Top-level PURE, unit-tested fns** (footage-safety + logic core): `buildIngestArgs`, `evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `failureRecordsSurviving`, `cardIsAlreadyTracked`, `resolveCardLabel`, `resolveProjectFolder`, `deriveDestName`.
+- **`ContentView.body`:** `if CR_LEGACY_UI { legacyBody } else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3; if showOnboarding { OnboardingView(...).zIndex(1000) } } }`. The **legacy body stays mounted-invisible** so its proven wiring keeps running (detection, timers, menu handlers, `.sheet`/`.alert`). **← §1 is about removing this dual-body.**
+- **`bodyV3`** (an `extension ContentView` at the END of the file — must be same file; reads `private @State`). Pure presentation over real `@State`; actions via direct `@State` mutation or the **menu-notification bus**.
+- **Gotcha:** any legacy *inline overlay* (not `.sheet`/`.alert`) renders INVISIBLY under v3. If a menu command "does nothing," it's almost always this — render a v3 equivalent, gate the legacy copy behind `isLegacyUI`.
+- **Top-level PURE, unit-tested fns** (footage-safety + logic core): `buildIngestArgs`, `evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `failureRecordsSurviving`, `cardIsAlreadyTracked`, `resolveCardLabel`, `resolveProjectFolder`, `deriveDestName` (+ `splitCamelCase`).
 
-**Routing model (current):** PER-CARD only (split/mirror mode was removed). Each card copies to its routed/default destination. Folder layout: `{drive}/{project}/{subfolder|clips}/{date}/{cardlabel}/` — where **project+subfolder are per-DESTINATION** (Stage A) and **cardlabel is per-CARD** (the editable lane name). The legacy dual-dest path (`dualDestEnabled`/`secondaryPath`, no-Destination-list users) still emits one `--secondary` and is untouched.
+**Routing model:** PER-CARD only (split/mirror removed). Folder layout `{drive}/{project}/{subfolder|clips}/{date}/{cardlabel}/` — project+subfolder are per-**DESTINATION**, cardlabel per-**CARD**. Destinations are a persisted **LIST** (`pref_destinationsJSON`); default resolved by **ID** (`defaultDestIDString`), never by array index (so tile reordering is display-only + safe).
 
 ---
 
 ## 4. Footage-safety core (the most important thing)
 
 Promise: **never lose footage, never report a failed transfer as success, never let the operator think a failed card is safe to format.**
-- `evaluateIngestOutcome(exitStatus:ingest:)` = the SINGLE authoritative success/failure gate (`didFail = exitStatus != 0 || hasCopyError`).
-- `FailedIngestRecord` (persisted, has `volumeUUID`) = the "DO NOT FORMAT" warning; a failure ALWAYS writes one (mid-copy, early-abort `newFiles==0`, cancel, or process-launch failure). `failureRecordsSurviving()` decides what a success clears (UUID match, or name+non-empty-nickname; NEVER name-alone). Surfaced by `v3FailureStrip` + failure-first ring. `v3AllDone`/green-ring is IMPOSSIBLE while any failure exists.
-- **Dry Run** = simulation, copies NOTHING; a loud persistent `v3DryRunBanner` fires whenever `dryRun==true` so a simulated "done" lane is never mistaken for real footage.
-- **The manifest** (`~/Library/Application Support/CardRunner/manifests/{uuid}.tsv`) is SOURCE-keyed (`rel|size|mtime`) and destination-agnostic — it prevents re-copying a card's clips even to a new folder. `--ignore-manifest` (surfaced via the "Re-ingest all N" button in the "Already up to date" prompt) deliberately re-copies; it can only add files (the dest-exists check still prevents in-place overwrite).
-- ⚠️ When touching ANY of this, run the smoke test + the `failure*`/`outcome*` unit tests.
+- `evaluateIngestOutcome(exitStatus:ingest:)` = the SINGLE authoritative success/failure gate.
+- `FailedIngestRecord` (persisted, has `volumeUUID`) = the "DO NOT FORMAT" warning; a failure ALWAYS writes one. `failureRecordsSurviving()` decides what a success clears (UUID match, or name+non-empty-nickname; NEVER name-alone). Surfaced by `v3FailureStrip` + failure-first ring. Green/all-done is IMPOSSIBLE while any failure exists.
+- **Dry Run** = simulation, copies NOTHING; loud persistent `v3DryRunBanner`.
+- **Manifest** (`~/Library/Application Support/CardRunner/manifests/{uuid}.tsv`) is SOURCE-keyed + destination-agnostic. `--ignore-manifest` deliberately re-copies (dest-exists check still prevents in-place overwrite).
+- **Completion celebration** only fires on a REAL successful batch (`v3PendingCelebration` set only when `newFiles>0 && !dryRun`; `v3MaybeCelebrate` guards `!v3HasFailures/!dryRun`). NEVER on failure/dry-run/empty/launch. The onboarding DEMO is fully isolated (`runDemoIngest(fromOnboarding:)` touches ZERO real ingest state).
+- ⚠️ When touching ANY of this, run the smoke test + the `failure*`/`outcome*` unit tests. When touching §1 (legacy removal), re-verify detection + failure surfacing on hardware.
 
 ---
 
-## 5. The agent review loop (Xavier's REQUIRED working mode)
+## 5. What's been delivered (recent → older; all reviewer-verified no P0/P1)
 
-Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`general-purpose`, read-only, reviews the working-tree `git diff` by absolute path — NOT a worktree) checks it. Resume the SAME reviewer via SendMessage each round. It returns prioritized P0/P1/P2; fix P0 (footage-safety) first; re-verify (build + unit + smoke); loop until "production-ready" BEFORE committing. For design-heavy tasks, the reviewer does an ASSESS/BRAINSTORM pass FIRST, Xavier aligns on decisions, then the lead codes. This loop has caught a real footage-safety or migration bug in nearly every batch — **keep using it.** Refresh the Desktop app after each commit so Xavier can validate on hardware.
-
----
-
-## 6. What's been delivered (the good stuff — recent commits, newest first)
-
-- `7ce935b` **Click-tile destination editor (Stage C)** — click a tile/default box → edit project/subfolder/name (drive locked); shared `v3DestFieldGroup` reused by Add+Edit; `v3CanonSubfolder` folds "clips"≡"Default" into the dup guard. Reviewer-verified, both P2 nits applied.
-- `dda08df` **Destination selection UI (Stage B)** — all-drives list (fixes "No drives available"), project/subfolder pickers, cleaned-raw auto-name, live preview, duplicate-leaf guard, tile disambiguation.
-- `f632071` **Per-destination project/subfolder** — model + resolution (Stage A of the active task).
-- `239b897` **Custom-card-name UX** — focus feedback, green-✓ confirm (Enter locks, never starts), real memory (persists per-UUID; survives re-scan by identity), Esc-revert, live path preview. Reviewer-verified.
-- `b2a6704` **Debug mode in v3** — a DEV strip (gated on the Settings debug toggle): Run UI Demo (`runDemoIngest` — full simulated ingest driving the real lanes/ring), Show Log, Log Files, Dry Run.
-- `1ef18ef` **Settings redesign (Stage 1)** — icon-rail layout, all settings migrated (reviewer-verified parity) + **subtle gloss sheen** (occasional skewed brand-tinted sweep, KeyframeAnimator one-shot, idle between passes). *(Stage 2 = restyle the embedded Presets/Shortcuts/About flows.)*
-- `cbfc136` / `9dd029b` **Top logo** — larger SD-card mark + **Saira ExtraBold Italic** wordmark (bundled static cut, OFL) + tagline "a smoother ingest workflow for creators", centered on the ring.
-- `df2ee9e` **Removed light mode** — dark-only (useLightMode is a constant false; toggle + ⌘⇧D gone).
-- `8aaa338` **Re-ingest (ignore manifest)** — button in the "Already up to date" prompt.
-- `822c734` Drag-to-link a card no longer auto-starts (waits for Start).
-- **Tier 3 batch:** FDA banner in v3, off-main free-space (dead-NAS freeze), same-source ingest guard, custom date range, photo mixed-card hint, max-concurrent control, removed split/mirror (→ per-card routing), preset quick-switch, dry-run reachable+guarded, honest dual-dest toggle.
-- **Per-card folder name** (`--cardlabel`, editable on awaiting + copying lanes, safe rename-at-completion).
-- **Card detection fix** — the app kept watching for cards when Auto-Ingest is OFF (+ re-surface).
+- **Onboarding** ported to v3 + Stage-2 restyle (Saira headlines/system body, v3 palette+bg, editable scaffold list, compact toggle, "hello" page = DM Sans italic + v3 bg, 940pt centered column). **Footage-adjacent fix:** the onboarding demo no longer starts/cancels a REAL ingest. Screen-2 kept as the simple picker. Seeds the v3 default destination on complete via `migrateLegacyDestinations` when empty.
+- **Funnel node lines color-coded** per lane (`v3LineColor` palette) — overlapping card→dest lines are traceable; a failed lane stays RED.
+- **Completion celebration** (v3): one-shot neon burst on the ring, 6 styles (same rawValues, zero migration), Settings has a live "Play preview". No core-burn; reduce-motion honored.
+- **UI polish batches 1-4:** name auto-spacing (camelCase/acronym, no connector-peel — it mangled real words); subfolder picker (real folders, keep "Default" sentinel → byte-identical args); project dropdown-only; always-visible amber routing line; center console single auto-ingest toggle; **liquid-glass** foundation (`.v3Hover()` on every control, `MiniPillToggle`, rounded modules, Escape+click-outside, `V3CloseButton` red-X); **dynamic drag** to reorder destinations + make-default gold pop; tile delete swipe-away; custom liquid-glass date dropdown; hover glows on top-bar (gear/history/preset).
+- **Destination redesign** (Stages A-C): per-destination project/subfolder model + click-tile editor.
+- Tiers 1-3 (history/stats, keyboard+menu wiring, footage-safety completion chain, N-way per-card routing) — complete.
 
 ---
 
-## 7. Hard-won gotchas (do not re-debug these)
+## 6. Hard-won gotchas (do not re-debug)
 
-- **Launch from Finder, not a terminal.** Terminal launch hits SIGTTIN (fixed: ingest shell `standardInput = FileHandle.nullDevice`) and App-Nap suspension (fixed: `ProcessInfo.beginActivity(.userInitiated)` per ingest).
-- **No always-on `TimelineView(.animation)`** — it once burned a whole core (funnel at 120fps) and starved the ingest pipe. The gloss sheen uses a timer-triggered `KeyframeAnimator` one-shot (idle between passes) precisely to avoid this.
-- **Flaky unit-test host** — see §2. Re-run; smoke is the real gate.
-- **Codable migration:** synthesized Codable THROWS on missing keys — adding a field to a persisted struct needs a custom `decodeIfPresent ?? default` decoder or it wipes saved data (bit us on `Destination`; there's a migration unit test now — keep that pattern).
-- **Don't `defaults write` while the app runs** — it flushes @AppStorage on quit and clobbers your write.
-- **Off-main volume/free-space I/O** — a wedged NAS froze launch; free-space is now cached + probed off-main. Keep FS reads off the render/main path.
-
----
-
-## 8. Open items / what's next
-
-1. **Destination redesign — DONE** (§1, Stages A/B/C all committed + reviewer-verified). Optional polish only (see §1 NEXT-CHAT TODO).
-2. **Settings Stage 2** (now the top real item) — restyle the embedded Presets / Shortcuts / About flows to match the new icon-rail look (they work, but wear old styling). Restore the scaffold per-row edit + subfolder field + rename-template live preview simplified in Stage 1.
-3. Lower-priority: remove now-dead legacy popovers; restyle the engine-triggered sheets (resume / wrong-clock / setup wizard / support bundle) still visually legacy; history/stats UserDefaults durability.
+- **Xcode Run is the workflow now** (§2a) — stable signing fixes FDA/keychain re-prompts. Don't reinstate the Desktop-copy refresh.
+- **No always-on `TimelineView(.animation)`** — it once burned a whole core and starved the ingest pipe. Use one-shot `withAnimation` + delayed clear (like the sheen/celebration) or event-driven `.onHover`. Respect Reduce Motion.
+- **Footage-safety STATUS must stay CALM** — never animate the active ring / "SAFE TO PULL" badge / failure strip (motion on status reads as instability). Decorate idle/ambient only.
+- **Codable migration:** synthesized Codable THROWS on missing keys — adding a field to a persisted struct needs a custom `decodeIfPresent ?? default` decoder or it wipes saved data (bit us on `Destination`; there's a migration unit test — keep the pattern).
+- **Flaky unit-test host** — re-run; smoke is the real gate.
+- **`bodyV3` reads `private @State`** → must stay in the same file as ContentView.
+- **Legacy body is load-bearing wiring, not dead weight** (§1) — audit before removing.
 
 ---
 
-## 9. File map
+## 7. File map
 
 | File | Role |
 |---|---|
-| `CardRunner/ContentView.swift` | EVERYTHING — engine + legacy UI + `bodyV3` + v3 Settings + all v3 sheets/lanes/tiles. Top-level pure fns listed in §3. |
-| `CardRunner/CardRunner.sh` | ~2.5k-line zsh ingest engine (scan/filter/manifest/copy/N-way mirror/`--ignore-manifest`/`--subfolder`/`--cardlabel`). |
+| `CardRunner/ContentView.swift` | EVERYTHING — engine + legacy UI (wiring host) + `bodyV3` + v3 Settings + v3 sheets/lanes/tiles + onboarding (`OnboardingView`/`WelcomeCelebrationView` ~12696-13786) + `V3CompletionOverlay`/`V3HoverModifier`/`MiniPillToggle`/`V3CloseButton`. Top-level pure fns in §3. |
+| `CardRunner/CardRunner.sh` | ~2.5k-line zsh ingest engine. |
 | `cardcopy/cardcopy.c` + `CardRunner/cardcopy` | native copy engine (fcopyfile/clonefile). |
 | `CardRunner/CardRunner.swift` | `@main`; `CardRunnerCommands` (menu + keyboard shortcuts). |
-| `CardRunner/Assets.xcassets/CardRunnerLogo.imageset` | the purple SD-card logo. `CardRunner/Saira-ExtraBoldItalic.ttf` + `Saira-OFL.txt` = bundled wordmark font. `Tech Headlines Italic.otf`, `DMSans-Regular.ttf` also bundled (ATSApplicationFontsPath="."). |
-| `CardRunnerTests/CardRunnerTests.swift` | ~66 unit tests (Swift Testing + XCTest). |
+| `CardRunnerTests/CardRunnerTests.swift` | 67 unit tests (Swift Testing + XCTest). |
 | `smoke_test.sh` | 40 checks, real shell+cardcopy. Gated in `release.sh`. |
+| `UI-future.md` (repo root) | Design North Star for later polish (scrollbar, transitions, gradient borders, expandable rail, proximity scaling) — NOT queued. |
+| `CardRunner/*.ttf/.otf` | `SairaItalic-ExtraBoldItalic` (wordmark + onboarding headlines), `DMSans-Regular`, `Tech Headlines Italic` (legacy only). ATSApplicationFontsPath=".". |
 
 ---
 
-## 10. Locked decisions (do not violate)
+## 8. Locked decisions (do not violate)
 - Copy engine is `fcopyfile()`/clonefile only. No rsync/cp/fallback.
 - Mac-only native Swift. No HTML/WebView UI (tried + scrapped).
 - Keep the big center ring (app identity). App is **dark-only** (light mode removed).
-- Routing: **per-card only** (split/mirror removed). Plug a card → auto-route to default + auto-start (instant-ingest promise) when Auto-Ingest is ON. "Waiting/blocked" only when no destination configured.
+- Routing: **per-card only** (split/mirror removed). Plug a card → auto-route to default + auto-start when Auto-Ingest ON. Default resolves by **ID**; destination order is display-only.
 - Manual pull default; auto-eject opt-in. Footage safety > convenience.
-- Every footage-touching change goes through the lead+reviewer loop before commit. Don't screen-control the running app unless Xavier asks — he validates on hardware.
-- CARDRUNNER wordmark = Saira ExtraBold Italic.
-- **Destination auto-name = date-stripped + camelCase/acronym/connector spacing** (REVERSED 2026-07 from the old "cleaned-raw, no camelCase"). Connectors (of/the/and/in/on/…) stay lowercase (unless first word); ALL-CAPS acronym runs (NWSL, HOKA) are PRESERVED verbatim; every other word Title-Cased. `260603_HOKAFestivalofMiles` → `HOKA Festival of Miles`. Pure `deriveDestName` + `splitCamelCase` + `kDestNameConnectors`, 9 unit tests.
-- **Subfolder picker shows real on-disk folders with the target highlighted; internal storage keeps the `"Default"` sentinel** (→ shell's `clips` dir) — the "clips" row maps to `"Default"` so the common path emits byte-identical ingest args. NEVER store literal `"clips"`. Auto-pick on project select = existing `clips`, else the footage-bearing subfolder (`kFootageExtensions` scan), else the sentinel. Edit keeps the dest's STORED subfolder (never re-scans → footage can't relocate). Smoke check 11 guards non-`clips` landing.
-- **Project folder in Add/Edit is a DROPDOWN of existing folders only** (no free typing); new folders are created solely via the "New project folder" flow. A stored project missing on disk shows as a selected "(not found)" entry (never blanked).
-- **Waiting-to-route cards show a STATIC amber routing line** (lane → ring → chosen/default destination) at idle — drawn in `v3DrawFunnel`'s static frame, never widening the animated 20fps branch (no core-burn). This is also the confirmation for the drag-to-route node.
-- **v3 modules dismiss on outside-click + Escape** via `v3ModalOverlay` (scrim pattern + a hidden `.keyboardShortcut(.cancelAction)` button — `.onExitCommand` alone doesn't work, overlays lack first-responder focus), not `.sheet`. `v3ModalOverlay` also clips every module to a **rounded 22 glass card**. Outside-tap = Cancel (never commits). Settings uses the same pattern (its own block, radius 24); ⌘⇧H/⌘⇧G are gated on `!isShowingSettings` so a module can't stack behind the settings scrim.
-- **UI-polish conventions (batch 3):** every interactive control uses **`.v3Hover(scale:glow:brighten:enabled:)`** (top-level `V3HoverModifier`) for a consistent tactile hover — pass `enabled:` so disabled controls don't bounce; add `.contentShape(...)` for a bigger hit target. Settings toggles = **`MiniPillToggle`** (ON = brand blue→purple). Module close X = **`V3CloseButton`** (red on hover). The destination-name auto-derive (`deriveDestName`) is date-strip + camelCase/acronym/separator only (NO connector un-gluing — it mangled real words). Clicking bare canvas commits an in-progress lane-name edit.
+- Every footage-touching change goes through the lead+reviewer loop before commit. Don't screen-control the running app unless Xavier asks — he validates via Xcode Run.
+- CARDRUNNER wordmark = Saira ExtraBold Italic. Destination auto-name = date-stripped + camelCase/acronym spacing (connectors lowercase, first word capitalized, ALL-CAPS acronyms preserved, NO connector un-gluing).
+- v3 modules: rounded 22 glass, dismiss on outside-click + Escape (`v3ModalOverlay` + hidden `.cancelAction`). Settings toggles = `MiniPillToggle` (ON = brand blue→purple). Every control uses `.v3Hover()`.
+- **Workflow (this session):** Xavier runs via **Xcode ⌘R**; agent compile-checks + runs tests but does NOT copy/sign the Desktop app.
