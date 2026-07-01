@@ -2595,6 +2595,11 @@ struct ContentView: View {
     @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
+    // Dynamic drag of a destination tile onto the default box (make-default swap).
+    @State private var v3DraggingDestID: UUID? = nil  // the tile being dragged
+    @State private var v3DragOffset: CGSize = .zero    // follows the cursor
+    @State private var v3DragRotation: Double = 0      // tilts with horizontal velocity
+    @State private var v3DefaultPop = false            // golden pop burst on the default box on drop
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -17522,10 +17527,10 @@ extension ContentView {
                 .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
                 .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
         })
-        .dropDestination(for: String.self) { items, _ in
-            guard let s = items.first, let id = UUID(uuidString: s) else { return false }
-            return v3MakeDefault(id)
-        } isTargeted: { dragOverDest = $0 ? d.id : (dragOverDest == d.id ? nil : dragOverDest) }
+        // Golden POP when a tile is dropped in to become the default (v3DestDragGesture sets v3DefaultPop).
+        .shadow(color: v3Amber.opacity(v3DefaultPop ? 0.9 : 0), radius: v3DefaultPop ? 28 : 0)
+        .scaleEffect(v3DefaultPop ? 1.05 : 1.0)
+        .animation(.spring(response: 0.26, dampingFraction: 0.45), value: v3DefaultPop)
         // Hover bounce — applied after the anchor/destFrames reads so geometry stays un-scaled.
         .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
@@ -17547,12 +17552,53 @@ extension ContentView {
                     .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
                     .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
             })
-            .if(runningCount == 0) { $0.draggable("\(d.id.uuidString)") { v3DestDragPreview(d) } }
-            // Hover bounce (subtle) signals the tile is clickable. Applied AFTER the anchor/destFrames
-            // reads above so routing-line geometry + drop hit-testing use the un-scaled frame.
-            .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
+            // Hover bounce (subtle) signals the tile is clickable — suppressed while this tile is being
+            // dragged. Applied AFTER the anchor/destFrames reads above so routing-line geometry + drop
+            // hit-testing use the un-scaled/un-rotated resting frame.
+            .scaleEffect(v3HoveredDestID == d.id && v3DraggingDestID != d.id ? 1.02 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
             .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
+            // Dynamic drag → drop on the default box to make this the default (see v3DestDragGesture).
+            .scaleEffect(v3DraggingDestID == d.id ? 1.06 : 1.0)
+            .rotationEffect(.degrees(v3DraggingDestID == d.id ? v3DragRotation : 0))
+            .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
+            .zIndex(v3DraggingDestID == d.id ? 100 : 0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.62), value: v3DraggingDestID)
+            .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.7), value: v3DragRotation)
+            .if(runningCount == 0) { $0.gesture(v3DestDragGesture(d)) }
+    }
+
+    /// Custom drag for the make-default swap: the tile follows the cursor, tilts with horizontal
+    /// velocity (springs back to level when still), and on a drop over the default box triggers a
+    /// golden pop. `minimumDistance: 8` lets a plain click still fall through to the edit tap.
+    private func v3DestDragGesture(_ d: Destination) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named("stage"))
+            .onChanged { v in
+                v3DraggingDestID = d.id
+                v3DragOffset = v.translation
+                v3DragRotation = max(-14, min(14, v.velocity.width * 0.012))
+                let overDefault = (defaultDestination?.id).flatMap { destFrames[$0] }?.contains(v.location) ?? false
+                dragOverDest = overDefault ? defaultDestination?.id : nil
+            }
+            .onEnded { v in
+                var swapped = false
+                if let defID = defaultDestination?.id, defID != d.id,
+                   let f = destFrames[defID], f.contains(v.location) {
+                    swapped = v3MakeDefault(d.id)
+                }
+                if swapped {
+                    v3DefaultPop = true
+                    AudioEngine.shared.modeSwitch()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
+                    }
+                }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                    v3DragOffset = .zero; v3DragRotation = 0
+                }
+                v3DraggingDestID = nil
+                dragOverDest = nil
+            }
     }
 
     /// Shared tile contents (icon, name, free space, role/route line, remove control).
@@ -17596,19 +17642,6 @@ extension ContentView {
         }
     }
 
-    private func v3DestDragPreview(_ d: Destination) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: d.isCustomFolder ? "folder.fill" : "externaldrive.fill")
-                .font(.system(size: 14)).foregroundStyle(v3Purple)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(d.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                Text("Drop on default to swap").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Color(hex: "#1a1430"), in: RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(v3Cyan.opacity(0.7), lineWidth: 1.5))
-    }
 
     /// "Add destination" — opens the design sheet (SSD drive or custom folder + split/mirror).
     private var v3AddDestinationMenu: some View {
