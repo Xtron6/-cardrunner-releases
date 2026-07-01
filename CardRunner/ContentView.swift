@@ -12715,31 +12715,31 @@ private struct WelcomeCelebrationView: View {
             ZStack {
                 // ── Background — deep navy with radial depth glow ─────────────
                 ZStack {
+                    // v3 background — matches the main UI's purple-black gradient + glows.
                     LinearGradient(
-                        colors: [Color(hex: "#050912"), Color(hex: "#0a1628"), Color(hex: "#060c1a")],
+                        colors: [Color(hex: "#0c0822"), Color(hex: "#080615"), Color(hex: "#050310")],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     )
-                    // Soft radial glow, offset like Apple's — gives the glass depth feel
                     RadialGradient(
-                        colors: [Color(hex: "#0eb0e9").opacity(0.18), .clear],
-                        center: UnitPoint(x: 0.35, y: 0.42),
+                        colors: [Color(hex: "#7c3aed").opacity(0.20), .clear],
+                        center: UnitPoint(x: 0.22, y: 0.08),
                         startRadius: 0,
                         endRadius: geo.size.width * 0.7
                     )
                     RadialGradient(
-                        colors: [Color(hex: "#5e3bea").opacity(0.12), .clear],
-                        center: UnitPoint(x: 0.72, y: 0.28),
+                        colors: [Color(hex: "#0dcff5").opacity(0.13), .clear],
+                        center: UnitPoint(x: 0.84, y: 0.92),
                         startRadius: 0,
-                        endRadius: geo.size.width * 0.5
+                        endRadius: geo.size.width * 0.55
                     )
                 }
                 .ignoresSafeArea()
                 .opacity(bgOpacity)
                 .animation(.easeInOut(duration: 0.5), value: bgOpacity)
 
-                // ── "hello." — thin italic, write-on left-to-right ───────────
+                // ── "hello." — DM Sans italic, write-on left-to-right ────────
                 Text("hello.")
-                    .font(.system(size: 82, weight: .thin, design: .default).italic())
+                    .font(.custom("DM Sans", size: 82).italic())
                     .foregroundStyle(
                         LinearGradient(
                             colors: [.white, Color(hex: "#c8e8ff")],
@@ -13028,10 +13028,12 @@ private struct OnboardingView: View {
             }
 
             // ── Pages 1–3 ─────────────────────────────────────────────────
-            if page == 1 { screen1.id("ob1").transition(pageSlide) }
-            if page == 2 { screen2.id("ob2").transition(pageSlide) }
-            if page == 3 { screen3.id("ob3").transition(pageSlide) }
-            if page == 4 { screen4.id("ob4").transition(pageSlide) }
+            // Constrain the content to a centered column so it doesn't sprawl edge-to-edge on a wide
+            // window (bigger effective left/right padding, tighter center UI).
+            if page == 1 { screen1.id("ob1").frame(maxWidth: 940).transition(pageSlide) }
+            if page == 2 { screen2.id("ob2").frame(maxWidth: 940).transition(pageSlide) }
+            if page == 3 { screen3.id("ob3").frame(maxWidth: 940).transition(pageSlide) }
+            if page == 4 { screen4.id("ob4").frame(maxWidth: 940).transition(pageSlide) }
         }
         .animation(.easeInOut(duration: 0.46), value: page)
         .opacity(globalOpacity)
@@ -16645,13 +16647,15 @@ extension ContentView {
             return p
         }
 
-        // Active flow (animated), capped at 6 lanes to avoid clutter.
+        // Active flow (animated), capped at 6 lanes to avoid clutter. Each lane gets its OWN hue from
+        // the app palette so overlapping/crossing lines are distinguishable (a failed lane stays RED —
+        // safety status is never recolored).
         if v3ActiveLanes.count <= 6 {
             let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 9], dashPhase: -phase)
-            for item in v3ActiveLanes {
+            for (i, item) in v3ActiveLanes.enumerated() {
                 guard let lr = rects["lane-\(item.id)"] else { continue }
-                let col: Color = item.ing.phase == .failed ? v3Red : v3Mag
-                ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(col.opacity(0.6)), style: dash)
+                let col: Color = item.ing.phase == .failed ? v3Red : v3LineColor(i)
+                ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(col.opacity(0.7)), style: dash)
             }
             if !v3ActiveLanes.isEmpty {
                 let destKeys: [String] = ["dest-default"] + destinations
@@ -16667,18 +16671,29 @@ extension ContentView {
         // Waiting-to-route cards: STATIC amber line lane → ring → chosen (or default) destination.
         // Capped at 8 lines to avoid clutter (each parked lane still shows its "→ Drive" text label);
         // beyond 8 parked cards the routing is read from the lane labels rather than the connectors.
+        // Each parked card's route gets its OWN hue (was all amber → indistinguishable when the lines
+        // cross/merge). Both segments + the destination dot share the card's color so you can trace it.
         let staticDash = StrokeStyle(lineWidth: 2, lineCap: .round, dash: [3, 7])
-        for aw in awaitingCards.prefix(8) {
+        for (i, aw) in awaitingCards.prefix(8).enumerated() {
             guard let lr = rects["lane-\(aw.id)"],
                   let destID = aw.destinationID ?? defaultDestination?.id else { continue }
             let destKey = destID == defaultDestination?.id ? "dest-default" : "dest-\(destID)"
             guard let dr = rects[destKey] else { continue }
             let to = CGPoint(x: dr.minX, y: dr.midY)
-            ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(v3Amber.opacity(0.5)), style: staticDash)
-            ctx.stroke(curve(rightPort, to), with: .color(v3Amber.opacity(0.5)), style: staticDash)
+            let col = v3LineColor(i)
+            ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(col.opacity(0.65)), style: staticDash)
+            ctx.stroke(curve(rightPort, to), with: .color(col.opacity(0.65)), style: staticDash)
             ctx.fill(Path(ellipseIn: CGRect(x: to.x - 3.5, y: to.y - 3.5, width: 7, height: 7)),
-                     with: .color(v3Amber.opacity(0.75)))
+                     with: .color(col.opacity(0.9)))
         }
+    }
+
+    /// A per-lane hue from the app palette — cycles so adjacent/overlapping funnel lines are
+    /// distinguishable. All members stay within the CardRunner neon hue family.
+    private func v3LineColor(_ i: Int) -> Color {
+        let palette: [Color] = [v3Cyan, v3Purple, v3Mag, Color(hex: "#5b8def"),
+                                v3Green, Color(hex: "#f472b6"), Color(hex: "#2dd4bf"), Color(hex: "#a78bfa")]
+        return palette[((i % palette.count) + palette.count) % palette.count]
     }
 
     private var v3Background: some View {
