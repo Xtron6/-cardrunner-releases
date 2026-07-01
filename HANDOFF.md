@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `88f61a8`. Build + **67 unit** + **40 smoke** all green.
+**Latest commit:** `c771d44`. Build + **67 unit** + **40 smoke** all green. (Legacy UI fully removed + logic core extracted this session — see §1.)
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
 > Read `MEMORY.md` (index) → `cardrunner-roadmap.md` (full chronology + locked decisions) → this file (fast snapshot) → `UI-future.md` (repo root; design North Star for later). The roadmap memory is the deepest record; skim its newest entries first.
@@ -21,30 +21,20 @@ CardRunner is a **camera-card offload tool** for video/photo shooters: plug an S
 
 ---
 
-## 1. ★ ACTIVE / NEXT TASK — Archive the legacy UI, pivot fully to v3
+## 1. ★ STATE + NEXT TASK — Legacy UI is GONE; monolith split started
 
-**Xavier's decision (this session):** he's happy with the v3 UI and wants to **fully transition** — retire the legacy UI. His exact framing: *"archive the old layout … just to keep it for the next little bit, just in case, but I'd like to fully transition to the new UI. Whatever needs to be done in the back end. Make sure you review it with our review agent so we're fully clear as a team."*
+**DONE this session (all on `nway-rebuild`, reviewer-verified, build+67 unit+40 smoke green throughout):**
+- **Legacy UI FULLY REMOVED (2-phase migrate-then-delete).** P1 `8db09b7`: extracted ALL load-bearing wiring (card detection `didMount→scanForNewCardsAndIngest`, 30-s timers, menu bus, engine `.sheet`/`.alert`, license routing, preset-sync) out of the invisible legacy body into a shared **`appWiringHost`** mounted by `body`. P2 `fa02dac`: deleted the entire legacy visual layout + the `CR_LEGACY_UI` flag + `isLegacyUI`. **v3 is now the ONLY face.** Recovery: git tag **`legacy-ui-archive-8db09b7`** holds the full pre-deletion tree. Xavier validated detection/routing on hardware between phases. Reviewer caught 2 real bugs pre-commit (P1 preset-sync would revert v3 edits; P1 History/Log hotkeys became no-ops — both fixed).
+- **Monolith split Stage 1a `c771d44`:** extracted the pure footage-safety logic core into **`IngestModels.swift`** (16 value types) + **`IngestLogic.swift`** (evaluateIngestOutcome/buildIngestArgs/applyIngestProgressLine/etc.). `ContentView.swift` 18,379 → **13,900** lines this session.
 
-**Why this is a careful REFACTOR, not a delete — the crux:**
-`ContentView.body` (~3100) is:
-```swift
-if CR_LEGACY_UI { legacyBody }
-else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3 } }
-```
-The **invisible legacy body is the HOST of load-bearing wiring**, not just old visuals: card **detection** (`didMount → scanForNewCardsAndIngest`), the 30-s scan **timers**, menu/keyboard **handlers** (the menu-notification bus), engine-triggered **`.sheet`/`.alert`** (transfer-failed, resume-checkpoint, wrong-clock, setup wizard, support bundle), and many `.onChange`/`.onReceive`/`.onAppear` modifiers. `bodyV3` is PURE presentation over the same `@State`. So removing legacyBody requires **migrating that wiring onto v3 first**.
+**★ NEXT (Xavier said "stop the split here for now" — resume when he wants):** continue the **monolith split**:
+- **Stage 1b** — extract self-contained top-level UI component structs (V3 components, LicenseGateView, SetupWizardView, OnboardingView+helpers, particle/AnimationPreviewWidget, NewProjectPopover, MiniPillToggle, SparklineView, …) → flip `private`→`internal`. ~3–4k more lines out. LANDMINES (reviewer-vetted): shared `private` helpers like `Color(hex:)` must flip to internal in a PREP commit first; grep LicenseManager.swift/CardRunner.swift for name collisions; watch for a "self-contained" view capturing a ContentView method/private-state via closure.
+- **Stage 2** — split `struct ContentView` itself across extension files → REQUIRES flipping its `private @State`/`private func`→`internal`. Stored property wrappers (@State/@AppStorage/@Namespace/@FocusState) MUST stay in the primary struct; only methods/computed vars move. Sequence: flip-access-only(green) → move-methods-per-file(green).
+Full stage plan + landmines are in the roadmap memory. Extraction tool: `extract.py` (session scratchpad) — uses a COLUMN-0-CLOSER heuristic (combined `{[`/`}]` depth miscuts on brackets-in-strings — learned the hard way).
 
-**Plan (agreed approach — do it in the reviewer loop):**
-1. **Reviewer audits** everything attached to `legacyBody` and classifies each modifier/handler as **migrate** (still needed — re-home onto bodyV3 or a neutral host), **delete** (legacy-visual-only), or **already-in-v3** (bodyV3 already renders it, e.g. settings).
-2. Lead migrates the "migrate" set onto bodyV3 (or a small shared wiring host), keeping build + 67 unit + 40 smoke green each step.
-3. Delete the legacy VISUAL layout (the old ring/lanes/settings-sheet views — thousands of lines).
-4. **Keep the `CR_LEGACY_UI` flag as an escape hatch for "the next little bit"** (Xavier's call) — remove it in a LATER cycle once he's confirmed on hardware that nothing regressed. Optionally keep the deleted layout on a git tag/branch for reference.
-5. **Engine untouched** — `CardRunner.sh`, `cardcopy`, all pure tested fns stay. This is UI-host surgery only.
+**Other deferred follow-ups:** v3 SSD dest with empty `projectFolder` falls back to global `projectName` on the footage path — ensure v3 Add/Edit-Dest always writes a non-empty projectFolder. Also (optional, not queued): Reduce-Motion pass; the `UI-future.md` polish batch.
 
-**FOOTAGE-SAFETY:** dropping a detection handler or a failure alert = a real regression. This is the whole reason it goes through the reviewer loop. Verify: plug a card → still auto-detects/routes/ingests; a failed transfer → still shows the "do not format" record + alert; resume/wrong-clock/support flows still fire.
-
-**Persistent reviewer to resume:** SendMessage to `a8671aecd45cdbc6a` (it has this whole session's context). Kick it off with the legacy-wiring audit as an ASSESS pass, align, then execute.
-
-*(Two smaller open follow-ups, both deferred: Reduce-Motion pass across the app generally; the `UI-future.md` polish batch — edge-aware scrollbar, module blur-in transitions, gradient-border on the golden box, expandable settings rail, proximity scaling — all optional, not now.)*
+**REVIEWER LOOP:** the persistent reviewer this session is agentId **`a42de25c083165fe4`** (has full context of the legacy removal + split). Resume it via SendMessage each round. (The old `a8671aecd45cdbc6a` was a prior-session process — dead.)
 
 ---
 
@@ -80,14 +70,15 @@ Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`g
 
 ---
 
-## 3. Architecture — the graft (v3 UI on the proven engine)
+## 3. Architecture — v3 UI on the proven engine (legacy removed)
 
-`ContentView.swift` (~18.4k lines) is ONE giant `struct ContentView: View` holding ALL engine logic AND the UI. No separate controller.
+`ContentView.swift` (~13.9k lines) is ONE giant `struct ContentView: View` holding ALL engine logic AND the UI. No separate controller. (Monolith split in progress — the pure logic core now lives in `IngestModels.swift`/`IngestLogic.swift`; see §1.)
 
-- **`ContentView.body`:** `if CR_LEGACY_UI { legacyBody } else { ZStack { legacyBody.opacity(0).allowsHitTesting(false); bodyV3; if showOnboarding { OnboardingView(...).zIndex(1000) } } }`. The **legacy body stays mounted-invisible** so its proven wiring keeps running (detection, timers, menu handlers, `.sheet`/`.alert`). **← §1 is about removing this dual-body.**
+- **`ContentView.body`:** now a single v3 ZStack — `ZStack { appWiringHost; bodyV3; licenseAndWelcomeOverlays; if showOnboarding { OnboardingView(...).zIndex(1000) } }.simultaneousGesture(focus-resign)`. NO more dual-body / `CR_LEGACY_UI` flag / `isLegacyUI` (all removed).
+- **`appWiringHost`** = the shared, zero-size wiring host that carries ALL load-bearing NON-visual wiring: `mountAndEngineWiring` (didMount/didUnmount card detection + engine onChange), `bootAndLifecycleWiring` (launch boot, FDA re-probe, autoIngest/importMode, teardown, license.justActivated, shortcuts-help), `engineSheetsAndAlerts` (setup/preset/support/resume sheets + ingest/tier0/manifest alerts + date/reel pickers), `menuNotificationHandlers` (menu bus), `presetSyncWiring` (ingestOrder/finderTagEnabled active-preset sync). **This is where detection/timers/sheets/menu-bus live now** — not in any visual view.
 - **`bodyV3`** (an `extension ContentView` at the END of the file — must be same file; reads `private @State`). Pure presentation over real `@State`; actions via direct `@State` mutation or the **menu-notification bus**.
-- **Gotcha:** any legacy *inline overlay* (not `.sheet`/`.alert`) renders INVISIBLY under v3. If a menu command "does nothing," it's almost always this — render a v3 equivalent, gate the legacy copy behind `isLegacyUI`.
-- **Top-level PURE, unit-tested fns** (footage-safety + logic core): `buildIngestArgs`, `evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `failureRecordsSurviving`, `cardIsAlreadyTracked`, `resolveCardLabel`, `resolveProjectFolder`, `deriveDestName` (+ `splitCamelCase`).
+- **Keyboard shortcuts:** the local monitor (`setupShortcutMonitor`→`handleShortcutAction`) routes History/Log to `showV3History`/`showV3Log` (mirrors the menu bus). Menu items in `CardRunner.swift` carry ⌘⇧H/⌘⇧G; the monitor's defaults are bare H/L — distinct, no collision.
+- **Top-level PURE, unit-tested fns** (footage-safety + logic core — NOW in `IngestLogic.swift`): `buildIngestArgs`, `evaluateIngestOutcome`, `applyIngestProgressLine`, `canAdmitIngest`, `failureRecordsSurviving`, `cardIsAlreadyTracked`, `resolveCardLabel`, `resolveProjectFolder`, `deriveDestName` (+ `splitCamelCase`).
 
 **Routing model:** PER-CARD only (split/mirror removed). Folder layout `{drive}/{project}/{subfolder|clips}/{date}/{cardlabel}/` — project+subfolder are per-**DESTINATION**, cardlabel per-**CARD**. Destinations are a persisted **LIST** (`pref_destinationsJSON`); default resolved by **ID** (`defaultDestIDString`), never by array index (so tile reordering is display-only + safe).
 
@@ -123,8 +114,9 @@ Promise: **never lose footage, never report a failed transfer as success, never 
 - **Footage-safety STATUS must stay CALM** — never animate the active ring / "SAFE TO PULL" badge / failure strip (motion on status reads as instability). Decorate idle/ambient only.
 - **Codable migration:** synthesized Codable THROWS on missing keys — adding a field to a persisted struct needs a custom `decodeIfPresent ?? default` decoder or it wipes saved data (bit us on `Destination`; there's a migration unit test — keep the pattern).
 - **Flaky unit-test host** — re-run; smoke is the real gate.
-- **`bodyV3` reads `private @State`** → must stay in the same file as ContentView.
-- **Legacy body is load-bearing wiring, not dead weight** (§1) — audit before removing.
+- **`bodyV3` reads `private @State`** → must stay in the same file as ContentView (until the Stage-2 access-flip in §1).
+- **Detection/timers/sheets/menu-bus now live in `appWiringHost`** (§3), not in any visual view. The legacy body is GONE (recover via tag `legacy-ui-archive-8db09b7`).
+- **Moving code out of ContentView.swift:** use the column-0-closer extraction (top-level decls close with `}`/`]` at column 0); a `{[`/`}]`-depth counter miscuts on brackets inside string literals. Commit each extraction as its own green checkpoint (a first-attempt miscut corrupted the file mid-session).
 
 ---
 
@@ -132,7 +124,9 @@ Promise: **never lose footage, never report a failed transfer as success, never 
 
 | File | Role |
 |---|---|
-| `CardRunner/ContentView.swift` | EVERYTHING — engine + legacy UI (wiring host) + `bodyV3` + v3 Settings + v3 sheets/lanes/tiles + onboarding (`OnboardingView`/`WelcomeCelebrationView` ~12696-13786) + `V3CompletionOverlay`/`V3HoverModifier`/`MiniPillToggle`/`V3CloseButton`. Top-level pure fns in §3. |
+| `CardRunner/ContentView.swift` | ~13.9k lines — engine methods + `appWiringHost` (§3) + `bodyV3` + v3 Settings + v3 sheets/lanes/tiles + onboarding (`OnboardingView`/`WelcomeCelebrationView`) + V3 components. NO legacy UI (removed). |
+| `CardRunner/IngestModels.swift` | Pure ingest/data value types (Volume, Destination, ActiveIngest, IngestOutcome, FailedIngestRecord, …). Extracted Stage 1a. |
+| `CardRunner/IngestLogic.swift` | Pure footage-safety logic core (evaluateIngestOutcome, buildIngestArgs, applyIngestProgressLine, canAdmitIngest, failureRecordsSurviving, deriveDestName, …). Extracted Stage 1a. Unit-tested. |
 | `CardRunner/CardRunner.sh` | ~2.5k-line zsh ingest engine. |
 | `cardcopy/cardcopy.c` + `CardRunner/cardcopy` | native copy engine (fcopyfile/clonefile). |
 | `CardRunner/CardRunner.swift` | `@main`; `CardRunnerCommands` (menu + keyboard shortcuts). |
