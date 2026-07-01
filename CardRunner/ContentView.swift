@@ -12783,7 +12783,7 @@ private struct WelcomeCelebrationView: View {
                 // ── "Welcome to CardRunner" + subtitle ───────────────────────
                 VStack(spacing: 10) {
                     Text("Welcome to CardRunner")
-                        .font(.custom("Tech Headlines Italic", size: 30))
+                        .font(.custom("SairaItalic-ExtraBoldItalic", size: 30))
                         .foregroundStyle(
                             LinearGradient(
                                 colors: [.white, Color(hex: "#b8d8ff")],
@@ -12793,7 +12793,7 @@ private struct WelcomeCelebrationView: View {
                         .shadow(color: Color(hex: "#0eb0e9").opacity(0.6), radius: 18)
 
                     Text("A smoother ingest workflow for creators")
-                        .font(.custom("DM Sans", size: 14))
+                        .font(.system(size: 14))
                         .foregroundStyle(.white.opacity(0.55))
                         .opacity(subtitleOpacity)
                         .animation(.easeInOut(duration: 1.0), value: subtitleOpacity)
@@ -12913,16 +12913,17 @@ private struct OnboardingButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.custom("DM Sans", size: 14).weight(.semibold))
+                .font(.system(size: 14).weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 32).padding(.vertical, 14)
                 .background(
                     Capsule()
+                        // v3 brand gradient CTA (cyan→purple→magenta), like the main-UI primary buttons.
                         .fill(LinearGradient(
-                            colors: [color, color.opacity(0.72)],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
+                            colors: [Color(hex: "#0dcff5"), Color(hex: "#7c3aed"), Color(hex: "#d946ef")],
+                            startPoint: .leading, endPoint: .trailing
                         ))
-                        .shadow(color: color.opacity(hovered ? 0.55 : 0.35),
+                        .shadow(color: Color(hex: "#7c3aed").opacity(hovered ? 0.55 : 0.3),
                                 radius: hovered ? 20 : 12, x: 0, y: 6)
                 )
                 .scaleEffect(hovered ? 1.035 : 1.0)
@@ -12976,6 +12977,7 @@ private struct OnboardingView: View {
     // ── Screen 3 — Scaffold ───────────────────────────────────────────────────
     @AppStorage("pref_scaffoldEnabled")    private var ob3ScaffoldOn:  Bool   = false
     @AppStorage("pref_scaffoldFoldersRaw") private var ob3FoldersRaw: String = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments"
+    @State private var ob3NewFolder: String = ""   // add-folder field on the editable scaffold list
 
     // ── Screen 4 — Live demo ──────────────────────────────────────────────────
     @State private var demoStarted:  Bool   = false
@@ -12985,11 +12987,12 @@ private struct OnboardingView: View {
     @State private var globalOpacity: Double = 1.0
 
     // ── Palette ───────────────────────────────────────────────────────────────
-    private let purple = Color(hex: "#9B5FFF")
-    private let blue   = Color(hex: "#0EB0E9")
+    // v3 brand palette — matches the main UI so the onboarding→app handoff is seamless.
+    private let purple = Color(hex: "#7c3aed")
+    private let blue   = Color(hex: "#0dcff5")
     private let muted  = Color.white.opacity(0.50)
     private let bgGrad = LinearGradient(
-        colors: [Color(hex: "#050912"), Color(hex: "#0a1628"), Color(hex: "#060c1a")],
+        colors: [Color(hex: "#0c0822"), Color(hex: "#080615"), Color(hex: "#050310")],
         startPoint: .topLeading, endPoint: .bottomTrailing
     )
 
@@ -13002,12 +13005,13 @@ private struct OnboardingView: View {
                 if page < 4 {
                     bgGrad
                     GeometryReader { g in
-                        RadialGradient(colors: [Color(hex: "#0eb0e9").opacity(0.14), .clear],
-                                       center: UnitPoint(x: 0.34, y: 0.42),
+                        // Match v3Background's radial glows (purple top-left, cyan bottom-right).
+                        RadialGradient(colors: [Color(hex: "#7c3aed").opacity(0.20), .clear],
+                                       center: UnitPoint(x: 0.22, y: 0.08),
                                        startRadius: 0, endRadius: g.size.width * 0.70)
-                        RadialGradient(colors: [Color(hex: "#5e3bea").opacity(0.10), .clear],
-                                       center: UnitPoint(x: 0.73, y: 0.27),
-                                       startRadius: 0, endRadius: g.size.width * 0.50)
+                        RadialGradient(colors: [Color(hex: "#0dcff5").opacity(0.13), .clear],
+                                       center: UnitPoint(x: 0.84, y: 0.92),
+                                       startRadius: 0, endRadius: g.size.width * 0.55)
                     }
                 } else {
                     Color.black.opacity(0.22)
@@ -13064,7 +13068,7 @@ private struct OnboardingView: View {
             // Headline
             OnboardingReveal(
                 "Your card just landed.\nLet's get it home.",
-                font: .custom("Tech Headlines Italic", size: 28),
+                font: .custom("SairaItalic-ExtraBoldItalic", size: 28),
                 delay: 0.20,
                 foreground: AnyShapeStyle(LinearGradient(
                     colors: [.white, Color(hex: "#b8d8ff")],
@@ -13078,7 +13082,7 @@ private struct OnboardingView: View {
             // Body copy
             OnboardingReveal(
                 "CardRunner watches for camera cards and moves\nyour footage to the right place — automatically.\nNo dragging. No folders. No forgetting.",
-                font: .custom("DM Sans", size: 14),
+                font: .system(size: 14),
                 delay: 0.85,
                 foreground: AnyShapeStyle(Color.white.opacity(0.52))
             )
@@ -13137,7 +13141,7 @@ private struct OnboardingView: View {
             }
             .scaleEffect(iconPulse ? 1.06 : 1.0)
             Text(label)
-                .font(.custom("DM Sans", size: 10))
+                .font(.system(size: 10))
                 .foregroundStyle(muted)
         }
         .frame(width: 88)
@@ -13163,7 +13167,7 @@ private struct OnboardingView: View {
 
                 OnboardingReveal(
                     "Where should your\nfootage land?",
-                    font: .custom("Tech Headlines Italic", size: 26),
+                    font: .custom("SairaItalic-ExtraBoldItalic", size: 26),
                     delay: 0.18,
                     foreground: AnyShapeStyle(LinearGradient(
                         colors: [.white, Color(hex: "#b8d8ff")],
@@ -13177,7 +13181,7 @@ private struct OnboardingView: View {
 
                 OnboardingReveal(
                     "Choose an SSD or pick any folder on your Mac.\nYou can always change this in Settings.",
-                    font: .custom("DM Sans", size: 13),
+                    font: .system(size: 13),
                     delay: 0.80,
                     foreground: AnyShapeStyle(Color.white.opacity(0.50))
                 )
@@ -13209,7 +13213,7 @@ private struct OnboardingView: View {
                                     .font(.system(size: 28))
                                     .foregroundStyle(Color.white.opacity(0.25))
                                 Text("No external drives found.\nConnect your SSD and tap Refresh.")
-                                    .font(.custom("DM Sans", size: 12))
+                                    .font(.system(size: 12))
                                     .foregroundStyle(Color.white.opacity(0.35))
                                     .multilineTextAlignment(.center)
                                 Button {
@@ -13217,7 +13221,7 @@ private struct OnboardingView: View {
                                 } label: {
                                     HStack(spacing: 5) {
                                         Image(systemName: "arrow.clockwise").font(.system(size: 10))
-                                        Text("Refresh").font(.custom("DM Sans", size: 12).weight(.medium))
+                                        Text("Refresh").font(.system(size: 12).weight(.medium))
                                     }
                                     .padding(.horizontal, 16).padding(.vertical, 8)
                                     .background(Capsule().fill(Color.white.opacity(0.09))
@@ -13237,13 +13241,13 @@ private struct OnboardingView: View {
                     // Project folder name
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Project folder name")
-                            .font(.custom("DM Sans", size: 11).weight(.semibold))
+                            .font(.system(size: 11).weight(.semibold))
                             .foregroundStyle(Color.white.opacity(0.48))
 
                         HStack(spacing: 0) {
                             TextField("e.g. MyProject_2026", text: $projectInput)
                                 .textFieldStyle(.plain)
-                                .font(.custom("DM Sans", size: 13))
+                                .font(.system(size: 13))
                                 .foregroundStyle(.white)
 
                             Divider()
@@ -13266,7 +13270,7 @@ private struct OnboardingView: View {
                                 }
                             } label: {
                                 Text("Browse…")
-                                    .font(.custom("DM Sans", size: 11).weight(.medium))
+                                    .font(.system(size: 11).weight(.medium))
                                     .foregroundStyle(Color(hex: "#9B5FFF").opacity(0.9))
                             }
                             .buttonStyle(.plain)
@@ -13300,7 +13304,7 @@ private struct OnboardingView: View {
                                 Image(systemName: "folder.badge.plus")
                                     .font(.system(size: 14))
                                 Text("Choose folder…")
-                                    .font(.custom("DM Sans", size: 13).weight(.medium))
+                                    .font(.system(size: 13).weight(.medium))
                             }
                             .foregroundStyle(.white)
                             .padding(.horizontal, 22).padding(.vertical, 13)
@@ -13319,7 +13323,7 @@ private struct OnboardingView: View {
                                     .foregroundStyle(Color(hex: "#0eb0e9"))
                                     .font(.system(size: 12))
                                 Text(ob2CustomDestPath)
-                                    .font(.custom("DM Sans", size: 11))
+                                    .font(.system(size: 11))
                                     .foregroundStyle(Color.white.opacity(0.55))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -13349,7 +13353,7 @@ private struct OnboardingView: View {
                         .foregroundStyle(Color(hex: "#0eb0e9").opacity(0.70))
                         .padding(.top, 1)
                     Text("Your footage will land in a date folder — e.g. \(Text("`\(exampleDate)`").font(.custom("DM Mono", size: 11)).foregroundStyle(Color(hex: "#0eb0e9").opacity(0.85))). The format is customizable in Settings.")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size: 11))
                         .foregroundStyle(Color.white.opacity(0.38))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -13359,7 +13363,7 @@ private struct OnboardingView: View {
                 // Skip note
                 if showSkipNote {
                     Text("You can set this up in the app anytime.")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size: 11))
                         .foregroundStyle(Color.white.opacity(0.30))
                         .padding(.top, 14)
                         .transition(.opacity)
@@ -13376,7 +13380,7 @@ private struct OnboardingView: View {
                         }
                     } label: {
                         Text("Skip for now")
-                            .font(.custom("DM Sans", size: 13).weight(.medium))
+                            .font(.system(size: 13).weight(.medium))
                             .foregroundStyle(Color.white.opacity(0.38))
                             .padding(.horizontal, 24).padding(.vertical, 13)
                             .background(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
@@ -13399,7 +13403,7 @@ private struct OnboardingView: View {
     private func ob2PillTab(label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.custom("DM Sans", size: 12).weight(isActive ? .semibold : .regular))
+                .font(.system(size: 12).weight(isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? .white : Color.white.opacity(0.42))
                 .padding(.horizontal, 20).padding(.vertical, 9)
                 .background(
@@ -13422,11 +13426,11 @@ private struct OnboardingView: View {
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
                 Text(vol.name)
-                    .font(.custom("DM Sans", size: 13).weight(.semibold))
+                    .font(.system(size: 13).weight(.semibold))
                     .foregroundStyle(isSelected ? .white : Color.white.opacity(0.72))
                 if vol.freeGB > 0 {
                     Text(vol.freeLabel)
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size: 11))
                         .foregroundStyle(Color.white.opacity(0.35))
                 }
             }
@@ -13489,13 +13493,31 @@ private struct OnboardingView: View {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // MARK: Screen 3 — Project scaffold
+    // MARK: Screen 3 — Project scaffold (editable — writes the SHARED scaffold list)
     // ─────────────────────────────────────────────────────────────────────────
+    /// Parse/mutate the shared `ob3FoldersRaw` (= the app-wide `pref_scaffoldFoldersRaw`), so onboarding
+    /// edits persist to the app + Settings identically. Dedupe on add (matches the app's addScaffoldFolder).
+    private func ob3FolderList() -> [String] {
+        ob3FoldersRaw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+    private func ob3AddFolder() {
+        let n = ob3NewFolder.trimmingCharacters(in: .whitespaces)
+        ob3NewFolder = ""
+        guard !n.isEmpty, !n.contains("/"), !n.contains("..") else { return }
+        var list = ob3FolderList()
+        guard !list.contains(where: { $0.lowercased() == n.lowercased() }) else { return }
+        list.append(n)
+        ob3FoldersRaw = list.joined(separator: "\n")
+    }
+    private func ob3RemoveFolder(at idx: Int) {
+        var list = ob3FolderList()
+        guard list.indices.contains(idx) else { return }
+        list.remove(at: idx)
+        ob3FoldersRaw = list.joined(separator: "\n")
+    }
+
     private var screen3: some View {
-        let folders = ob3FoldersRaw
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let folders = ob3FolderList()
 
         return VStack(spacing: 0) {
             Spacer()
@@ -13505,7 +13527,7 @@ private struct OnboardingView: View {
 
                 // Badge
                 Text("Project scaffold")
-                    .font(.custom("DM Sans", size: 11).weight(.semibold))
+                    .font(.system(size: 11).weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(Capsule().fill(purple.opacity(0.88)))
@@ -13513,7 +13535,7 @@ private struct OnboardingView: View {
                 // Headline
                 OnboardingReveal(
                     "Folders, ready before\nyou even hit ingest.",
-                    font: .custom("Tech Headlines Italic", size: 26),
+                    font: .custom("SairaItalic-ExtraBoldItalic", size: 26),
                     delay: 0.15,
                     foreground: AnyShapeStyle(LinearGradient(
                         colors: [.white, Color(hex: "#c4b5fd")],
@@ -13526,91 +13548,65 @@ private struct OnboardingView: View {
                 // Sub-headline
                 OnboardingReveal(
                     "Every new project auto-creates these folders\non your destination drive.",
-                    font: .custom("DM Sans", size: 13),
+                    font: .system(size: 13),
                     delay: 0.55,
                     foreground: AnyShapeStyle(Color.white.opacity(0.50))
                 )
                 .multilineTextAlignment(.center)
 
-                // ── Folder tree preview ──────────────────────────────────
-                VStack(alignment: .leading, spacing: 0) {
-                    // Project root row
+                // ── Editable folder list ─────────────────────────────────
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(purple)
-                        Text("20260522_Project Name")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
-                            .foregroundStyle(Color.white.opacity(0.80))
+                        Image(systemName: "folder.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(purple)
+                        Text("{date}_Project Name").font(.system(size: 12).weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+                        Spacer()
                     }
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 2)
 
-                    // Child folder rows
                     ForEach(Array(folders.enumerated()), id: \.offset) { idx, folder in
-                        let isLast = idx == folders.count - 1
-                        HStack(alignment: .top, spacing: 0) {
-                            // Tree branch line
-                            VStack(spacing: 0) {
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.12))
-                                    .frame(width: 1)
-                                    .frame(maxHeight: .infinity)
-                                if isLast { Color.clear.frame(height: 10) }
-                            }
-                            .frame(width: 1, height: 28)
-                            .padding(.leading, 6)
-
-                            Rectangle()
-                                .fill(Color.white.opacity(0.12))
-                                .frame(width: 12, height: 1)
-                                .padding(.top, 13)
-                                .padding(.leading, 0)
-
-                            HStack(spacing: 6) {
-                                Image(systemName: "folder.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color(hex: "#60a5fa").opacity(0.80))
-                                Text(folder)
-                                    .font(.custom("DM Sans", size: 12))
-                                    .foregroundStyle(Color.white.opacity(0.65))
-                            }
-                            .padding(.leading, 6)
-                            .frame(height: 28)
+                        HStack(spacing: 10) {
+                            Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Color(hex: "#60a5fa").opacity(0.85))
+                            Text(folder).font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
+                            Spacer()
+                            Button { ob3RemoveFolder(at: idx) } label: {
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white.opacity(0.3))
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain).v3Hover(scale: 1.15)
                         }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(.white.opacity(0.05)))
                     }
-                }
-                .padding(.horizontal, 20).padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.white.opacity(0.04))
-                        .overlay(RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.09), lineWidth: 1))
-                )
 
-                // ── Enable toggle ────────────────────────────────────────
+                    // Add-folder row
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(purple)
+                        TextField("Add a folder…", text: $ob3NewFolder).textFieldStyle(.plain)
+                            .font(.system(size: 13)).foregroundStyle(.white).onSubmit { ob3AddFolder() }
+                        Button { ob3AddFolder() } label: {
+                            Text("Add").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                                .padding(.horizontal, 14).padding(.vertical, 6)
+                                .background(Capsule().fill(purple.opacity(0.9))).contentShape(Capsule())
+                        }.buttonStyle(.plain).v3Hover().disabled(ob3NewFolder.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.10), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                }
+                .padding(16).frame(width: 460)
+                .background(RoundedRectangle(cornerRadius: 14).fill(.white.opacity(0.04))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.08))))
+
+                // ── Enable toggle (compact, proportional — was an oversized full-width banner) ──
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Enable project scaffold")
-                            .font(.custom("DM Sans", size: 13).weight(.medium))
-                            .foregroundStyle(.white)
-                        Text("You can customise the folders anytime in Settings.")
-                            .font(.custom("DM Sans", size: 11))
-                            .foregroundStyle(Color.white.opacity(0.38))
+                        Text("Enable project scaffold").font(.system(size: 13).weight(.medium)).foregroundStyle(.white)
+                        Text("Customise anytime in Settings.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     }
                     Spacer()
-                    Toggle("", isOn: $ob3ScaffoldOn)
-                        .toggleStyle(.switch)
-                        .tint(purple)
-                        .labelsHidden()
+                    MiniPillToggle(isOn: $ob3ScaffoldOn)
                 }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(ob3ScaffoldOn ? purple.opacity(0.12) : Color.white.opacity(0.04))
-                        .overlay(RoundedRectangle(cornerRadius: 12)
-                            .stroke(ob3ScaffoldOn ? purple.opacity(0.35) : Color.white.opacity(0.08), lineWidth: 1))
-                )
-                .animation(.easeInOut(duration: 0.20), value: ob3ScaffoldOn)
+                .padding(.horizontal, 16).padding(.vertical, 12).frame(width: 460)
+                .background(RoundedRectangle(cornerRadius: 12).fill(.white.opacity(0.04))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.08))))
 
                 // ── CTAs ─────────────────────────────────────────────────
                 OnboardingButton("Next  →", color: purple) {
@@ -13621,7 +13617,7 @@ private struct OnboardingView: View {
                     withAnimation(.easeInOut(duration: 0.46)) { page = 4 }
                 } label: {
                     Text("Skip")
-                        .font(.custom("DM Sans", size: 12))
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.white.opacity(0.28))
                         .underline()
                 }
@@ -13653,7 +13649,7 @@ private struct OnboardingView: View {
                 VStack(spacing: 22) {
                     // Purple pill badge
                     Text("See it in action")
-                        .font(.custom("DM Sans", size: 11).weight(.semibold))
+                        .font(.system(size: 11).weight(.semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(purple.opacity(0.88)))
@@ -13661,7 +13657,7 @@ private struct OnboardingView: View {
                     // Headline
                     OnboardingReveal(
                         "Watch what happens\nwhen a card comes in.",
-                        font: .custom("Tech Headlines Italic", size: 24),
+                        font: .custom("SairaItalic-ExtraBoldItalic", size: 24),
                         delay: 0.22,
                         foreground: AnyShapeStyle(LinearGradient(
                             colors: [.white, Color(hex: "#b8d8ff")],
@@ -13674,7 +13670,7 @@ private struct OnboardingView: View {
                     if !demoStarted {
                         OnboardingReveal(
                             "We'll run a quick demo so you know\nexactly what to expect.",
-                            font: .custom("DM Sans", size: 13),
+                            font: .system(size: 13),
                             delay: 0.85,
                             foreground: AnyShapeStyle(Color.white.opacity(0.50))
                         )
@@ -13709,7 +13705,7 @@ private struct OnboardingView: View {
                     // Status text
                     if !demoStatus.isEmpty {
                         Text(demoStatus)
-                            .font(.custom("DM Sans", size: 12))
+                            .font(.system(size: 12))
                             .foregroundStyle(isDone
                                 ? Color(hex: "#34D399")
                                 : Color.white.opacity(0.60))
@@ -13721,7 +13717,7 @@ private struct OnboardingView: View {
                     if isDone {
                         OnboardingReveal(
                             "That's it. Every card, every time.",
-                            font: .custom("DM Sans", size: 14).weight(.medium),
+                            font: .system(size: 14).weight(.medium),
                             delay: 0.20,
                             foreground: AnyShapeStyle(Color.white.opacity(0.78))
                         )
@@ -13746,7 +13742,7 @@ private struct OnboardingView: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { onComplete() }
                         } label: {
                             Text("Skip demo")
-                                .font(.custom("DM Sans", size: 12))
+                                .font(.system(size: 12))
                                 .foregroundStyle(Color.white.opacity(0.28))
                                 .underline()
                         }
@@ -13757,14 +13753,15 @@ private struct OnboardingView: View {
                 }
                 .padding(.horizontal, 52).padding(.vertical, 46)
                 .background(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(Color(hex: "#07101f").opacity(0.90))
+                    // v3 module surface (#0c0822, radius 22) + a brand gradient edge.
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color(hex: "#0c0822").opacity(0.94))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
                                 .stroke(LinearGradient(
-                                    colors: [blue.opacity(0.38), purple.opacity(0.38)],
+                                    colors: [blue.opacity(0.5), purple.opacity(0.5), Color(hex: "#d946ef").opacity(0.4)],
                                     startPoint: .topLeading, endPoint: .bottomTrailing
-                                ), lineWidth: 1)
+                                ), lineWidth: 1.5)
                         )
                         .shadow(color: .black.opacity(0.55), radius: 34, x: 0, y: 18)
                 )
