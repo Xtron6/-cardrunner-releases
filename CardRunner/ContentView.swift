@@ -2173,6 +2173,143 @@ extension View {
     }
 }
 
+/// One celebration particle — target offset from the ring center, look baked in at fire time.
+private struct V3Particle: Identifiable {
+    let id = UUID()
+    var dx: CGFloat        // end x offset from ring center
+    var dy: CGFloat        // end y offset
+    var size: CGFloat
+    var color: Color
+    var rotate: Double
+    var anchored: Bool     // true = sits at (dx,dy) and twinkles out; false = flies out from center
+}
+
+/// The v3 transfer-completion celebration — a ONE-SHOT neon burst anchored to the ring. Fired by a
+/// `trigger` bump; self-clears after ~1.1s. NO always-on TimelineView (the core-burn gotcha) — it uses
+/// a single `withAnimation` + a delayed clear, exactly like the sheen. Honors Reduce Motion. The six
+/// `CompletionAnimation` rawValues are preserved (zero migration); each renders a fresh v3 neon look.
+struct V3CompletionOverlay: View {
+    let center: CGPoint
+    let radius: CGFloat
+    let style: CompletionAnimation
+    let trigger: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var particles: [V3Particle] = []
+    @State private var active = false      // drives particle travel + fade
+    @State private var ringPulse = false   // expanding shockwave rings
+    @State private var glow = false        // gold "all safe" ring glow (victory)
+
+    private var neon: [Color] {
+        [Color(hex: "#0dcff5"), Color(hex: "#7c3aed"), Color(hex: "#d946ef"), Color(hex: "#34d399")]
+    }
+
+    var body: some View {
+        ZStack {
+            if ringPulse {
+                Circle().stroke(Color(hex: "#0dcff5"), lineWidth: 3).frame(width: radius * 2, height: radius * 2)
+                    .scaleEffect(active ? 1.9 : 0.92).opacity(active ? 0 : 0.9)
+                Circle().stroke(Color(hex: "#d946ef"), lineWidth: 2).frame(width: radius * 2, height: radius * 2)
+                    .scaleEffect(active ? 2.35 : 0.92).opacity(active ? 0 : 0.65)
+            }
+            if glow {
+                Circle().stroke(Color(hex: "#fbbf24"), lineWidth: 12).frame(width: radius * 2, height: radius * 2)
+                    .blur(radius: 16).scaleEffect(active ? 1.18 : 1.0).opacity(active ? 0 : 0.85)
+            }
+            ForEach(particles) { p in
+                particleShape(p)
+                    .offset(x: p.anchored ? p.dx : (active ? p.dx : 0),
+                            y: p.anchored ? p.dy : (active ? p.dy : 0))
+                    .rotationEffect(.degrees(active ? p.rotate : 0))
+                    .scaleEffect(p.anchored ? (active ? 0.2 : 1.0) : 1.0)
+                    .opacity(active ? 0 : 1)
+            }
+        }
+        .position(center)
+        .onChange(of: trigger) { _, _ in fire() }
+    }
+
+    @ViewBuilder private func particleShape(_ p: V3Particle) -> some View {
+        switch style {
+        case .fizzySoda:
+            Circle().fill(p.color.opacity(0.28))
+                .overlay(Circle().strokeBorder(p.color.opacity(0.75), lineWidth: 1))
+                .frame(width: p.size, height: p.size)
+        case .retroSparkle:
+            Image(systemName: "sparkle").font(.system(size: p.size)).foregroundStyle(p.color)
+                .shadow(color: p.color.opacity(0.8), radius: 4)
+        case .pixelFireworks:
+            Capsule().fill(p.color).frame(width: 2.5, height: p.size)       // thin radial sparks
+        default:
+            RoundedRectangle(cornerRadius: 1.5).fill(p.color).frame(width: p.size, height: p.size * 2)
+                .shadow(color: p.color.opacity(0.6), radius: 3)             // neon glass-shard confetti
+        }
+    }
+
+    private func fire() {
+        guard style != .none else { return }
+        active = false
+        if reduceMotion {                        // minimal: one gentle ring pulse, no flying particles
+            particles = []; glow = false; ringPulse = true
+            withAnimation(.easeOut(duration: 0.8)) { active = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { ringPulse = false; active = false }
+            return
+        }
+        ringPulse = (style == .pixelFireworks || style == .victory)
+        glow = (style == .victory)
+        particles = makeParticles()
+        withAnimation(.easeOut(duration: 1.0)) { active = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
+            particles = []; ringPulse = false; glow = false; active = false
+        }
+    }
+
+    private func makeParticles() -> [V3Particle] {
+        switch style {
+        case .none:           return []
+        case .pixelFireworks: return radial(count: 16, spark: true)
+        case .confetti:       return radial(count: 36, spark: false)
+        case .victory:        return radial(count: 30, spark: false)
+        case .fizzySoda:      return bubbles(count: 14)
+        case .retroSparkle:   return ringSparkles(count: 16)
+        }
+    }
+
+    /// Shards/sparks flying out from the ring center (with a little downward gravity for confetti).
+    private func radial(count: Int, spark: Bool) -> [V3Particle] {
+        (0..<count).map { i in
+            let ang = spark ? (Double(i) / Double(count)) * 2 * .pi
+                            : Double.random(in: 0..<(2 * .pi))
+            let dist = radius * CGFloat.random(in: 1.15...2.15)
+            let grav: CGFloat = spark ? 0 : CGFloat.random(in: 10...40)
+            return V3Particle(dx: cos(ang) * dist, dy: sin(ang) * dist + grav,
+                              size: spark ? CGFloat.random(in: 14...24) : CGFloat.random(in: 5...9),
+                              color: neon.randomElement()!, rotate: Double.random(in: -220...220), anchored: false)
+        }
+    }
+
+    /// Translucent bubbles rising up around the ring.
+    private func bubbles(count: Int) -> [V3Particle] {
+        (0..<count).map { _ in
+            V3Particle(dx: CGFloat.random(in: -radius...radius), dy: -CGFloat.random(in: radius...radius * 2),
+                       size: CGFloat.random(in: 6...16),
+                       color: [Color(hex: "#7c3aed"), Color(hex: "#0dcff5")].randomElement()!,
+                       rotate: 0, anchored: false)
+        }
+    }
+
+    /// Neon sparkles that appear ON the ring circumference and twinkle out.
+    private func ringSparkles(count: Int) -> [V3Particle] {
+        (0..<count).map { i in
+            let ang = (Double(i) / Double(count)) * 2 * .pi + Double.random(in: -0.15...0.15)
+            let r = radius * CGFloat.random(in: 0.92...1.08)
+            return V3Particle(dx: cos(ang) * r, dy: sin(ang) * r,
+                              size: CGFloat.random(in: 12...20), color: neon.randomElement()!,
+                              rotate: 0, anchored: true)
+        }
+    }
+}
+
 /// The destination-tile remove control — a dim "minus" that becomes a RED "X" on hover (destructive
 /// affordance), matching the module close X. Its own hover `@State`.
 struct V3TileRemoveButton: View {
@@ -2679,6 +2816,8 @@ struct ContentView: View {
     @State private var v3DragRowPitch: CGFloat = 96     // tile height + spacing (the make-room gap size)
     @State private var v3DragSettling: UUID? = nil      // keeps the just-dropped tile on top through its glide
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
+    @State private var v3CelebrationTrigger = 0        // bump to fire the v3 completion celebration (one-shot)
+    @State private var v3PendingCelebration = false    // a real copy completed this batch → celebrate when the ring goes green
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -11000,7 +11139,8 @@ struct ContentView: View {
             // call saveHistory().  Saving a fake entry would inflate session GB
             // stats for real users (and stack up on repeated onboarding runs).
             self.onboardingDemoStatus = "Transfer complete. \(totalFiles) \(self.mediaLabel) · 6s · \(Int(mbps)) MB/s avg"
-            self.triggerCompletionFlash()
+            if self.isLegacyUI { self.triggerCompletionFlash() }
+            self.v3CelebrationTrigger += 1   // preview the v3 celebration (Run UI Demo → pick a style → watch)
             AudioEngine.shared.transferComplete()
             // Demo released the engine — start any real cards queued behind it.
             self.drainQueue()
@@ -11409,7 +11549,10 @@ struct ContentView: View {
                     }
                 } else {
                     AudioEngine.shared.transferComplete()
-                    self.triggerCompletionFlash()
+                    // Legacy UI plays its own (invisible-under-v3) flash; v3 celebrates ONCE per batch
+                    // when the ring goes green (see v3MaybeCelebrate) — mark that a real copy landed.
+                    if self.isLegacyUI { self.triggerCompletionFlash() }
+                    self.v3PendingCelebration = true
                     let alertBody: String = {
                         var msg = "Copied \(newFiles) file\(newFiles == 1 ? "" : "s") → \(relDest)"
                         if !skipSummaryLine.isEmpty { msg += "\n\(skipSummaryLine)" }
@@ -16210,6 +16353,15 @@ extension ContentView {
             && runningCount == 0 && activeIngests.values.allSatisfy { $0.phase == .done }
     }
 
+    /// Fire the completion celebration exactly once per successful batch, when the ring goes green.
+    /// Guarded so it never plays on failure, dry-run, an already-done relaunch, or when the user
+    /// picked "None". Consumes the pending flag so it can't re-fire.
+    private func v3MaybeCelebrate() {
+        guard v3PendingCelebration, v3AllDone, !v3HasFailures, !dryRun, completionAnim != .none else { return }
+        v3PendingCelebration = false
+        v3CelebrationTrigger += 1
+    }
+
     private func v3LanePct(_ ing: ActiveIngest) -> Double {
         ing.totalBytesNew > 0 ? min(100, Double(ing.doneBytes) / Double(ing.totalBytesNew) * 100) : 0
     }
@@ -16335,6 +16487,19 @@ extension ContentView {
                     .contentShape(Rectangle())
                     .onTapGesture { editingAwaitingID = nil; editingActiveID = nil }
                 }
+                // Completion celebration — a one-shot neon burst anchored to the ring, above the
+                // columns. Non-interactive; driven by v3CelebrationTrigger + the selected style.
+                .overlayPreferenceValue(V3AnchorKey.self) { anchors in
+                    GeometryReader { geo in
+                        if let r = anchors["ring"].map({ geo[$0] }) {
+                            V3CompletionOverlay(center: CGPoint(x: r.midX, y: r.midY),
+                                                radius: r.width / 2,
+                                                style: completionAnim,
+                                                trigger: v3CelebrationTrigger)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
                 v3BottomBar
             }
             .padding(26)
@@ -16372,6 +16537,12 @@ extension ContentView {
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
         .onReceive(v3SheenTimer) { _ in v3SheenTrigger += 1 }   // fire one gloss sweep, ~every 20 s
+        // Celebrate ONCE when the whole transfer finishes (ring goes green). Both onChanges cover the
+        // ordering: the last card may set `pending` and flip `v3AllDone` in either order.
+        .onChange(of: v3AllDone) { _, done in
+            if done { v3MaybeCelebrate() } else { v3PendingCelebration = false }
+        }
+        .onChange(of: v3PendingCelebration) { _, pend in if pend && v3AllDone { v3MaybeCelebrate() } }
         // Focus move: commit the lane we LEFT (only if the operator actually edited it — Esc
         // resets userEdited so a cancelled edit doesn't persist), and capture the ENTERED lane's
         // current value so Esc can restore it. Never starts a copy.
