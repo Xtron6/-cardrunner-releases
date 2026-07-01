@@ -2647,6 +2647,7 @@ struct ContentView: View {
     @State private var v3DragOffset: CGSize = .zero    // follows the cursor
     @State private var v3DragRotation: Double = 0      // tilts with horizontal velocity
     @State private var v3DefaultPop = false            // golden pop burst on the default box on drop
+    @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -17803,21 +17804,60 @@ extension ContentView {
                 v3Chip("Stop", "stop.circle", v3Red) { v3Post(.menuStopTransfer) }
             }
             v3Chip("New project folder", "folder.badge.plus", v3Purple) { v3OpenNewProject() }
-            // Date filter — Today / Yesterday / All / Custom (range or single day).
-            Menu {
-                Button("Today") { dateFilterMode = "today" }
-                Button("Yesterday") { dateFilterMode = "yesterday" }
-                Button("All dates") { dateFilterMode = "all" }
-                Divider()
-                Button("Custom range…") { v3OpenDateRange() }
-            } label: {
-                v3ChipLabel(v3DateFilterText, "calendar", dateFilterMode == "all" ? .white.opacity(0.6) : v3Cyan)
-            }.menuStyle(.borderlessButton).fixedSize()
+            // Date filter — a custom liquid-glass dropdown (native Menu can't be restyled).
+            v3DateDropdown
             // Verify moved fully into Settings (Xavier's call); Add-folder removed as redundant with the
             // destinations column's "Add destination". Bottom bar keeps only New project / dates / eject.
             v3Chip("Auto-eject  \(autoEject ? "On" : "Off")", "eject", autoEject ? v3Green : .white.opacity(0.6)) { autoEject.toggle() }
         }
     }
+    /// Custom liquid-glass date-filter dropdown (the native macOS Menu can't be restyled). Opens a
+    /// rounded dark card via `.popover`, dismisses on selection or outside-click.
+    private var v3DateDropdown: some View {
+        Button { v3ShowDateMenu = true } label: {
+            v3ChipLabel(v3DateFilterText, "calendar", dateFilterMode == "all" ? .white.opacity(0.6) : v3Cyan)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain).v3Hover()
+        .popover(isPresented: $v3ShowDateMenu, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                v3DateMenuRow("Today", "today")
+                v3DateMenuRow("Yesterday", "yesterday")
+                v3DateMenuRow("All dates", "all")
+                Divider().overlay(.white.opacity(0.12)).padding(.vertical, 3)
+                Button { v3ShowDateMenu = false; v3OpenDateRange() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "calendar.badge.clock").font(.system(size: 12)).foregroundStyle(v3Cyan)
+                        Text("Custom range…").font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
+                }.buttonStyle(.plain).v3Hover(scale: 1.0)
+            }
+            .padding(6).frame(width: 210)
+            .background(Color(hex: "#151024"))
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    /// One row of the custom date dropdown — highlights the active mode, closes on pick.
+    private func v3DateMenuRow(_ label: String, _ mode: String) -> some View {
+        let active = dateFilterMode == mode
+        return Button {
+            dateFilterMode = mode; v3ShowDateMenu = false
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 12)).foregroundStyle(active ? v3Cyan : .white.opacity(0.25))
+                Text(label).font(.system(size: 13, weight: active ? .semibold : .regular)).foregroundStyle(.white)
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(active ? v3Cyan.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).v3Hover(scale: 1.0)
+    }
+
     private var v3DateFilterText: String {
         switch dateFilterMode {
         case "today": return "Today only"
@@ -17869,48 +17909,48 @@ extension ContentView {
     /// Custom date-range picker (footage filter). "Single day" copies only that day's clips;
     /// "Range" copies From…To inclusive. Maps to --date-from / --date-to (yyyyMMdd).
     private var v3DateRangeSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Custom date filter").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Custom date filter").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Spacer(); v3SheetClose { showV3DateRange = false }
+            }
             Text("Only clips recorded in this window are copied. The rest are skipped (never deleted).")
-                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55))
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55)).fixedSize(horizontal: false, vertical: true)
 
-            Picker("", selection: $v3RangeSingleDay) {
-                Text("Date range").tag(false)
-                Text("Single day").tag(true)
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            v3SheetLabel("MODE")
+            v3Segment(left: ("calendar", "Date range"), right: ("calendar.day.timeline.left", "Single day"),
+                      leftSelected: !v3RangeSingleDay) { v3RangeSingleDay = !$0 }
 
             HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(v3RangeSingleDay ? "DAY" : "FROM")
-                        .font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.5))
+                    v3SheetLabel(v3RangeSingleDay ? "DAY" : "FROM")
                     DatePicker("", selection: $v3RangeFrom, displayedComponents: .date)
                         .labelsHidden().datePickerStyle(.compact)
                 }
                 if !v3RangeSingleDay {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("TO").font(.system(size: 10, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.5))
+                        v3SheetLabel("TO")
                         DatePicker("", selection: $v3RangeTo, in: v3RangeFrom..., displayedComponents: .date)
                             .labelsHidden().datePickerStyle(.compact)
                     }
                 }
+                Spacer()
             }
 
-            HStack {
+            HStack(spacing: 12) {
                 Button("Clear filter") {
                     dateFilterMode = "all"; dateFilterFrom = ""; dateFilterTo = ""
                     showV3DateRange = false
-                }.buttonStyle(.plain).foregroundStyle(v3Amber)
+                }.buttonStyle(.plain).foregroundStyle(v3Amber).v3Hover(scale: 1.04, brighten: true)
                 Spacer()
-                Button("Cancel") { showV3DateRange = false }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.6))
-                Button { v3ApplyDateRange() } label: {
-                    Text("Apply").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 20).padding(.vertical, 8).background(v3Green, in: Capsule())
-                }.buttonStyle(.plain)
+                v3SheetCancel { showV3DateRange = false }
+                v3SheetPrimary("Apply", icon: "checkmark", enabled: true) { v3ApplyDateRange() }
+                    .fixedSize()
             }
+            .padding(.top, 4)
         }
-        .padding(28).frame(width: 460)
-        .background(Color(hex: "#16101f"))
-        .preferredColorScheme(.dark)
+        .padding(26).frame(width: 460)
+        .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
     }
 
     private func v3ChipLabel(_ t: String, _ icon: String, _ color: Color) -> some View {
