@@ -17715,7 +17715,7 @@ extension ContentView {
             // A SIBLING slides to make room as the dragged tile crosses it (animated on target change);
             // the array is NOT mutated until release, so these frames stay stable (no jitter).
             .offset(y: v3DraggingDestID != nil && v3DraggingDestID != d.id ? v3ReorderShift(for: d) : 0)
-            .animation(.spring(response: 0.32, dampingFraction: 0.82), value: v3ReorderTo)
+            .animation(.spring(response: 0.38, dampingFraction: 0.94), value: v3ReorderTo)
             // The DRAGGED tile follows the cursor EXACTLY — plain translation, applied last and with NO
             // per-frame animation, so it never trails or springs behind the mouse.
             .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
@@ -17775,7 +17775,8 @@ extension ContentView {
                 }
                 // Commit the reorder (if any) AND settle the tile in one spring: the array move + the
                 // offset/gap reset animate together, so the tile glides from the cursor into its slot.
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                // High damping (near-critical) = a gradual ease-in with no big bounce on the drop.
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.96)) {
                     if reordered, let from = v3ReorderFrom, let to = v3ReorderTo {
                         v3CommitReorder(dragged: d.id, from: from, to: to)
                     }
