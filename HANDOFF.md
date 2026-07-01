@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `c771d44`. Build + **67 unit** + **40 smoke** all green. (Legacy UI fully removed + logic core extracted this session — see §1.)
+**Latest commit:** `4953587`. Build + **68 unit** + **40 smoke** all green. (Legacy UI fully removed + logic core extracted + production-hardening pass — see §1.)
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
 > Read `MEMORY.md` (index) → `cardrunner-roadmap.md` (full chronology + locked decisions) → this file (fast snapshot) → `UI-future.md` (repo root; design North Star for later). The roadmap memory is the deepest record; skim its newest entries first.
