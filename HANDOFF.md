@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `1661fb8`. Build + **~67 unit** + **40 smoke** all green.
+**Latest commit:** `HEAD` (batch2 UI polish, reviewer-verified). Build + **~67 unit** + **40 smoke** all green.
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
 > Read `MEMORY.md` + `cardrunner-roadmap.md` first — they hold the full chronology + locked decisions. This file is the fast snapshot.
