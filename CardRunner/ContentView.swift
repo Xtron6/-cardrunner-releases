@@ -2173,6 +2173,27 @@ extension View {
     }
 }
 
+/// The destination-tile remove control — a dim "minus" that becomes a RED "X" on hover (destructive
+/// affordance), matching the module close X. Its own hover `@State`.
+struct V3TileRemoveButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: hovering ? "xmark.circle.fill" : "minus")
+                .font(.system(size: hovering ? 15 : 12, weight: .bold))
+                .foregroundStyle(hovering ? Color(hex: "#f87171") : .white.opacity(0.4))
+                .scaleEffect(hovering ? 1.12 : 1)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.28, dampingFraction: 0.55), value: hovering)
+        .onHover { hovering = $0 }
+        .help("Remove this destination")
+    }
+}
+
 /// The module close "X" — turns RED on hover (destructive affordance), then runs the module's own
 /// close transition on click. A dedicated struct so it can hold its own hover `@State`.
 struct V3CloseButton: View {
@@ -2652,6 +2673,7 @@ struct ContentView: View {
     @State private var v3DragOffset: CGSize = .zero    // follows the cursor
     @State private var v3DragRotation: Double = 0      // tilts with horizontal velocity
     @State private var v3DefaultPop = false            // golden pop burst on the default box on drop
+    @State private var v3DragGrab: CGSize = .zero       // where within a dragged tile the grab landed
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
@@ -15813,8 +15835,10 @@ extension ContentView {
                 Spacer(); v3SheetClose { showV3AddDest = false }
             }
             v3SheetLabel("DESTINATION")
-            v3Segment(left: ("externaldrive", "SSD"), right: ("folder", "Custom Folder"), leftSelected: v3AddIsSSD) {
-                v3AddIsSSD = $0
+            v3Segment(left: ("externaldrive", "SSD"), right: ("folder", "Custom Folder"), leftSelected: v3AddIsSSD) { picked in
+                // Spring the module's height between the tall SSD tab and the short Custom tab
+                // instead of an abrupt big↔small jump.
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { v3AddIsSSD = picked }
             }
             if v3AddIsSSD {
                 v3SheetLabel("Drive")
@@ -15868,6 +15892,9 @@ extension ContentView {
             .padding(.top, 4)
         }
         .padding(26).frame(width: 460)
+        .frame(minHeight: 0)
+        .fixedSize(horizontal: false, vertical: true)
+        .animation(.spring(response: 0.36, dampingFraction: 0.82), value: v3AddIsSSD)  // smooth height resize
         .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
         // Tap anywhere on the card (outside a control) to leave the name field — the modal's
         // outside-tap dismisses the whole sheet, so this is the only "click out of the field" path.
@@ -17661,13 +17688,15 @@ extension ContentView {
                     .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
                     .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
             })
-            // Hover bounce (subtle) signals the tile is clickable — suppressed while this tile is being
-            // dragged. Applied AFTER the anchor/destFrames reads above so routing-line geometry + drop
-            // hit-testing use the un-scaled/un-rotated resting frame.
-            .scaleEffect(v3HoveredDestID == d.id && v3DraggingDestID != d.id ? 1.02 : 1.0)
+            // Hover bounce (subtle) signals the tile is clickable — suppressed while ANY tile is being
+            // dragged (so tiles sliding under the cursor during a reorder don't flicker their bounce).
+            // Applied AFTER the anchor/destFrames reads above so routing-line geometry + drop hit-testing
+            // use the un-scaled/un-rotated resting frame.
+            .scaleEffect(v3HoveredDestID == d.id && v3DraggingDestID == nil ? 1.02 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
             .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
-            // Dynamic drag → drop on the default box to make this the default (see v3DestDragGesture).
+            // Dynamic drag → drop on the default box = make default; drag among tiles = reorder (see
+            // v3DestDragGesture). The transforms are applied AFTER the anchor/destFrames reads above.
             .scaleEffect(v3DraggingDestID == d.id ? 1.06 : 1.0)
             .rotationEffect(.degrees(v3DraggingDestID == d.id ? v3DragRotation : 0))
             .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
@@ -17675,25 +17704,46 @@ extension ContentView {
             .animation(.spring(response: 0.28, dampingFraction: 0.62), value: v3DraggingDestID)
             .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.7), value: v3DragRotation)
             .if(runningCount == 0) { $0.gesture(v3DestDragGesture(d)) }
+            // Swipe-away when removed (#7): shrink + slide out; siblings close up (withAnimation on remove).
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.9)),
+                removal: .scale(scale: 0.85).combined(with: .opacity).combined(with: .move(edge: .trailing))))
     }
 
-    /// Custom drag for the make-default swap: the tile follows the cursor, tilts with horizontal
-    /// velocity (springs back to level when still), and on a drop over the default box triggers a
-    /// golden pop. `minimumDistance: 8` lets a plain click still fall through to the edit tap.
+    /// Custom drag for a destination tile — TWO modes chosen by where the cursor is:
+    ///  • over the DEFAULT box  → make-default (gold pop on release).
+    ///  • among the tile column → live REORDER (the tiles glide; the array reorders as the dragged
+    ///    tile crosses a neighbour's midpoint; persisted on release).
+    /// The tile is positioned by ABSOLUTE cursor location against its CURRENT resting frame — so when
+    /// the array reorders underneath it, it stays glued to the cursor instead of jumping. `minimumDistance: 8`
+    /// lets a plain click still fall through to the edit tap.
     private func v3DestDragGesture(_ d: Destination) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .named("stage"))
             .onChanged { v in
-                v3DraggingDestID = d.id
-                v3DragOffset = v.translation
+                let resting = destFrames[d.id] ?? .zero
+                if v3DraggingDestID != d.id {           // first frame — record the grab point in the tile
+                    v3DragGrab = CGSize(width: v.startLocation.x - resting.midX,
+                                        height: v.startLocation.y - resting.midY)
+                    v3DraggingDestID = d.id
+                }
+                // Absolute-cursor offset against the current resting frame (survives reorders w/o jump).
+                let targetX = v.location.x - v3DragGrab.width
+                let targetY = v.location.y - v3DragGrab.height
+                v3DragOffset = CGSize(width: targetX - resting.midX, height: targetY - resting.midY)
                 v3DragRotation = max(-14, min(14, v.velocity.width * 0.012))
-                let overDefault = (defaultDestination?.id).flatMap { destFrames[$0] }?.contains(v.location) ?? false
-                dragOverDest = overDefault ? defaultDestination?.id : nil
+
+                if let defID = defaultDestination?.id, let f = destFrames[defID], f.contains(v.location) {
+                    dragOverDest = defID                 // make-default mode (highlight the golden box)
+                } else {
+                    dragOverDest = nil                   // reorder mode
+                    v3ReorderIfNeeded(dragged: d.id, centerY: targetY)
+                }
             }
             .onEnded { v in
                 var swapped = false
                 if let defID = defaultDestination?.id, defID != d.id,
                    let f = destFrames[defID], f.contains(v.location) {
-                    swapped = v3MakeDefault(d.id)
+                    swapped = v3MakeDefault(d.id)        // decided at RELEASE, not hover
                 }
                 if swapped {
                     v3DefaultPop = true
@@ -17701,6 +17751,8 @@ extension ContentView {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
                     }
+                } else {
+                    saveDestinations()                   // persist whatever order the reorder left
                 }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                     v3DragOffset = .zero; v3DragRotation = 0
@@ -17708,6 +17760,31 @@ extension ContentView {
                 v3DraggingDestID = nil
                 dragOverDest = nil
             }
+    }
+
+    /// Live-reorder the dragged tile among its siblings as its center crosses a neighbour's midpoint.
+    /// Order is display-only (default resolves by ID, routing resolves by ID) so this can't perturb
+    /// routing. Persisted on drop.
+    private func v3ReorderIfNeeded(dragged id: UUID, centerY: CGFloat) {
+        guard let defID = defaultDestination?.id else { return }
+        let sibs = destinations.filter { $0.id != defID }
+        guard let from = sibs.firstIndex(where: { $0.id == id }) else { return }
+        var target = from
+        for (i, s) in sibs.enumerated() where s.id != id {
+            guard let f = destFrames[s.id] else { continue }
+            if i < from && centerY < f.midY { target = min(target, i) }
+            if i > from && centerY > f.midY { target = max(target, i) }
+        }
+        guard target != from else { return }
+        var reordered = sibs
+        let item = reordered.remove(at: from)
+        reordered.insert(item, at: min(max(0, target), reordered.count))
+        // Rebuild: default kept at the front (display renders it separately; if it's later removed,
+        // v3RemoveDestination promotes destinations.first → the new top tile).
+        let def = destinations.first { $0.id == defID }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+            destinations = (def.map { [$0] } ?? []) + reordered
+        }
     }
 
     /// Shared tile contents (icon, name, free space, role/route line, remove control).
@@ -17744,8 +17821,10 @@ extension ContentView {
                     .help(runningCount == 0 ? "Drag onto the default box to make this the default"
                                             : "Locked while a transfer is running")
                 if destinations.count > 1 {
-                    Image(systemName: "minus").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.4))
-                        .contentShape(Rectangle()).onTapGesture { v3RemoveDestination(d.id) }
+                    // Hover → red X; click → spring the tile out (the .transition on v3DestTile).
+                    V3TileRemoveButton {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { v3RemoveDestination(d.id) }
+                    }
                 }
             }
         }
