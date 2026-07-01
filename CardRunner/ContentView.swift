@@ -2674,6 +2674,7 @@ struct ContentView: View {
     @State private var v3DragRotation: Double = 0      // tilts with horizontal velocity
     @State private var v3DefaultPop = false            // golden pop burst on the default box on drop
     @State private var v3DragGrab: CGSize = .zero       // where within a dragged tile the grab landed
+    @State private var v3DidReorder = false             // a reorder actually happened this drag (→ save)
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
@@ -17725,6 +17726,7 @@ extension ContentView {
                     v3DragGrab = CGSize(width: v.startLocation.x - resting.midX,
                                         height: v.startLocation.y - resting.midY)
                     v3DraggingDestID = d.id
+                    v3DidReorder = false
                 }
                 // Absolute-cursor offset against the current resting frame (survives reorders w/o jump).
                 let targetX = v.location.x - v3DragGrab.width
@@ -17751,8 +17753,8 @@ extension ContentView {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
                     }
-                } else {
-                    saveDestinations()                   // persist whatever order the reorder left
+                } else if v3DidReorder {
+                    saveDestinations()                   // persist ONLY if the order actually changed
                 }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                     v3DragOffset = .zero; v3DragRotation = 0
@@ -17785,6 +17787,7 @@ extension ContentView {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
             destinations = (def.map { [$0] } ?? []) + reordered
         }
+        v3DidReorder = true
     }
 
     /// Shared tile contents (icon, name, free space, role/route line, remove control).
