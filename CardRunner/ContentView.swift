@@ -11551,8 +11551,10 @@ struct ContentView: View {
                     AudioEngine.shared.transferComplete()
                     // Legacy UI plays its own (invisible-under-v3) flash; v3 celebrates ONCE per batch
                     // when the ring goes green (see v3MaybeCelebrate) — mark that a real copy landed.
+                    // NOT under dry-run: "pending" means REAL footage landed, and a dry-run copies
+                    // nothing, so it must never arm the celebration (airtight, not just fire-time-guarded).
                     if self.isLegacyUI { self.triggerCompletionFlash() }
-                    self.v3PendingCelebration = true
+                    if !self.dryRun { self.v3PendingCelebration = true }
                     let alertBody: String = {
                         var msg = "Copied \(newFiles) file\(newFiles == 1 ? "" : "s") → \(relDest)"
                         if !skipSummaryLine.isEmpty { msg += "\n\(skipSummaryLine)" }
