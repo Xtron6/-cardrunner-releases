@@ -2143,6 +2143,53 @@ func deriveDestName(fromProject project: String) -> String {
 /// Animatable state for the v3 gloss sheen sweep (KeyframeAnimator drives x + opacity).
 struct V3SheenState { var x: CGFloat = 0; var opacity: Double = 0 }
 
+/// Reusable tactile hover for any interactive control — a subtle spring scale + optional brighten +
+/// optional colored glow, applied on `.onHover`. Event-driven (fires only on hover enter/exit), so no
+/// always-on render cost. Each use carries its own `@State`, so buttons track hover independently.
+/// The single idiom behind the app's "every control reacts" feel. Color-shift hovers (X→red,
+/// Add-button→cyan) are handled inline where the CONTENT's foreground must change.
+struct V3HoverModifier: ViewModifier {
+    var scale: CGFloat
+    var glow: Color?
+    var brighten: Bool
+    @State private var hovering = false
+    func body(content: Content) -> some View {
+        content
+            .brightness(hovering && brighten ? 0.06 : 0)
+            .scaleEffect(hovering ? scale : 1)
+            .shadow(color: (glow ?? .clear).opacity(hovering ? 0.5 : 0), radius: 12)
+            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovering)
+            .onHover { hovering = $0 }
+    }
+}
+extension View {
+    /// Tactile hover (scale + optional glow/brighten). Use `.contentShape(Rectangle())` on the label
+    /// first when the control needs a bigger hit target than its visible content.
+    func v3Hover(scale: CGFloat = 1.03, glow: Color? = nil, brighten: Bool = true) -> some View {
+        modifier(V3HoverModifier(scale: scale, glow: glow, brighten: brighten))
+    }
+}
+
+/// The module close "X" — turns RED on hover (destructive affordance), then runs the module's own
+/// close transition on click. A dedicated struct so it can hold its own hover `@State`.
+struct V3CloseButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                .foregroundStyle(hovering ? Color(hex: "#f87171") : .white.opacity(0.6))
+                .frame(width: 30, height: 30)
+                .background((hovering ? Color(hex: "#f87171").opacity(0.16) : .white.opacity(0.05)), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(hovering ? Color(hex: "#f87171").opacity(0.55) : .white.opacity(0.10)))
+                .scaleEffect(hovering ? 1.08 : 1)
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovering)
+        .onHover { hovering = $0 }
+    }
+}
+
 // MARK: - v3 Settings categories (icon-rail redesign)
 
 /// The left icon-rail categories for the redesigned v3 Settings screen. Every legacy setting
@@ -15946,13 +15993,7 @@ extension ContentView {
     private func v3SheetLabel(_ t: String) -> some View {
         Text(t).font(.system(size: 11, weight: .bold)).tracking(1).foregroundStyle(.white.opacity(0.4))
     }
-    private func v3SheetClose(_ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.white.opacity(0.6))
-                .frame(width: 30, height: 30).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.10)))
-        }.buttonStyle(.plain)
-    }
+    private func v3SheetClose(_ act: @escaping () -> Void) -> some View { V3CloseButton(action: act) }
     private func v3Segment(left: (String, String), right: (String, String),
                            leftSelected: Bool, _ pick: @escaping (Bool) -> Void) -> some View {
         HStack(spacing: 0) {
@@ -15968,7 +16009,9 @@ extension ContentView {
                 .foregroundStyle(selected ? .white : .white.opacity(0.6))
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
                 .background(selected ? AnyShapeStyle(v3Brand) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 9))
+                .contentShape(Rectangle())   // whole half is clickable, not just the text
         }.buttonStyle(.plain)
+        .v3Hover(scale: 1.0)                  // brighten on hover; no scale inside the fixed track
     }
     private func v3SheetCancel(_ act: @escaping () -> Void) -> some View {
         Button(action: act) {
@@ -15976,7 +16019,8 @@ extension ContentView {
                 .padding(.horizontal, 22).padding(.vertical, 12)
                 .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
                 .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.10)))
-        }.buttonStyle(.plain)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).v3Hover()
     }
     private func v3SheetPrimary(_ title: String, icon: String, enabled: Bool, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
@@ -15984,7 +16028,8 @@ extension ContentView {
                 .foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 12)
                 .background(v3Brand, in: RoundedRectangle(cornerRadius: 11))
                 .opacity(enabled ? 1 : 0.4)
-        }.buttonStyle(.plain).disabled(!enabled)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(!enabled).v3Hover(glow: v3Purple)
     }
 
     // MARK: Ingest-history sheet
@@ -16255,13 +16300,17 @@ extension ContentView {
             // The redesigned v3 Settings screen (icon rail + migrated settings). Tapping the
             // dimmed backdrop closes it. The legacy settingsSheet is still used under CR_LEGACY_UI.
             if isShowingSettings {
+                let closeSettings = { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
                 Color.black.opacity(0.5).ignoresSafeArea()
-                    .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
+                    .onTapGesture(perform: closeSettings)
                     .transition(.opacity).zIndex(80)
                 v3SettingsView
                     .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
-                    .onExitCommand { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
+                    // Robust Escape-to-close (onExitCommand needs first-responder focus, which the
+                    // overlay lacks — the hidden .cancelAction button works regardless).
+                    .background(Button("", action: closeSettings).keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
+                    .onExitCommand(perform: closeSettings)
                     .zIndex(81)
             }
 
@@ -16303,7 +16352,14 @@ extension ContentView {
                 .onTapGesture(perform: dismiss)
                 .transition(.opacity).zIndex(60)
             content()
+                // Rounded glass corners for EVERY module (folded in here so all six get it for free).
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.08)))
                 .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
+                // Escape to dismiss — a hidden .cancelAction button is robust regardless of first
+                // responder (unlike .onExitCommand, which needs focus). Modules are conditionally
+                // rendered so only the open one's shortcut is live (no dup-cancelAction).
+                .background(Button("", action: dismiss).keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
                 .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
                 .onExitCommand(perform: dismiss)
                 .zIndex(61)
@@ -16384,7 +16440,13 @@ extension ContentView {
                            startPoint: .topLeading, endPoint: .bottomTrailing)
             RadialGradient(colors: [Color(hex: "#7c3aed").opacity(0.20), .clear], center: .init(x: 0.22, y: 0.08), startRadius: 0, endRadius: 760)
             RadialGradient(colors: [Color(hex: "#0dcff5").opacity(0.13), .clear], center: .init(x: 0.84, y: 0.92), startRadius: 0, endRadius: 640)
-        }.ignoresSafeArea()
+        }
+        .ignoresSafeArea()
+        // Click empty space to leave (and COMMIT, via the editingID onChange) an in-progress lane-name
+        // edit — same as pressing ✓. This sits at the very BACK of the ZStack, so interactive content
+        // and drag gestures on top consume their own events; only a tap on bare canvas reaches here.
+        .contentShape(Rectangle())
+        .onTapGesture { editingAwaitingID = nil; editingActiveID = nil }
     }
 
     // MARK: Top bar
@@ -16446,7 +16508,10 @@ extension ContentView {
                         Capsule().fill(v3Cyan).frame(width: 3, height: 20).offset(x: -19)
                     }
                 }
-        }.buttonStyle(.plain).help(cat.title)
+                // Larger cell so the whole rail row is clickable, not just the 44pt icon.
+                .frame(width: 58, height: 50)
+                .contentShape(RoundedRectangle(cornerRadius: 13))
+        }.buttonStyle(.plain).v3Hover(scale: 1.08).help(cat.title)
     }
 
     private var v3SettingsContent: some View {
@@ -16511,7 +16576,10 @@ extension ContentView {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).tint(v3Cyan).disabled(!enabled)
+            // Liquid-glass switch — ON = brand blue→purple, OFF = gray (MiniPillToggle's default onColor
+            // blends neonBlue→neonPurple). Reused from the legacy UI so there's one toggle look.
+            MiniPillToggle(isOn: isOn)
+                .disabled(!enabled).opacity(enabled ? 1 : 0.4)
                 .onChange(of: isOn.wrappedValue) { _, now in onChange?(now) }
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
@@ -16766,25 +16834,25 @@ extension ContentView {
             let demoBlocked = runningCount != 0 || !awaitingCards.isEmpty
             Button { runDemoIngest() } label: {
                 Label("Run UI Demo", systemImage: "play.circle.fill")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(demoBlocked ? .white.opacity(0.3) : v3Cyan)
-                .disabled(demoBlocked)
+                .disabled(demoBlocked).v3Hover(scale: 1.05)
                 .help(awaitingCards.isEmpty ? "Simulate a full ingest (no card needed) — exercises every lane/ring state"
                                             : "Unavailable while cards are waiting to route — the demo would auto-start them")
 
             Button { showV3Log = true } label: {
-                Label("Show Log", systemImage: "doc.plaintext").font(.system(size: 12, weight: .semibold))
-            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8))
+                Label("Show Log", systemImage: "doc.plaintext").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
             Button { NSWorkspace.shared.open(logsDirectoryURL) } label: {
-                Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold))
-            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8))
+                Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
             Spacer()
 
             HStack(spacing: 7) {
                 Text("Dry Run").font(.system(size: 12, weight: .semibold)).foregroundStyle(dryRun ? v3Amber : .white.opacity(0.6))
-                Toggle("", isOn: $dryRun).labelsHidden().toggleStyle(.switch).tint(v3Amber)
+                MiniPillToggle(isOn: $dryRun, onColor: .orange)
             }
             Text("Turn off in Settings").font(.system(size: 10)).foregroundStyle(.white.opacity(0.3))
         }
@@ -17250,8 +17318,8 @@ extension ContentView {
                 } label: {
                     Text("Start").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 16).padding(.vertical, 6)
-                        .background(v3Green, in: Capsule())
-                }.buttonStyle(.plain).help("Start now using \(v3AwaitingDestName(aw))")
+                        .background(v3Green, in: Capsule()).contentShape(Capsule())
+                }.buttonStyle(.plain).v3Hover(scale: 1.06, glow: v3Green).help("Start now using \(v3AwaitingDestName(aw))")
             }
         }
         .padding(14).frame(width: 360)
@@ -17413,6 +17481,7 @@ extension ContentView {
         .overlay(Capsule().strokeBorder((autoIngest ? v3Green : v3Amber).opacity(0.45)))
         .contentShape(Capsule())
         .onTapGesture { autoIngest.toggle() }
+        .v3Hover(scale: 1.04)
         .help("Toggle Auto-Ingest — when On, a plugged card auto-routes to the default and starts")
     }
     private var v3RingStroke: AnyShapeStyle {
@@ -17851,7 +17920,7 @@ extension ContentView {
             .background(.white.opacity(0.04), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.10)))
     }
     private func v3Chip(_ t: String, _ icon: String, _ color: Color, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) { v3ChipLabel(t, icon, color) }.buttonStyle(.plain)
+        Button(action: act) { v3ChipLabel(t, icon, color).contentShape(Capsule()) }.buttonStyle(.plain).v3Hover()
     }
 }
 
