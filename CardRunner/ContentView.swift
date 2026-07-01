@@ -2817,6 +2817,7 @@ struct ContentView: View {
     @State private var v3DragSettling: UUID? = nil      // keeps the just-dropped tile on top through its glide
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     @State private var v3CelebrationTrigger = 0        // bump to fire the v3 completion celebration (one-shot)
+    @State private var v3SettingsPreviewTrigger = 0    // bump to play the celebration in the Settings preview box
     @State private var v3PendingCelebration = false    // a real copy completed this batch → celebrate when the ring goes green
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
@@ -16856,13 +16857,45 @@ extension ContentView {
         content().frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// A contained preview of the selected completion animation, right in Settings — a mini ring + a
+    /// "Play preview" button so styles can be sampled without running an ingest. (The real celebration
+    /// renders behind the Settings overlay, so it can't be previewed on the live ring while Settings
+    /// is open — hence this self-contained playground.)
+    @ViewBuilder private var v3CompletionPreview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button { v3SettingsPreviewTrigger += 1 } label: {
+                HStack(spacing: 6) { Image(systemName: "play.fill"); Text("Play preview") }
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(completionAnim == .none ? AnyShapeStyle(.white.opacity(0.06)) : AnyShapeStyle(v3Brand), in: Capsule())
+                    .contentShape(Capsule())
+            }.buttonStyle(.plain).disabled(completionAnim == .none).v3Hover(glow: v3Purple, enabled: completionAnim != .none)
+
+            ZStack {
+                Circle().stroke(.white.opacity(0.12), lineWidth: 8).frame(width: 120, height: 120)
+                if completionAnim == .none {
+                    Text("No animation").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+                }
+                V3CompletionOverlay(center: CGPoint(x: 175, y: 105), radius: 60,
+                                    style: completionAnim, trigger: v3SettingsPreviewTrigger)
+            }
+            .frame(width: 350, height: 210)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.06)))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .padding(.horizontal, 18).padding(.top, 4)
+    }
+
     // ── Category bodies ──────────────────────────────────────────────────────
     private var v3SettingsGeneral: some View {
         VStack(alignment: .leading, spacing: 26) {
             v3SettingsSection("FEEDBACK") {
-                v3MenuRow("Completion animation", "Plays when a card finishes offloading.",
+                v3MenuRow("Completion animation", "Plays on the ring when a transfer finishes.",
                           current: completionAnimationRaw,
                           options: CompletionAnimation.allCases.map { ($0.label, $0.rawValue) }) { completionAnimationRaw = $0 }
+                v3CompletionPreview
             }
             v3SettingsSection("INGEST") {
                 v3MenuRow("Ingest order", "Order files are dispatched to the destination.",
