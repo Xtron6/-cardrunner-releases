@@ -357,6 +357,18 @@ struct CardRunnerTests {
         #expect(args.contains("--dest-root") == false)    // SSD mode, not custom
     }
 
+    /// tier-0 "Ingest all N clips" bypasses the date filter by running with dateFilterMode
+    /// "all" — the builder must then emit NO date-filtering flag, so every clip is eligible
+    /// (otherwise the same filter re-excludes everything and the prompt loops). Locks the
+    /// guarantee the tier-0 bypass relies on.
+    @Test func buildArgsAllDatesEmitsNoDateFilter() {
+        let args = buildIngestArgs(cfg(destRoot: "/Volumes/SSD", projectName: "Shoot",
+                                       dateFilterMode: "all"))
+        #expect(args.contains("--today-only") == false)
+        #expect(args.contains("--date-from") == false)
+        #expect(args.contains("--dates") == false)
+    }
+
     /// (c) destinationIsOnCard filtering happens UPSTREAM of the builder, so a mirror target
     /// equal to the primary destination must already be excluded from `secondaryPaths` — the
     /// builder must never emit a `--secondary` that duplicates the primary `--primary` root.

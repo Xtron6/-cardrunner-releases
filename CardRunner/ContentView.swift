@@ -4757,7 +4757,9 @@ struct ContentView: View {
                 Button("Ingest all \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s")") {
                     if let card = tier0Card {
                         tier0Card = nil
-                        startIngest(for: card)
+                        // Ingest everything on the card regardless of the date filter — otherwise
+                        // the same filter re-excludes all clips and this prompt loops.
+                        startIngest(for: card, ignoreDateFilter: true)
                     }
                 }
             } message: {
@@ -6271,7 +6273,7 @@ struct ContentView: View {
     /// Append a card to the queue unless an equivalent entry is already waiting.
     private func enqueueIfNew(card: Volume, dateOverride: String?,
                              wrongClockDate: String?, reelFilter: [String], reelMulti: Bool,
-                             destinationID: UUID? = nil) {
+                             destinationID: UUID? = nil, ignoreDateFilter: Bool = false) {
         if !cardQueue.contains(where: {
             cardIdentifier(for: $0.card) == cardIdentifier(for: card)
                 && $0.dateOverride == dateOverride
@@ -6279,7 +6281,8 @@ struct ContentView: View {
             cardQueue.append(QueuedIngest(card: card, dateOverride: dateOverride,
                                           wrongClockDate: wrongClockDate,
                                           reelFilter: reelFilter, reelMulti: reelMulti,
-                                          destinationID: destinationID))
+                                          destinationID: destinationID,
+                                          ignoreDateFilter: ignoreDateFilter))
         }
     }
 
@@ -6325,7 +6328,8 @@ struct ContentView: View {
             startIngest(for: item.card, dateOverride: item.dateOverride,
                         wrongClockDate: item.wrongClockDate,
                         reelFilter: item.reelFilter, reelMulti: item.reelMulti,
-                        destination: dest)
+                        destination: dest,
+                        ignoreDateFilter: item.ignoreDateFilter)
         }
     }
 
@@ -6334,7 +6338,8 @@ struct ContentView: View {
                               reelFilter: [String] = [], reelMulti: Bool = false,
                               destination: Destination? = nil,
                               mirrorTargets: [Destination] = [],
-                              ignoreManifest: Bool = false) {
+                              ignoreManifest: Bool = false,
+                              ignoreDateFilter: Bool = false) {
         // Per-card folder name set on the lane (awaiting field), keyed by source path so it
         // survives the async analysis/picker detours without threading through every call site.
         // Resolve once: a per-card label overrides the global custom-card-name pref.
@@ -6345,7 +6350,7 @@ struct ContentView: View {
         if demoTask != nil {
             enqueueIfNew(card: card, dateOverride: dateOverride,
                          wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
-                         destinationID: destination?.id)
+                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter)
             return
         }
 
@@ -6450,7 +6455,7 @@ struct ContentView: View {
         if !canAdmitIngest(candidateDestDevice: candidateDestDevice, snapshot: currentSchedulerSnapshot()) {
             enqueueIfNew(card: card, dateOverride: dateOverride,
                          wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
-                         destinationID: destination?.id)
+                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter)
             return
         }
 
@@ -6536,7 +6541,9 @@ struct ContentView: View {
             reelFilter: reelFilter,
             reelMulti: reelMulti,
             dateOverride: dateOverride,
-            dateFilterMode: dateFilterMode,
+            // tier-0 "Ingest all" bypasses the current filter for this run (else it would
+            // re-apply the same filter, exclude everything again, and re-prompt in a loop).
+            dateFilterMode: ignoreDateFilter ? "all" : dateFilterMode,
             dateFilterFrom: dateFilterFrom,
             dateFilterTo: dateFilterTo,
             dateFilterSubMode: dateFilterSubMode,

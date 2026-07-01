@@ -177,16 +177,21 @@ struct QueuedIngest {
     /// Which `Destination` this card is routed to (nil = use the default destination).
     /// Carried through the queue so per-card routing survives the wait for a free drive.
     let destinationID: UUID?
+    /// When true, ingest EVERYTHING regardless of the current date filter (the tier-0
+    /// "Ingest all N clips" choice). Carried through the queue so the bypass survives a
+    /// wait for a free drive instead of re-applying the filter and re-prompting.
+    let ignoreDateFilter: Bool
 
     init(card: Volume, dateOverride: String?,
          wrongClockDate: String? = nil, reelFilter: [String] = [], reelMulti: Bool = false,
-         destinationID: UUID? = nil) {
+         destinationID: UUID? = nil, ignoreDateFilter: Bool = false) {
         self.card = card
         self.dateOverride = dateOverride
         self.wrongClockDate = wrongClockDate
         self.reelFilter = reelFilter
         self.reelMulti = reelMulti
         self.destinationID = destinationID
+        self.ignoreDateFilter = ignoreDateFilter
     }
 }
 
