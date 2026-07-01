@@ -564,10 +564,15 @@ struct CardRunnerTests {
         #expect(!buildIngestArgs(cfg(subfolder: "Default")).contains("--subfolder"))
     }
 
-    // MARK: - deriveDestName (auto destination naming, "cleaned raw")
+    // MARK: - deriveDestName (auto destination naming — date-strip + camelCase/acronym/connector spacing)
 
-    @Test func deriveDestStripsYYMMDDPrefix() {
-        #expect(deriveDestName(fromProject: "260626_NWSLColumbusGame") == "NWSLColumbusGame")
+    @Test func deriveDestSpacesCamelAndUngluesConnector() {
+        // The headline case: strip date, split camelCase, un-glue the glued "of", keep HOKA verbatim.
+        #expect(deriveDestName(fromProject: "260603_HOKAFestivalofMiles") == "HOKA Festival of Miles")
+    }
+    @Test func deriveDestPreservesAcronymRuns() {
+        // All-caps runs (NWSL) are preserved as-is; the rest is spaced + Title-Cased.
+        #expect(deriveDestName(fromProject: "260626_NWSLColumbusGame") == "NWSL Columbus Game")
     }
     @Test func deriveDestStripsYYYYMMDDPrefix() {
         #expect(deriveDestName(fromProject: "20260626_Foo") == "Foo")
@@ -575,8 +580,19 @@ struct CardRunnerTests {
     @Test func deriveDestStripsISODatePrefix() {
         #expect(deriveDestName(fromProject: "2026-06-26_Bar") == "Bar")
     }
-    @Test func deriveDestNoDatePassesThrough() {
-        #expect(deriveDestName(fromProject: "SteadicamBRoll") == "SteadicamBRoll")
+    @Test func deriveDestSpacesCamelAndLoneCap() {
+        // "BRoll" → "B Roll" (acronym-end boundary); "Steadicam" stays one word.
+        #expect(deriveDestName(fromProject: "SteadicamBRoll") == "Steadicam B Roll")
+    }
+    @Test func deriveDestFirstWordCapitalizedEvenIfConnector() {
+        // A connector is lowercased only when it isn't the first word.
+        #expect(deriveDestName(fromProject: "theBigGame") == "The Big Game")
+    }
+    @Test func deriveDestLowercasesInteriorConnector() {
+        #expect(deriveDestName(fromProject: "soundOfMusic") == "Sound of Music")
+    }
+    @Test func deriveDestSplitsOnUnderscoresAndHyphens() {
+        #expect(deriveDestName(fromProject: "260626_columbus-game_broll") == "Columbus Game Broll")
     }
     @Test func deriveDestDateOnlyFallsBackToRaw() {
         // Stripping would leave nothing → keep the raw folder name rather than an empty name.

@@ -2073,17 +2073,81 @@ func resolveProjectFolder(destProject: String, globalProject: String) -> String 
     return d.isEmpty ? globalProject.trimmingCharacters(in: .whitespacesAndNewlines) : d
 }
 
-/// Derive a clean destination NAME from a project folder name — CLEANED RAW (Xavier's call): strip a
-/// leading date token (YYMMDD_, YYYYMMDD_, YYYY-MM-DD_/-) so "260626_NWSLColumbusGame" → "NWSLColumbusGame".
-/// No camelCase spacing. Falls back to the raw project name if stripping leaves nothing. Used as an
-/// editable DEFAULT so two same-drive destinations read distinctly instead of both showing the drive name.
+/// Common short connector words kept lowercase in a derived title (except when first). Only members
+/// with ≥2 letters are used to un-glue a trailing connector (see `deriveDestName`), so single-letter
+/// "a" can't shred an acronym like "HOKA" into "Hok a".
+private let kDestNameConnectors: Set<String> = [
+    "a", "an", "and", "the", "of", "or", "nor", "but", "for", "to", "at", "by",
+    "in", "on", "vs", "via", "per", "with", "from", "into", "onto", "off"
+]
+
+/// Split a chunk on camelCase / acronym boundaries: "HOKAFestival" → ["HOKA", "Festival"],
+/// "SteadicamBRoll" → ["Steadicam", "B", "Roll"]. Digits stay attached to their word.
+private func splitCamelCase(_ str: String) -> [String] {
+    let chars = Array(str)
+    guard !chars.isEmpty else { return [] }
+    var words: [String] = []
+    var cur = String(chars[0])
+    for i in 1..<chars.count {
+        let prev = chars[i - 1], c = chars[i]
+        // Boundary before an uppercase that follows a lowercase (aA), OR the last uppercase of an
+        // ACRONYM run that is followed by a lowercase (…A|Bc — the A ends the acronym, B starts a word).
+        let boundary = (c.isUppercase && prev.isLowercase)
+            || (c.isUppercase && prev.isUppercase && i + 1 < chars.count && chars[i + 1].isLowercase)
+        if boundary { words.append(cur); cur = String(c) } else { cur.append(c) }
+    }
+    words.append(cur)
+    return words
+}
+
+/// Derive a nicely-spaced destination NAME from a project folder name (Xavier's call, replaces the old
+/// "cleaned raw"): strip a leading date token (YYMMDD_, YYYYMMDD_, YYYY-MM-DD_/-), split on separators +
+/// camelCase/acronym boundaries, un-glue a trailing connector on non-final words (so "Festivalof Miles"
+/// → "Festival of Miles"), then Title-Case every word EXCEPT (a) lowercase connectors and (b) ALL-CAPS
+/// acronym runs, which are PRESERVED as-is (NWSL, HOKA — Xavier's call). The first word is always
+/// capitalized. "260603_HOKAFestivalofMiles" → "HOKA Festival of Miles"; "260626_NWSLColumbusGame" →
+/// "NWSL Columbus Game". Falls back to the raw name if stripping leaves nothing. Heuristic (the
+/// connector list is small — occasional imperfection is accepted). Editable in the UI, so a user can
+/// always override the guess.
 func deriveDestName(fromProject project: String) -> String {
-    var s = project.trimmingCharacters(in: .whitespacesAndNewlines)
+    let raw = project.trimmingCharacters(in: .whitespacesAndNewlines)
+    var s = raw
     for pat in ["^\\d{6}_", "^\\d{8}_", "^\\d{4}-\\d{2}-\\d{2}[_-]?"] {
         if let r = s.range(of: pat, options: .regularExpression) { s.removeSubrange(r); break }
     }
-    let cleaned = s.trimmingCharacters(in: CharacterSet(charactersIn: " _-"))
-    return cleaned.isEmpty ? project.trimmingCharacters(in: .whitespacesAndNewlines) : cleaned
+    // Separators → camelCase/acronym split → flat word list.
+    var words = s.split(whereSeparator: { $0 == " " || $0 == "_" || $0 == "-" })
+        .map(String.init).flatMap(splitCamelCase)
+
+    // Un-glue a trailing connector on a NON-FINAL, non-acronym word ("Festivalof" before "Miles" →
+    // "Festival" + "of"). Skips all-uppercase words (acronyms) and single-letter connectors so real
+    // acronyms and endings like "…Proof" (last word) survive.
+    let peelable = kDestNameConnectors.filter { $0.count >= 2 }
+    var unglued: [String] = []
+    for (i, w) in words.enumerated() {
+        let isFinal = i == words.count - 1
+        let lower = w.lowercased()
+        // Longest matching connector wins so "into" isn't shredded to "…in" + "to".
+        let conn = peelable.filter { lower.hasSuffix($0) && lower.count - $0.count >= 2 }
+            .max(by: { $0.count < $1.count })
+        if !isFinal, w != w.uppercased(), let conn {
+            unglued.append(String(w.dropLast(conn.count)))
+            unglued.append(conn)
+        } else {
+            unglued.append(w)
+        }
+    }
+    words = unglued
+    guard !words.isEmpty else { return raw }
+
+    let titled = words.enumerated().map { (i, w) -> String in
+        let lower = w.lowercased()
+        if i > 0 && kDestNameConnectors.contains(lower) { return lower }
+        // Preserve an all-caps acronym run (HOKA, NWSL) verbatim; otherwise Title-Case the word.
+        if w.count >= 2 && w == w.uppercased() && w != lower { return w }
+        return w.prefix(1).uppercased() + w.dropFirst().lowercased()
+    }.joined(separator: " ")
+    return titled.isEmpty ? raw : titled
 }
 
 /// Animatable state for the v3 gloss sheen sweep (KeyframeAnimator drives x + opacity).
