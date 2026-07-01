@@ -17013,7 +17013,8 @@ extension ContentView {
                         .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                         .padding(.horizontal, 12).frame(height: 32)
                         .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-                }.menuStyle(.borderlessButton).fixedSize().help("Switch ingest preset")
+                        .contentShape(Capsule())
+                }.menuStyle(.borderlessButton).fixedSize().v3Hover(glow: v3Cyan).help("Switch ingest preset")
             }
             // Video / Photo mode (also ⌘1 / ⌘2). Photo mode changes what cardcopy ingests.
             Button {
@@ -17635,7 +17636,7 @@ extension ContentView {
     /// Clear the make-default drag transform (see the reset net on v3Destinations).
     private func v3ResetDestDrag() {
         guard v3DraggingDestID != nil else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.97)) {
             v3DragOffset = .zero; v3DragRotation = 0
             v3DraggingDestID = nil
             v3ReorderFrom = nil; v3ReorderTo = nil
@@ -17710,12 +17711,12 @@ extension ContentView {
             // track the cursor 1:1).
             .scaleEffect(v3DraggingDestID == d.id ? 1.06 : 1.0)
             .rotationEffect(.degrees(v3DraggingDestID == d.id ? v3DragRotation : 0))
-            .animation(.spring(response: 0.28, dampingFraction: 0.62), value: v3DraggingDestID)
-            .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.7), value: v3DragRotation)
-            // A SIBLING slides to make room as the dragged tile crosses it (animated on target change);
-            // the array is NOT mutated until release, so these frames stay stable (no jitter).
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: v3DraggingDestID)
+            .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.8), value: v3DragRotation)
+            // A SIBLING slides to make room as the dragged tile crosses it. The gap is animated by the
+            // explicit withAnimation in the gesture's onChanged (and reset in onEnded) — NOT by an
+            // .animation(value:) here, so the release spring is the sole driver on drop (no fighting).
             .offset(y: v3DraggingDestID != nil && v3DraggingDestID != d.id ? v3ReorderShift(for: d) : 0)
-            .animation(.spring(response: 0.38, dampingFraction: 0.94), value: v3ReorderTo)
             // The DRAGGED tile follows the cursor EXACTLY — plain translation, applied last and with NO
             // per-frame animation, so it never trails or springs behind the mouse.
             .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
@@ -17748,12 +17749,18 @@ extension ContentView {
                 v3DragOffset = v.translation                    // 1:1 cursor tracking (no animation)
                 v3DragRotation = max(-14, min(14, v.velocity.width * 0.012))
 
+                // The make-room gap is animated ONLY here (explicit withAnimation), so on release the
+                // single release-spring drives everything — no second .animation(value:) fighting it.
+                let newTo: Int?
                 if let defID = defaultDestination?.id, let f = destFrames[defID], f.contains(v.location) {
                     dragOverDest = defID                        // make-default mode (highlight golden box)
-                    v3ReorderTo = v3ReorderFrom                 // no make-room gap while over the default box
+                    newTo = v3ReorderFrom                       // no make-room gap while over the default box
                 } else {
                     dragOverDest = nil
-                    v3ReorderTo = v3ReorderTargetIndex(dragged: d.id, translationY: v.translation.height)
+                    newTo = v3ReorderTargetIndex(dragged: d.id, translationY: v.translation.height)
+                }
+                if newTo != v3ReorderTo {
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.96)) { v3ReorderTo = newTo }
                 }
             }
             .onEnded { v in
@@ -17768,15 +17775,15 @@ extension ContentView {
                 } else if let from = v3ReorderFrom, let to = v3ReorderTo, to != from {
                     reordered = true
                 }
-                // Keep this tile on top through the glide (zIndex isn't animatable).
+                // Keep this tile on top through the (now slower) glide (zIndex isn't animatable).
                 v3DragSettling = d.id
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
                     if v3DragSettling == d.id { v3DragSettling = nil }
                 }
-                // Commit the reorder (if any) AND settle the tile in one spring: the array move + the
+                // Commit the reorder (if any) AND settle the tile in ONE spring: the array move + the
                 // offset/gap reset animate together, so the tile glides from the cursor into its slot.
-                // High damping (near-critical) = a gradual ease-in with no big bounce on the drop.
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.96)) {
+                // Slow + near-critically-damped = a gentle, gradual ease-in with no bounce or skyrocket.
+                withAnimation(.spring(response: 0.6, dampingFraction: 0.97)) {
                     if reordered, let from = v3ReorderFrom, let to = v3ReorderTo {
                         v3CommitReorder(dragged: d.id, from: from, to: to)
                     }
