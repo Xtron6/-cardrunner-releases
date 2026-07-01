@@ -3112,30 +3112,49 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // The v3 node UI is now CardRunner's REAL face — the default, no flag required.
-        // The legacy body stays mounted but invisible so ALL its proven wiring (card detection
-        // via didMount → scanForNewCardsAndIngest, timers, menu handlers, settings/alert sheets)
-        // keeps running underneath; bodyV3 is the new face over the SAME @State.
-        // Escape hatch: launch with CR_LEGACY_UI=1 to fall back to the old UI.
-        if ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1" {
-            legacyBody
-        } else {
-            ZStack {
-                legacyBody.opacity(0).allowsHitTesting(false)
-                bodyV3
-                // First-launch onboarding — the top-most surface, above all v3 chrome/modals/settings.
-                // (The legacy body's own onboarding at ~3448 is gated to isLegacyUI so it can't double-mount.)
-                if showOnboarding {
-                    OnboardingView(
-                        runDemo:    { runDemoIngest(fromOnboarding: true) },
-                        demoStatus: $onboardingDemoStatus,
-                        onComplete: { completeOnboarding() }
-                    )
-                    .transition(.opacity)
-                    .zIndex(1000)
+        // The v3 node UI is CardRunner's REAL face — the default, no flag required.
+        // `appWiringHost` carries ALL load-bearing wiring (card detection via
+        // didMount → scanForNewCardsAndIngest, timers, menu handlers, engine
+        // sheets/alerts, license routing) and is mounted by BOTH branches, so v3
+        // no longer depends on the legacy body rendering. Escape hatch: launch
+        // with CR_LEGACY_UI=1 to fall back to the old visual layout (still fully
+        // wired via the same host). See HANDOFF §1.
+        Group {
+            if ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1" {
+                ZStack {
+                    appWiringHost   // detection/timers/sheets/menu bus — the wiring, not the visuals
+                    legacyBody
+                    licenseAndWelcomeOverlays
+                }
+            } else {
+                ZStack {
+                    appWiringHost   // v3's wiring, independent of the legacy body
+                    // legacyBody is no longer mounted under v3 — all its load-bearing
+                    // wiring now lives in appWiringHost, and v3 stands on its own.
+                    // It's still built under CR_LEGACY_UI=1 (the escape hatch). §1.
+                    bodyV3
+                    licenseAndWelcomeOverlays
+                    // First-launch onboarding — the top-most surface, above all v3 chrome/modals/settings.
+                    if showOnboarding {
+                        OnboardingView(
+                            runDemo:    { runDemoIngest(fromOnboarding: true) },
+                            demoStatus: $onboardingDemoStatus,
+                            onComplete: { completeOnboarding() }
+                        )
+                        .transition(.opacity)
+                        .zIndex(1000)
+                    }
                 }
             }
         }
+        // Clicking anywhere outside a text field resigns focus so keyboard
+        // shortcuts (especially Space) work immediately without an extra click.
+        // Applied to whichever face is showing (bodyV3 previously had no global
+        // resign — it relied on per-lane taps; the legacy copy at opacity 0 with
+        // hit-testing off never received these taps under v3).
+        .simultaneousGesture(
+            TapGesture().onEnded { NSApp.keyWindow?.makeFirstResponder(nil) }
+        )
     }
 
     var legacyBody: some View {
@@ -3285,189 +3304,17 @@ struct ContentView: View {
             .blur(radius: license.isLicensed ? 0 : 14)
             .allowsHitTesting(license.isLicensed)
             .animation(.easeInOut(duration: 0.3), value: license.isLicensed)
-            .onAppear {
-                // Check license first — blocks the UI until resolved
-                Task { await license.checkOnLaunch() }
+            // NOTE: the launch boot sequence, app-lifecycle handlers, engine
+            // sheets/alerts and the menu-bar handler bus that used to chain here
+            // now live in `appWiringHost` (bootAndLifecycleWiring /
+            // engineSheetsAndAlerts / menuNotificationHandlers), mounted by both
+            // body branches so they run independent of which UI face shows.
+            // See HANDOFF §1.
 
-                // Refresh SSD list + restore previous selection on launch.
-                // NOTE: orphan-partial cleanup is deliberately deferred until AFTER
-                // checkForStaleCheckpoints() below, so the sweep can skip any drive that
-                // has a resumable checkpoint (its .cardrunner_partial staging is exactly
-                // what a resume needs — deleting it first defeats/races the resume).
-                loadDestinations()
-                refreshDestinations()
-                loadHistory()
-                loadFailedRecords()
-                loadAllTimeStats()
-                bootstrapAllTimeStatsFromLogs()
-                // Validate persisted custom dest path — the folder may have been
-                // deleted or the drive unmounted since the last session.
-                revalidateCustomDest()
-                // One-time migration: if pref_dateFilterMode was never written
-                // (user upgrading from an older build), seed it from the old todayOnly flag.
-                if UserDefaults.standard.string(forKey: "pref_dateFilterMode") == nil {
-                    dateFilterMode = todayOnly ? "today" : "all"
-                }
-                loadPresets()
-                loadCardNicknames()
-                // Check for transfers that were interrupted by a crash. Must run BEFORE
-                // the orphan-partial sweep so pendingCheckpoints is populated and the
-                // sweep can protect resumable staging dirs.
-                checkForStaleCheckpoints()
-                cleanupOrphanPartialDirs()
-
-                // Show setup wizard if user hasn’t completed the current version
-                if setupVersion < currentSetupVersion {
-                    showSetupWizard = true
-                }
-
-                // Onboarding: existing users (setupVersion > 0) auto-complete silently.
-                // New licensed users see the full flow. Users without a license wait
-                // until activation fires via onChange(of: license.justActivated).
-                if !onboardingCompleted {
-                    if setupVersion > 0 {
-                        onboardingCompleted = true          // skip for existing installs
-                    } else if license.status == .licensed {
-                        showOnboarding = true               // licensed on launch (rare edge-case)
-                    }
-                    // else: LicenseGateView shows; onboarding triggers after activation
-                }
-
-                // One-time launch scan — catches cards that were already inserted
-                // before the app opened (mount notification already fired and was missed).
-                // Short delay lets refreshDestinations() and loadCardNicknames() settle
-                // so UUID lookup and nickname auto-fill work correctly on the first check.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 800_000_000) // 800 ms
-                    scanForNewCardsAndIngest()
-                }
-
-                // Keep the 30-s fallback scan running for the whole app lifetime — the
-                // app is "armed and watching" even with Auto-Ingest OFF (it just parks
-                // detected cards as "waiting to route" instead of auto-starting them).
-                // Without this, a missed mount notification leaves a plugged card invisible.
-                startAutoScanLoop()
-                refreshFreeSpaceCache()   // seed v3 drive free-space labels off-main
-
-                setupShortcutMonitor()
-                checkFDA()   // always probe — banner must show even after wizard is dismissed
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                checkFDA()   // re-probe every time user switches back (may have just granted in Settings)
-            }
-            .onChange(of: autoIngest) {
-                if autoIngest {
-                    AudioEngine.shared.autoIngestEnabled()
-                    statusText = "Searching for cards…"
-                    // Scan loop already runs for the whole app lifetime (started in onAppear).
-                    // Start any cards that were parked "waiting to route" while Auto-Ingest was off.
-                    drainAwaiting()
-                    scanForNewCardsAndIngest(forceRescan: true)
-                } else {
-                    AudioEngine.shared.autoIngestDisabled()
-                    // NOTE: do NOT stop the scan loop here — detection must keep running
-                    // so plugged cards still surface as "waiting to route" while OFF.
-                    // (Card routing/auto-start is already gated on autoIngest in the scan.)
-                    if runningCount > 0 {
-                        cancelAllIngests()
-                    }
-                    if runningCount == 0 {
-                        statusText = "Waiting for cards…"
-                    }
-                }
-            }
-            .onChange(of: importMode) {
-                if importMode == "photo" {
-                    lastVideoCopyXML = copyXML
-                    copyXML = false
-                } else {
-                    copyXML = lastVideoCopyXML
-                }
-            }
-            .onDisappear {
-                stopAutoScanLoop()
-                teardownShortcutMonitor()
-            }
-            .sheet(isPresented: $showSetupWizard) {
-                SetupWizardView(
-                    setupVersion: $setupVersion,
-                    currentSetupVersion: currentSetupVersion,
-                    isPresented: $showSetupWizard
-                )
-            }
-            .sheet(isPresented: $showPresetEditor) {
-                presetEditorSheet
-            }
-            .sheet(isPresented: $isShowingSupportBundle) {
-                supportBundleSheet
-            }
-            .sheet(isPresented: $showResumeSheet) {
-                resumeSheet
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showShortcutsHelp)) { _ in
-                settingsTab = .shortcuts
-                isShowingSettings = true
-            }
-
-            // ── Menu bar handlers live in a separate overlay to avoid
-            //    exhausting the type-checker on the long modifier chain. ──────
-            .background(menuNotificationHandlers)
-
-            .alert(ingestAlertTitle, isPresented: $showIngestAlert) {
-                Button("OK") { showIngestAlert = false }
-            } message: {
-                Text(ingestAlertMessage)
-            }
-            .alert("No clips match current date filter", isPresented: $showTier0Prompt) {
-                Button("Cancel", role: .cancel) { tier0Card = nil }
-                Button("Ingest all \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s")") {
-                    if let card = tier0Card {
-                        tier0Card = nil
-                        startIngest(for: card)
-                    }
-                }
-            } message: {
-                Text("All \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s") on this card were excluded by the current date filter. Ingest everything?")
-            }
-            .alert("Already up to date", isPresented: $showManifestReingest) {
-                Button("OK", role: .cancel) { manifestReingestCard = nil }
-                Button("Re-ingest all \(manifestReingestCount)") {
-                    if let card = manifestReingestCard {
-                        let dest = manifestReingestDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
-                        manifestReingestCard = nil
-                        startIngest(for: card, destination: dest, ignoreManifest: true)
-                    }
-                }
-            } message: {
-                Text("No new files — all \(manifestReingestCount) clip\(manifestReingestCount == 1 ? "" : "s") were already copied from this card on a previous transfer. Re-ingest copies them again to the chosen destination (your earlier copy is untouched).")
-            }
-            .sheet(isPresented: $showDatePickerSheet) {
-                datePickerSheet
-            }
-            .sheet(isPresented: $showReelPickerSheet) {
-                reelPickerSheet
-            }
-
-            // ── License gate ─────────────────────────────────────────────────
-            // Show for both .unlicensed (never had a key) and .revoked (key
-            // rejected by server — store migration, refund, wrong product).
-            // NOT shown during .checking to prevent a flash on every launch.
-            if license.status == .unlicensed || license.status == .revoked {
-                LicenseGateView()
-                    .transition(.opacity)
-            }
-
-            // ── Welcome celebration — shown for returning users re-activating ──
-            // (New first-time users get WelcomeCelebrationView as page 0 of
-            //  OnboardingView below instead.)
-            if showWelcomeOverlay {
-                WelcomeCelebrationView {
-                    showWelcomeOverlay = false
-                    license.clearJustActivated()
-                }
-                .transition(.opacity)
-                .zIndex(50)
-            }
+            // NOTE: the license gate + welcome-celebration overlays moved to
+            // `licenseAndWelcomeOverlays`, rendered as VISIBLE siblings by both
+            // body branches (see HANDOFF §1) — under v3 they must be visible, not
+            // rendered at opacity 0 inside this invisible legacy body.
 
             // ── Onboarding flow — first-launch walkthrough ────────────────────
             // Under v3 this legacy copy is gated OFF (bodyV3 renders onboarding at the top level);
@@ -3503,24 +3350,10 @@ struct ContentView: View {
                     .zIndex(81)
             }
         } // end ZStack
-        .onChange(of: license.justActivated) {
-            if license.justActivated {
-                if onboardingCompleted {
-                    // Returning user re-activating: just show the welcome celebration
-                    showWelcomeOverlay = true
-                } else {
-                    // Brand-new user: launch the full onboarding (which begins with
-                    // WelcomeCelebrationView as its first page)
-                    showOnboarding = true
-                }
-            }
-        }
-        // Clicking anywhere outside a text field resigns focus so keyboard
-        // shortcuts (especially Space) work immediately without an extra click.
-        .simultaneousGesture(
-            TapGesture().onEnded { NSApp.keyWindow?.makeFirstResponder(nil) }
-        )
-    } // end var body
+        // NOTE: the license.justActivated router moved to `bootAndLifecycleWiring`
+        // (the wiring host); the global focus-resign gesture moved to `body` so it
+        // applies to whichever face is showing. See HANDOFF §1.
+    } // end legacyBody
 
     // MARK: - Completion Animations
 
@@ -6377,14 +6210,7 @@ struct ContentView: View {
                     }
                     Spacer()
                 }
-                .onChange(of: ingestOrder) { _, newVal in
-                    // Keep active preset in sync so applyPreset() doesn't revert it.
-                    if let id = activePresetID,
-                       let idx = presets.firstIndex(where: { $0.id == id }) {
-                        presets[idx].ingestOrder = newVal
-                        savePresets()
-                    }
-                }
+                // (active-preset sync for ingestOrder moved to presetSyncWiring / appWiringHost — HANDOFF §1)
             }
 
             Divider().opacity(0.4)
@@ -6401,14 +6227,7 @@ struct ContentView: View {
                     Toggle("", isOn: $finderTagEnabled)
                         .toggleStyle(.switch)
                         .labelsHidden()
-                        .onChange(of: finderTagEnabled) { _, newVal in
-                            // Keep active preset in sync so applyPreset() doesn't revert it.
-                            if let id = activePresetID,
-                               let idx = presets.firstIndex(where: { $0.id == id }) {
-                                presets[idx].finderTagEnabled = newVal
-                                savePresets()
-                            }
-                        }
+                        // (active-preset sync for finderTagEnabled moved to presetSyncWiring / appWiringHost — HANDOFF §1)
                 }
                 Text("Tags the first clip of each subsequent transfer into a folder so you can instantly spot where a new batch starts.")
                     .font(.caption).foregroundColor(.secondary)
@@ -8358,103 +8177,10 @@ struct ContentView: View {
                 }
             }
 
-            // Volume-mount / unmount listeners (always active regardless of dest mode)
-            Color.clear
-            .onReceive(NotificationCenter.Publisher(
-                center: NSWorkspace.shared.notificationCenter,
-                name: NSWorkspace.didMountNotification)) { _ in
-                volumeCardCache = [:]
-                refreshDestinations()
-                refreshFreeSpaceCache()  // a new drive changes available capacity tiles
-                cleanupOrphanPartialDirs()
-                restoreProjectForCurrentSSD()
-                revalidateCustomDest()   // a newly mounted volume may satisfy a stale path
-                // Primary card detection path: fire a scan ~0.6 s after mount so the
-                // filesystem has fully settled. This replaces the 2-second poll as the
-                // main trigger — response is near-instant instead of up to 2 s late.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 600_000_000)
-                    scanForNewCardsAndIngest()
-                }
-            }
-            .onReceive(NotificationCenter.Publisher(
-                center: NSWorkspace.shared.notificationCenter,
-                name: NSWorkspace.didUnmountNotification)) { note in
-                volumeCardCache = [:]
-                if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
-                    seenCardPaths.remove(url.path)
-                } else {
-                    seenCardPaths = seenCardPaths.filter { FileManager.default.fileExists(atPath: $0) }
-                }
-                // Clear the card badge when the card is pulled
-                currentCardIsKnown      = false
-                currentCardInserted     = false
-                currentCardMatchedName  = ""
-                currentInsertedCardUUID = nil
-                cardNameIsFromMemory    = false
-                lastAutoFilledUUID      = nil   // re-inserting the same card should re-fill its name
-                refreshDestinations()
-                if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
-                    v3FreeSpaceCache.removeValue(forKey: url.path)   // drop the ejected drive's stale label
-                    pendingCardLabels.removeValue(forKey: url.path)  // a name set but never Started leaves with the card
-                }
-                refreshFreeSpaceCache()
-                revalidateCustomDest()   // drive holding custom dest may have been ejected
-            }
-            // Kick / stop the "Finalizing…" pulse as the flush window opens and closes.
-            .onChange(of: isFinalizing) { _, now in
-                finalizePulse = now
-            }
-            // Refresh free-space labels when a transfer finishes (capacity just dropped) and
-            // when the add-destination picker opens (so unused-drive rows show real numbers).
-            .onChange(of: runningCount) { _, now in
-                if now == 0 { refreshFreeSpaceCache() }
-            }
-            .onChange(of: showV3AddDest) { _, now in
-                if now { refreshFreeSpaceCache() }
-            }
-            // 1-second heartbeat for sparkline (stable timer — see sparklineTimer decl)
-            .onReceive(sparklineTimer) { _ in
-                guard runningCount > 0 else {
-                    // Ingest finished — fade the chart out by appending zeros,
-                    // then clear once all samples have decayed.
-                    if !speedHistory.isEmpty {
-                        speedHistory.append(0)
-                        if speedHistory.allSatisfy({ $0 == 0 }) { speedHistory = [] }
-                        if speedHistory.count > kSpeedHistoryMax { speedHistory.removeFirst() }
-                    }
-                    return
-                }
-                // Gate: only record once we've seen actual I/O (live speed > 0) OR
-                // the ingest is in a known copy/verify phase.  This prevents zeros
-                // from the scan/build phase polluting the sparkline window, while
-                // still recording even if a PHASE line arrives slightly late.
-                let hasLiveSpeed = currentLiveMBps > 0
-                let inCopyPhase = activeIngests.values.contains {
-                    switch $0.phase {
-                    case .copying, .verifying, .finalizing, .done: return true
-                    default: return false
-                    }
-                }
-                guard inCopyPhase || hasLiveSpeed else { return }
-
-                // cardcopy's polling thread emits a "0  0%  0.00kB/s" line at the
-                // start of every new file, which can momentarily set liveMBps to 0
-                // right as the timer fires. Use the last non-zero speed so the graph
-                // never dips to baseline just because a file boundary happened to
-                // coincide with the 1-second tick.
-                let sample: Double = currentLiveMBps > 0
-                    ? currentLiveMBps
-                    : (speedHistory.last(where: { $0 > 0 }) ?? 0)
-                // Only append if we have a real data point — don't pad with zeros
-                // while waiting for the first byte from cardcopy.
-                if sample > 0 || !speedHistory.isEmpty {
-                    speedHistory.append(sample)
-                    if speedHistory.count > kSpeedHistoryMax { speedHistory.removeFirst() }
-                }
-            }
-            .onChange(of: customDestPath) { revalidateCustomDest(); updateSSDInfo() }
-            .frame(height: 0)
+            // NOTE: the volume mount/unmount listeners + engine onChange heartbeat
+            // that used to live here have moved to `mountAndEngineWiring` /
+            // `appWiringHost` so they run regardless of which UI face is mounted
+            // (v3 no longer depends on this legacy-only section). See HANDOFF §1.
 
             // ── CLUSTER 4: OPTIONS ────────────────────────────────────────
             Divider().opacity(0.15).padding(.vertical, 2)
@@ -8665,6 +8391,377 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .menuViewLogFiles)) { _ in
                 NSWorkspace.shared.open(logsDirectoryURL)
             }
+    }
+
+    // ── Shared wiring host ────────────────────────────────────────────────────
+    // The load-bearing, NON-visual wiring (card detection, timers, engine
+    // onChange handlers) lifted OUT of the legacy visual tree so it no longer
+    // depends on the invisible legacy body being mounted. `appWiringHost` is
+    // mounted by BOTH body branches (v3 and the CR_LEGACY_UI escape hatch), so
+    // every handler here fires exactly once regardless of which face is showing.
+    // Zero-size Color.clear: presents/receives fine while contributing no layout.
+    // NOTE: this block was previously buried inside projectSection (rendered only
+    // under the legacy UI) — see §1 of HANDOFF.md.
+
+    /// Volume mount/unmount detection + engine-state onChange heartbeat.
+    /// Formerly inline in `projectSection`. The didMount handler is the PRIMARY
+    /// card-detection trigger (600 ms post-mount scan).
+    private var mountAndEngineWiring: some View {
+        Color.clear
+            .onReceive(NotificationCenter.Publisher(
+                center: NSWorkspace.shared.notificationCenter,
+                name: NSWorkspace.didMountNotification)) { _ in
+                volumeCardCache = [:]
+                refreshDestinations()
+                refreshFreeSpaceCache()  // a new drive changes available capacity tiles
+                cleanupOrphanPartialDirs()
+                restoreProjectForCurrentSSD()
+                revalidateCustomDest()   // a newly mounted volume may satisfy a stale path
+                // Primary card detection path: fire a scan ~0.6 s after mount so the
+                // filesystem has fully settled. This replaces the 2-second poll as the
+                // main trigger — response is near-instant instead of up to 2 s late.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    scanForNewCardsAndIngest()
+                }
+            }
+            .onReceive(NotificationCenter.Publisher(
+                center: NSWorkspace.shared.notificationCenter,
+                name: NSWorkspace.didUnmountNotification)) { note in
+                volumeCardCache = [:]
+                if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
+                    seenCardPaths.remove(url.path)
+                } else {
+                    seenCardPaths = seenCardPaths.filter { FileManager.default.fileExists(atPath: $0) }
+                }
+                // Clear the card badge when the card is pulled
+                currentCardIsKnown      = false
+                currentCardInserted     = false
+                currentCardMatchedName  = ""
+                currentInsertedCardUUID = nil
+                cardNameIsFromMemory    = false
+                lastAutoFilledUUID      = nil   // re-inserting the same card should re-fill its name
+                refreshDestinations()
+                if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
+                    v3FreeSpaceCache.removeValue(forKey: url.path)   // drop the ejected drive's stale label
+                    pendingCardLabels.removeValue(forKey: url.path)  // a name set but never Started leaves with the card
+                }
+                refreshFreeSpaceCache()
+                revalidateCustomDest()   // drive holding custom dest may have been ejected
+            }
+            // Kick / stop the "Finalizing…" pulse as the flush window opens and closes.
+            .onChange(of: isFinalizing) { _, now in
+                finalizePulse = now
+            }
+            // Refresh free-space labels when a transfer finishes (capacity just dropped) and
+            // when the add-destination picker opens (so unused-drive rows show real numbers).
+            .onChange(of: runningCount) { _, now in
+                if now == 0 { refreshFreeSpaceCache() }
+            }
+            .onChange(of: showV3AddDest) { _, now in
+                if now { refreshFreeSpaceCache() }
+            }
+            // 1-second heartbeat for sparkline (stable timer — see sparklineTimer decl)
+            .onReceive(sparklineTimer) { _ in
+                guard runningCount > 0 else {
+                    // Ingest finished — fade the chart out by appending zeros,
+                    // then clear once all samples have decayed.
+                    if !speedHistory.isEmpty {
+                        speedHistory.append(0)
+                        if speedHistory.allSatisfy({ $0 == 0 }) { speedHistory = [] }
+                        if speedHistory.count > kSpeedHistoryMax { speedHistory.removeFirst() }
+                    }
+                    return
+                }
+                // Gate: only record once we've seen actual I/O (live speed > 0) OR
+                // the ingest is in a known copy/verify phase.  This prevents zeros
+                // from the scan/build phase polluting the sparkline window, while
+                // still recording even if a PHASE line arrives slightly late.
+                let hasLiveSpeed = currentLiveMBps > 0
+                let inCopyPhase = activeIngests.values.contains {
+                    switch $0.phase {
+                    case .copying, .verifying, .finalizing, .done: return true
+                    default: return false
+                    }
+                }
+                guard inCopyPhase || hasLiveSpeed else { return }
+
+                // cardcopy's polling thread emits a "0  0%  0.00kB/s" line at the
+                // start of every new file, which can momentarily set liveMBps to 0
+                // right as the timer fires. Use the last non-zero speed so the graph
+                // never dips to baseline just because a file boundary happened to
+                // coincide with the 1-second tick.
+                let sample: Double = currentLiveMBps > 0
+                    ? currentLiveMBps
+                    : (speedHistory.last(where: { $0 > 0 }) ?? 0)
+                // Only append if we have a real data point — don't pad with zeros
+                // while waiting for the first byte from cardcopy.
+                if sample > 0 || !speedHistory.isEmpty {
+                    speedHistory.append(sample)
+                    if speedHistory.count > kSpeedHistoryMax { speedHistory.removeFirst() }
+                }
+            }
+            .onChange(of: customDestPath) { revalidateCustomDest(); updateSSDInfo() }
+            .frame(width: 0, height: 0)
+    }
+
+    /// Launch boot sequence + app-lifecycle handlers. Formerly chained on the
+    /// legacy main-content VStack. The onAppear ordering is load-bearing:
+    /// checkForStaleCheckpoints() MUST precede cleanupOrphanPartialDirs() so the
+    /// orphan sweep can protect resumable .cardrunner_partial staging.
+    private var bootAndLifecycleWiring: some View {
+        Color.clear
+            .onAppear {
+                // Check license first — blocks the UI until resolved
+                Task { await license.checkOnLaunch() }
+
+                // Refresh SSD list + restore previous selection on launch.
+                // NOTE: orphan-partial cleanup is deliberately deferred until AFTER
+                // checkForStaleCheckpoints() below, so the sweep can skip any drive that
+                // has a resumable checkpoint (its .cardrunner_partial staging is exactly
+                // what a resume needs — deleting it first defeats/races the resume).
+                loadDestinations()
+                refreshDestinations()
+                loadHistory()
+                loadFailedRecords()
+                loadAllTimeStats()
+                bootstrapAllTimeStatsFromLogs()
+                // Validate persisted custom dest path — the folder may have been
+                // deleted or the drive unmounted since the last session.
+                revalidateCustomDest()
+                // One-time migration: if pref_dateFilterMode was never written
+                // (user upgrading from an older build), seed it from the old todayOnly flag.
+                if UserDefaults.standard.string(forKey: "pref_dateFilterMode") == nil {
+                    dateFilterMode = todayOnly ? "today" : "all"
+                }
+                loadPresets()
+                loadCardNicknames()
+                // Check for transfers that were interrupted by a crash. Must run BEFORE
+                // the orphan-partial sweep so pendingCheckpoints is populated and the
+                // sweep can protect resumable staging dirs.
+                checkForStaleCheckpoints()
+                cleanupOrphanPartialDirs()
+
+                // Show setup wizard if user hasn’t completed the current version
+                if setupVersion < currentSetupVersion {
+                    showSetupWizard = true
+                }
+
+                // Onboarding: existing users (setupVersion > 0) auto-complete silently.
+                // New licensed users see the full flow. Users without a license wait
+                // until activation fires via onChange(of: license.justActivated).
+                if !onboardingCompleted {
+                    if setupVersion > 0 {
+                        onboardingCompleted = true          // skip for existing installs
+                    } else if license.status == .licensed {
+                        showOnboarding = true               // licensed on launch (rare edge-case)
+                    }
+                    // else: LicenseGateView shows; onboarding triggers after activation
+                }
+
+                // One-time launch scan — catches cards that were already inserted
+                // before the app opened (mount notification already fired and was missed).
+                // Short delay lets refreshDestinations() and loadCardNicknames() settle
+                // so UUID lookup and nickname auto-fill work correctly on the first check.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 800_000_000) // 800 ms
+                    scanForNewCardsAndIngest()
+                }
+
+                // Keep the 30-s fallback scan running for the whole app lifetime — the
+                // app is "armed and watching" even with Auto-Ingest OFF (it just parks
+                // detected cards as "waiting to route" instead of auto-starting them).
+                // Without this, a missed mount notification leaves a plugged card invisible.
+                startAutoScanLoop()
+                refreshFreeSpaceCache()   // seed v3 drive free-space labels off-main
+
+                setupShortcutMonitor()
+                checkFDA()   // always probe — banner must show even after wizard is dismissed
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                checkFDA()   // re-probe every time user switches back (may have just granted in Settings)
+            }
+            .onChange(of: autoIngest) {
+                if autoIngest {
+                    AudioEngine.shared.autoIngestEnabled()
+                    statusText = "Searching for cards…"
+                    // Scan loop already runs for the whole app lifetime (started in onAppear).
+                    // Start any cards that were parked "waiting to route" while Auto-Ingest was off.
+                    drainAwaiting()
+                    scanForNewCardsAndIngest(forceRescan: true)
+                } else {
+                    AudioEngine.shared.autoIngestDisabled()
+                    // NOTE: do NOT stop the scan loop here — detection must keep running
+                    // so plugged cards still surface as "waiting to route" while OFF.
+                    // (Card routing/auto-start is already gated on autoIngest in the scan.)
+                    if runningCount > 0 {
+                        cancelAllIngests()
+                    }
+                    if runningCount == 0 {
+                        statusText = "Waiting for cards…"
+                    }
+                }
+            }
+            .onChange(of: importMode) {
+                if importMode == "photo" {
+                    lastVideoCopyXML = copyXML
+                    copyXML = false
+                } else {
+                    copyXML = lastVideoCopyXML
+                }
+            }
+            .onDisappear {
+                stopAutoScanLoop()
+                teardownShortcutMonitor()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showShortcutsHelp)) { _ in
+                settingsTab = .shortcuts
+                isShowingSettings = true
+            }
+            // Post-activation routing: a brand-new user gets the full onboarding
+            // (which opens on WelcomeCelebrationView); a returning re-activation
+            // just gets the welcome celebration. Pure state-flag setter — safe on
+            // the host. The overlays it triggers are rendered by
+            // `licenseAndWelcomeOverlays` / OnboardingView in `body`.
+            .onChange(of: license.justActivated) {
+                if license.justActivated {
+                    if onboardingCompleted {
+                        showWelcomeOverlay = true
+                    } else {
+                        showOnboarding = true
+                    }
+                }
+            }
+            .frame(width: 0, height: 0)
+    }
+
+    /// License gate + returning-user welcome celebration. Rendered as a VISIBLE
+    /// ZStack sibling by BOTH body branches (it can't live on the zero-size
+    /// wiring host). Previously these were children of the legacy ZStack, so
+    /// under v3 they rendered at opacity 0 — the license gate never actually
+    /// blocked the v3 face. Mounting here fixes that latent gap.
+    @ViewBuilder
+    private var licenseAndWelcomeOverlays: some View {
+        // ── License gate ─────────────────────────────────────────────────
+        // Show for both .unlicensed (never had a key) and .revoked (key
+        // rejected by server — store migration, refund, wrong product).
+        // NOT shown during .checking to prevent a flash on every launch.
+        if license.status == .unlicensed || license.status == .revoked {
+            LicenseGateView()
+                .transition(.opacity)
+                .zIndex(90)
+        }
+        // ── Welcome celebration — shown for returning users re-activating ──
+        // (New first-time users get WelcomeCelebrationView as page 0 of
+        //  OnboardingView instead.)
+        if showWelcomeOverlay {
+            WelcomeCelebrationView {
+                showWelcomeOverlay = false
+                license.clearJustActivated()
+            }
+            .transition(.opacity)
+            .zIndex(50)
+        }
+    }
+
+    /// Engine-triggered modal surfaces (setup wizard, preset editor, support
+    /// bundle, crash-resume sheet, ingest/tier0/manifest alerts, date/reel
+    /// pickers). Formerly chained on the legacy main-content VStack. Presented
+    /// from a zero-size host — sheets/alerts anchor to the window, not the view.
+    private var engineSheetsAndAlerts: some View {
+        Color.clear
+            .sheet(isPresented: $showSetupWizard) {
+                SetupWizardView(
+                    setupVersion: $setupVersion,
+                    currentSetupVersion: currentSetupVersion,
+                    isPresented: $showSetupWizard
+                )
+            }
+            .sheet(isPresented: $showPresetEditor) {
+                presetEditorSheet
+            }
+            .sheet(isPresented: $isShowingSupportBundle) {
+                supportBundleSheet
+            }
+            .sheet(isPresented: $showResumeSheet) {
+                resumeSheet
+            }
+            .alert(ingestAlertTitle, isPresented: $showIngestAlert) {
+                Button("OK") { showIngestAlert = false }
+            } message: {
+                Text(ingestAlertMessage)
+            }
+            .alert("No clips match current date filter", isPresented: $showTier0Prompt) {
+                Button("Cancel", role: .cancel) { tier0Card = nil }
+                Button("Ingest all \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s")") {
+                    if let card = tier0Card {
+                        tier0Card = nil
+                        startIngest(for: card)
+                    }
+                }
+            } message: {
+                Text("All \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s") on this card were excluded by the current date filter. Ingest everything?")
+            }
+            .alert("Already up to date", isPresented: $showManifestReingest) {
+                Button("OK", role: .cancel) { manifestReingestCard = nil }
+                Button("Re-ingest all \(manifestReingestCount)") {
+                    if let card = manifestReingestCard {
+                        let dest = manifestReingestDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
+                        manifestReingestCard = nil
+                        startIngest(for: card, destination: dest, ignoreManifest: true)
+                    }
+                }
+            } message: {
+                Text("No new files — all \(manifestReingestCount) clip\(manifestReingestCount == 1 ? "" : "s") were already copied from this card on a previous transfer. Re-ingest copies them again to the chosen destination (your earlier copy is untouched).")
+            }
+            .sheet(isPresented: $showDatePickerSheet) {
+                datePickerSheet
+            }
+            .sheet(isPresented: $showReelPickerSheet) {
+                reelPickerSheet
+            }
+            .frame(width: 0, height: 0)
+    }
+
+    /// Keep the active preset in sync when ingestOrder / finderTagEnabled change,
+    /// so applyPreset() doesn't later silently revert a change. Formerly the
+    /// legacy settings rows' own .onChange handlers — but v3 ALSO mutates both
+    /// values (the v3 Ingest-Order row; finderTagEnabled via v3CommitNewProject),
+    /// and updateCurrentPreset() has no call sites, so this sync must run
+    /// independent of the legacy tree or v3 preset edits get lost on next
+    /// applyPreset(). Observes the @AppStorage values, so it fires regardless of
+    /// which face changed them. See HANDOFF §1.
+    private var presetSyncWiring: some View {
+        Color.clear
+            .onChange(of: ingestOrder) { _, newVal in
+                // Keep active preset in sync so applyPreset() doesn't revert it.
+                if let id = activePresetID,
+                   let idx = presets.firstIndex(where: { $0.id == id }) {
+                    presets[idx].ingestOrder = newVal
+                    savePresets()
+                }
+            }
+            .onChange(of: finderTagEnabled) { _, newVal in
+                // Keep active preset in sync so applyPreset() doesn't revert it.
+                if let id = activePresetID,
+                   let idx = presets.firstIndex(where: { $0.id == id }) {
+                    presets[idx].finderTagEnabled = newVal
+                    savePresets()
+                }
+            }
+            .frame(width: 0, height: 0)
+    }
+
+    /// Single mount point for all non-visual wiring, mounted by both body
+    /// branches. Grows as wiring is migrated off the legacy tree (see HANDOFF §1).
+    private var appWiringHost: some View {
+        ZStack {
+            mountAndEngineWiring
+            bootAndLifecycleWiring
+            engineSheetsAndAlerts
+            menuNotificationHandlers
+            presetSyncWiring
+        }
     }
 
     private var progressAndSummarySection: some View {
