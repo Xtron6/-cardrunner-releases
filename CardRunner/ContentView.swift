@@ -2610,6 +2610,8 @@ struct ContentView: View {
     @State private var destFrames: [UUID: CGRect] = [:]
     @State private var dragLine: DragLine? = nil
     @State private var dragOverDest: UUID? = nil
+    @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
+    @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -16259,8 +16261,17 @@ extension ContentView {
                 v3SettingsView
                     .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                    .onExitCommand { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
                     .zIndex(81)
             }
+
+            // v3 modules — centered cards over a dimmed scrim (dismiss on outside-click + Escape).
+            v3ModalOverlay($showV3AddDest) { v3AddDestSheet }
+            v3ModalOverlay($showV3EditDest) { v3EditDestSheet }
+            v3ModalOverlay($showV3NewProject) { v3NewProjectSheet }
+            v3ModalOverlay($showV3History) { v3HistorySheet }
+            v3ModalOverlay($showV3Log) { v3LogSheet }
+            v3ModalOverlay($showV3DateRange) { v3DateRangeSheet }
         }
         .frame(minWidth: 1200, minHeight: 780)
         .preferredColorScheme(.dark)
@@ -16276,12 +16287,27 @@ extension ContentView {
             if let old, activeIngests[old]?.pendingRename != nil { v3CommitActiveRename(old) }
             if let new { v3PreEditName = activeIngests[new]?.pendingRename ?? "" }
         }
-        .sheet(isPresented: $showV3AddDest) { v3AddDestSheet }
-        .sheet(isPresented: $showV3EditDest) { v3EditDestSheet }
-        .sheet(isPresented: $showV3NewProject) { v3NewProjectSheet }
-        .sheet(isPresented: $showV3History) { v3HistorySheet }
-        .sheet(isPresented: $showV3Log) { v3LogSheet }
-        .sheet(isPresented: $showV3DateRange) { v3DateRangeSheet }
+    }
+
+    /// A centered modal card over a dimmed scrim — the same pattern as the v3 Settings overlay, so
+    /// every v3 module dismisses on an OUTSIDE CLICK and on Escape (`.onExitCommand`), not just via its
+    /// own close button. Outside-tap = Cancel semantics: it only flips the presenting flag, so any
+    /// in-progress form state (Add/Edit) is abandoned, never committed (commits live in the explicit
+    /// commit fns). Sits above content/Sheen (zIndex 60+), below the Settings overlay (80).
+    @ViewBuilder
+    private func v3ModalOverlay<Content: View>(_ isPresented: Binding<Bool>,
+                                               @ViewBuilder _ content: () -> Content) -> some View {
+        if isPresented.wrappedValue {
+            let dismiss = { withAnimation(.easeInOut(duration: 0.18)) { isPresented.wrappedValue = false } }
+            Color.black.opacity(0.5).ignoresSafeArea()
+                .onTapGesture(perform: dismiss)
+                .transition(.opacity).zIndex(60)
+            content()
+                .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
+                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                .onExitCommand(perform: dismiss)
+                .zIndex(61)
+        }
     }
 
     /// Neon connectors: drag-link cursor line, each active lane → ring and ring → destinations while
@@ -17498,6 +17524,10 @@ extension ContentView {
             guard let s = items.first, let id = UUID(uuidString: s) else { return false }
             return v3MakeDefault(id)
         } isTargeted: { dragOverDest = $0 ? d.id : (dragOverDest == d.id ? nil : dragOverDest) }
+        // Hover bounce — applied after the anchor/destFrames reads so geometry stays un-scaled.
+        .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
+        .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
     }
 
     /// A non-default destination tile (drop target for routing; drag handle to swap default).
@@ -17516,6 +17546,11 @@ extension ContentView {
                     .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
             })
             .if(runningCount == 0) { $0.draggable("\(d.id.uuidString)") { v3DestDragPreview(d) } }
+            // Hover bounce (subtle) signals the tile is clickable. Applied AFTER the anchor/destFrames
+            // reads above so routing-line geometry + drop hit-testing use the un-scaled frame.
+            .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
+            .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
     }
 
     /// Shared tile contents (icon, name, free space, role/route line, remove control).
@@ -17577,13 +17612,20 @@ extension ContentView {
     private var v3AddDestinationMenu: some View {
         Button { v3OpenAddDest(ssd: true) } label: {
             HStack(spacing: 6) { Image(systemName: "plus"); Text("Add destination") }
-                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(v3AddDestHovered ? v3Cyan : .white)
                 .padding(.horizontal, 14).padding(.vertical, 9)
                 .frame(width: 324, alignment: .center)
-                .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12)))
+                .background(.white.opacity(v3AddDestHovered ? 0.07 : 0.04), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(v3AddDestHovered ? v3Cyan.opacity(0.7) : .white.opacity(0.12)))
+                // Blue glow on hover signals a clickable button.
+                .shadow(color: v3Cyan.opacity(v3AddDestHovered ? 0.5 : 0), radius: 12)
+                .scaleEffect(v3AddDestHovered ? 1.02 : 1.0)
         }
         .buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3AddDestHovered)
+        .onHover { v3AddDestHovered = $0 }
     }
 
     /// Legacy fallback box — shown only when NO Destination list is configured yet (untouched
