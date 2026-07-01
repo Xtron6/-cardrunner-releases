@@ -16845,8 +16845,7 @@ extension ContentView {
 
     private var v3TopBar: some View {
         // ZStack so the logo lockup sits at the TRUE window center (overlapping the edge
-        // controls' row) — that lines it up with the ring, regardless of the asymmetric
-        // left button cluster vs the right Auto-Ingest pill.
+        // controls' row) — that lines it up with the ring, regardless of the left button cluster.
         ZStack {
             v3LogoLockup
             HStack(spacing: 10) {
@@ -17442,7 +17441,8 @@ extension ContentView {
         } else if !v3AnyActive {
             VStack(spacing: 6) {
                 Text("Ready for cards").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
-                Text(autoIngest ? "Auto-ingest armed" : "Auto-ingest off").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                // Auto-ingest state is shown by the toggle right below the ring — no echo here.
+                Text("Plug a card to begin").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
             }
         } else if v3AllDone {
             VStack(spacing: 8) {
@@ -17496,6 +17496,21 @@ extension ContentView {
             v3AddDestinationMenu
             Spacer(minLength: 0)
         }
+        // Reset net: a make-default drag resets its transform only in .onEnded, but that may never
+        // arrive if a transfer starts mid-drag (the gesture is runningCount-gated off) or the list
+        // reorders. Snap any lifted tile back so it can't strand at zIndex 100.
+        .onChange(of: runningCount) { _, now in if now > 0 { v3ResetDestDrag() } }
+        .onChange(of: destinations.count) { _, _ in v3ResetDestDrag() }
+    }
+
+    /// Clear the make-default drag transform (see the reset net on v3Destinations).
+    private func v3ResetDestDrag() {
+        guard v3DraggingDestID != nil else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            v3DragOffset = .zero; v3DragRotation = 0
+        }
+        v3DraggingDestID = nil
+        dragOverDest = nil
     }
 
     /// The golden DEFAULT box, bound to a real `Destination`. Doubles as a drop target:
