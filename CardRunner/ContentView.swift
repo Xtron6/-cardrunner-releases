@@ -2081,16 +2081,6 @@ private let kDestNameConnectors: Set<String> = [
     "in", "on", "vs", "via", "per", "with", "from", "into", "onto", "off"
 ]
 
-/// Common whole words that END in a 2-letter connector but must NOT be un-glued (so "Waterproof" isn't
-/// shredded to "Waterpro of"). Heuristic denylist — not exhaustive (the name is a display label, editable,
-/// never a path), just files down the sharpest edges of the connector-peel.
-private let kDestNameNoPeel: Set<String> = [
-    "proof", "waterproof", "bulletproof", "foolproof", "weatherproof", "rainproof",
-    "roof", "aloof", "spoof", "goof", "hoof", "woof",
-    "button", "photo", "veto", "motto", "format", "auto", "intro", "info", "logo",
-    "brand", "grand", "island", "thousand", "weekend", "legend", "second", "behind"
-]
-
 /// Media file extensions used to auto-pick the subfolder that already holds footage when a project
 /// has no "clips" folder (destination subfolder picker). Lowercase, no dot.
 let kFootageExtensions: Set<String> = [
@@ -2121,13 +2111,14 @@ private func splitCamelCase(_ str: String) -> [String] {
 
 /// Derive a nicely-spaced destination NAME from a project folder name (Xavier's call, replaces the old
 /// "cleaned raw"): strip a leading date token (YYMMDD_, YYYYMMDD_, YYYY-MM-DD_/-), split on separators +
-/// camelCase/acronym boundaries, un-glue a trailing connector on non-final words (so "Festivalof Miles"
-/// → "Festival of Miles"), then Title-Case every word EXCEPT (a) lowercase connectors and (b) ALL-CAPS
-/// acronym runs, which are PRESERVED as-is (NWSL, HOKA — Xavier's call). The first word is always
-/// capitalized. "260603_HOKAFestivalofMiles" → "HOKA Festival of Miles"; "260626_NWSLColumbusGame" →
-/// "NWSL Columbus Game". Falls back to the raw name if stripping leaves nothing. Heuristic (the
-/// connector list is small — occasional imperfection is accepted). Editable in the UI, so a user can
-/// always override the guess.
+/// camelCase/acronym boundaries, then Title-Case every word EXCEPT (a) lowercase connectors and (b)
+/// ALL-CAPS acronym runs, which are PRESERVED as-is (NWSL, HOKA — Xavier's call). The first word is
+/// always capitalized. "260626_NWSLColumbusGame" → "NWSL Columbus Game"; "260730_TorontoTennis" →
+/// "Toronto Tennis"; a Capital-cased connector splits cleanly, so "FestivalOfMiles" → "Festival of
+/// Miles". We deliberately do NOT un-glue a lowercase-glued connector ("Festivalof" stays "Festivalof")
+/// — that heuristic mangled real words ("Conor"→"Co nor", "Toronto"→"Tor onto", "Waterproof"→"Waterpro
+/// of") and can't be told apart from a real word ending in those letters. Falls back to the raw name if
+/// stripping leaves nothing. Editable in the UI, so a user can always override the guess.
 func deriveDestName(fromProject project: String) -> String {
     let raw = project.trimmingCharacters(in: .whitespacesAndNewlines)
     var s = raw
@@ -2135,28 +2126,8 @@ func deriveDestName(fromProject project: String) -> String {
         if let r = s.range(of: pat, options: .regularExpression) { s.removeSubrange(r); break }
     }
     // Separators → camelCase/acronym split → flat word list.
-    var words = s.split(whereSeparator: { $0 == " " || $0 == "_" || $0 == "-" })
+    let words = s.split(whereSeparator: { $0 == " " || $0 == "_" || $0 == "-" })
         .map(String.init).flatMap(splitCamelCase)
-
-    // Un-glue a trailing connector on a NON-FINAL, non-acronym word ("Festivalof" before "Miles" →
-    // "Festival" + "of"). Skips all-uppercase words (acronyms) and single-letter connectors so real
-    // acronyms and endings like "…Proof" (last word) survive.
-    let peelable = kDestNameConnectors.filter { $0.count >= 2 }
-    var unglued: [String] = []
-    for (i, w) in words.enumerated() {
-        let isFinal = i == words.count - 1
-        let lower = w.lowercased()
-        // Longest matching connector wins so "into" isn't shredded to "…in" + "to".
-        let conn = peelable.filter { lower.hasSuffix($0) && lower.count - $0.count >= 2 }
-            .max(by: { $0.count < $1.count })
-        if !isFinal, w != w.uppercased(), !kDestNameNoPeel.contains(lower), let conn {
-            unglued.append(String(w.dropLast(conn.count)))
-            unglued.append(conn)
-        } else {
-            unglued.append(w)
-        }
-    }
-    words = unglued
     guard !words.isEmpty else { return raw }
 
     let titled = words.enumerated().map { (i, w) -> String in
@@ -16812,17 +16783,17 @@ extension ContentView {
     /// is no continuous render cost). Brand-tinted (cyan→white→magenta) for a faint holographic read.
     private var v3Sheen: some View {
         GeometryReader { geo in
-            let sweep = geo.size.width + 340
+            let sweep = geo.size.width + 640
             Rectangle()
                 .fill(LinearGradient(stops: [
-                    .init(color: .clear,               location: 0.00),
-                    .init(color: v3Cyan.opacity(0.05), location: 0.40),
-                    .init(color: .white.opacity(0.11), location: 0.50),   // hot core
-                    .init(color: v3Mag.opacity(0.05),  location: 0.60),
-                    .init(color: .clear,               location: 1.00),
+                    .init(color: .clear,                location: 0.00),
+                    .init(color: v3Cyan.opacity(0.03),  location: 0.30),
+                    .init(color: .white.opacity(0.055), location: 0.50),   // softer, lower-contrast core
+                    .init(color: v3Mag.opacity(0.03),   location: 0.70),
+                    .init(color: .clear,                location: 1.00),
                 ], startPoint: .leading, endPoint: .trailing))
-                .frame(width: 300, height: geo.size.height * 1.7)
-                .blur(radius: 12)                                          // big feather
+                .frame(width: 560, height: geo.size.height * 1.8)          // wider band, more real estate
+                .blur(radius: 26)                                          // more feather
                 .rotationEffect(.degrees(-13))
                 .frame(width: geo.size.width, height: geo.size.height)
                 .keyframeAnimator(initialValue: V3SheenState(), trigger: v3SheenTrigger) { content, v in
@@ -17707,21 +17678,9 @@ extension ContentView {
             } label: {
                 v3ChipLabel(v3DateFilterText, "calendar", dateFilterMode == "all" ? .white.opacity(0.6) : v3Cyan)
             }.menuStyle(.borderlessButton).fixedSize()
-            // Verify — Off / Spot-check / Full.
-            Menu {
-                Button("Off") { verifyTransfer = false; fullVerifyEnabled = false }
-                Button("Spot-check (fast)") { verifyTransfer = true; fullVerifyEnabled = false }
-                Button("Full verify (slower)") { verifyTransfer = true; fullVerifyEnabled = true }
-            } label: {
-                v3ChipLabel("Verify · \(v3VerifyText)", "checkmark.shield",
-                            verifyTransfer ? v3Green : .white.opacity(0.5))
-            }.menuStyle(.borderlessButton).fixedSize()
+            // Verify moved fully into Settings (Xavier's call); Add-folder removed as redundant with the
+            // destinations column's "Add destination". Bottom bar keeps only New project / dates / eject.
             v3Chip("Auto-eject  \(autoEject ? "On" : "Off")", "eject", autoEject ? v3Green : .white.opacity(0.6)) { autoEject.toggle() }
-            Button { v3OpenAddDest(ssd: false) } label: {
-                HStack(spacing: 6) { Image(systemName: "folder.badge.plus"); Text("Add folder") }
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 9).background(v3Brand, in: Capsule())
-            }.buttonStyle(.plain)
         }
     }
     private var v3DateFilterText: String {
@@ -17818,7 +17777,6 @@ extension ContentView {
         .background(Color(hex: "#16101f"))
         .preferredColorScheme(.dark)
     }
-    private var v3VerifyText: String { fullVerifyEnabled ? "Full" : (verifyTransfer ? "Spot" : "Off") }
 
     private func v3ChipLabel(_ t: String, _ icon: String, _ color: Color) -> some View {
         HStack(spacing: 6) { Image(systemName: icon); Text(t) }

@@ -566,13 +566,24 @@ struct CardRunnerTests {
 
     // MARK: - deriveDestName (auto destination naming — date-strip + camelCase/acronym/connector spacing)
 
-    @Test func deriveDestSpacesCamelAndUngluesConnector() {
-        // The headline case: strip date, split camelCase, un-glue the glued "of", keep HOKA verbatim.
-        #expect(deriveDestName(fromProject: "260603_HOKAFestivalofMiles") == "HOKA Festival of Miles")
+    @Test func deriveDestSplitsCamelKeepsAcronymAndGluedConnector() {
+        // Strip date, camelCase-split, keep HOKA verbatim. A lowercase-GLUED connector stays glued
+        // ("Festivalof") — we no longer un-glue it, because that mangled real words (see below).
+        #expect(deriveDestName(fromProject: "260603_HOKAFestivalofMiles") == "HOKA Festivalof Miles")
+    }
+    @Test func deriveDestCapitalizedConnectorSplitsAndLowercases() {
+        // A Capital-cased connector IS a camelCase boundary → splits and lowercases cleanly.
+        #expect(deriveDestName(fromProject: "FestivalOfMiles") == "Festival of Miles")
     }
     @Test func deriveDestPreservesAcronymRuns() {
         // All-caps runs (NWSL) are preserved as-is; the rest is spaced + Title-Cased.
         #expect(deriveDestName(fromProject: "260626_NWSLColumbusGame") == "NWSL Columbus Game")
+    }
+    @Test func deriveDestDoesNotSplitRealWordsEndingInConnectorLetters() {
+        // The regression Xavier hit: these must NOT be split by a connector heuristic.
+        #expect(deriveDestName(fromProject: "260730_TorontoTennis") == "Toronto Tennis")
+        #expect(deriveDestName(fromProject: "260515_Conor Daly Doc_Year 2") == "Conor Daly Doc Year 2")
+        #expect(deriveDestName(fromProject: "WaterproofCase") == "Waterproof Case")
     }
     @Test func deriveDestStripsYYYYMMDDPrefix() {
         #expect(deriveDestName(fromProject: "20260626_Foo") == "Foo")
@@ -593,11 +604,6 @@ struct CardRunnerTests {
     }
     @Test func deriveDestSplitsOnUnderscoresAndHyphens() {
         #expect(deriveDestName(fromProject: "260626_columbus-game_broll") == "Columbus Game Broll")
-    }
-    @Test func deriveDestDoesNotShredWordsEndingInConnector() {
-        // The connector-peel must not mangle a real word that ends in a 2-letter connector.
-        #expect(deriveDestName(fromProject: "WaterproofCase") == "Waterproof Case")
-        #expect(deriveDestName(fromProject: "BulletproofVest") == "Bulletproof Vest")
     }
     @Test func deriveDestDateOnlyFallsBackToRaw() {
         // Stripping would leave nothing → keep the raw folder name rather than an empty name.
