@@ -2073,6 +2073,19 @@ func resolveProjectFolder(destProject: String, globalProject: String) -> String 
     return d.isEmpty ? globalProject.trimmingCharacters(in: .whitespacesAndNewlines) : d
 }
 
+/// Derive a clean destination NAME from a project folder name — CLEANED RAW (Xavier's call): strip a
+/// leading date token (YYMMDD_, YYYYMMDD_, YYYY-MM-DD_/-) so "260626_NWSLColumbusGame" → "NWSLColumbusGame".
+/// No camelCase spacing. Falls back to the raw project name if stripping leaves nothing. Used as an
+/// editable DEFAULT so two same-drive destinations read distinctly instead of both showing the drive name.
+func deriveDestName(fromProject project: String) -> String {
+    var s = project.trimmingCharacters(in: .whitespacesAndNewlines)
+    for pat in ["^\\d{6}_", "^\\d{8}_", "^\\d{4}-\\d{2}-\\d{2}[_-]?"] {
+        if let r = s.range(of: pat, options: .regularExpression) { s.removeSubrange(r); break }
+    }
+    let cleaned = s.trimmingCharacters(in: CharacterSet(charactersIn: " _-"))
+    return cleaned.isEmpty ? project.trimmingCharacters(in: .whitespacesAndNewlines) : cleaned
+}
+
 /// Animatable state for the v3 gloss sheen sweep (KeyframeAnimator drives x + opacity).
 struct V3SheenState { var x: CGFloat = 0; var opacity: Double = 0 }
 
@@ -2259,6 +2272,11 @@ struct ContentView: View {
     @State private var v3AddIsSSD = true
     @State private var v3AddDrivePath = ""
     @State private var v3AddCustomPath = ""
+    @State private var v3AddProject = ""        // per-destination project folder (SSD tab)
+    @State private var v3AddSubfolder = "Default"
+    @State private var v3AddName = ""           // destination display name (auto-derived, editable)
+    @State private var v3AddNameEdited = false  // don't stomp a name the user typed
+    @State private var v3AddError = ""          // duplicate-leaf / validation message
     @State private var v3SettingsCat: V3SettingsCat = .general   // selected icon-rail category
     @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
     @FocusState private var editingAwaitingID: UUID?             // which awaiting lane's name field is live
@@ -15283,19 +15301,6 @@ extension ContentView {
         }
     }
 
-    /// Add a mounted drive (from the detected destination volumes) as a destination.
-    private func v3AddDriveDestination(_ vol: Volume) {
-        guard !destinations.contains(where: { $0.path == vol.path }) else { return }
-        let d = Destination(path: vol.path, name: vol.name, isCustomFolder: false)
-        destinations.append(d)
-        if defaultDestination == nil { defaultDestIDString = d.id.uuidString }
-        saveDestinations()
-    }
-
-    /// Mounted drives not already in the destination list (offered in the "Add destination" menu).
-    private var v3UnusedDrives: [Volume] {
-        availableDestinations.filter { vol in !destinations.contains(where: { $0.path == vol.path }) }
-    }
 
     /// Remove a destination (never the last one). Reassigns the default if needed.
     private func v3RemoveDestination(_ id: UUID) {
@@ -15324,6 +15329,16 @@ extension ContentView {
     /// Free-space label for a destination tile.
     private func v3DestFree(_ d: Destination) -> String { v3FreeSpace(d.path) }
 
+    /// Project / subfolder summary for a destination tile — the disambiguator when the same physical
+    /// drive backs more than one destination. Reflects the fallback (empty project → global project).
+    private func v3DestPathLabel(_ d: Destination) -> String {
+        if d.isCustomFolder { return "Custom folder" }
+        let proj = resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName)
+        guard !proj.isEmpty else { return "No project set" }
+        let sub = (d.subfolder.isEmpty || d.subfolder == "Default") ? "clips" : d.subfolder
+        return "\(proj) / \(sub)"
+    }
+
     // MARK: - v3 sheets: Add destination / New project folder
 
     /// Finder-tag palette for the New-Project color row (index 0 = none).
@@ -15336,9 +15351,14 @@ extension ContentView {
     }
 
     private func v3OpenAddDest(ssd: Bool) {
-        v3AddIsSSD = ssd && !v3UnusedDrives.isEmpty
-        v3AddDrivePath = v3UnusedDrives.first?.path ?? ""
+        v3AddIsSSD = ssd
+        v3AddDrivePath = v3AllDrives.first?.path ?? ""
         v3AddCustomPath = ""
+        v3AddProject = ""
+        v3AddSubfolder = "Default"
+        v3AddName = ""
+        v3AddNameEdited = false
+        v3AddError = ""
         showV3AddDest = true
     }
 
@@ -15359,19 +15379,99 @@ extension ContentView {
         if panel.runModal() == .OK, let url = panel.url { v3AddCustomPath = url.path }
     }
 
+    /// ALL mounted destination drives (not filtered by already-used — Xavier allows the same drive
+    /// twice with different projects). Fixes the "No drives available" bug (was v3UnusedDrives).
+    private var v3AllDrives: [Volume] { availableDestinations }
+
+    /// Top-level project folders on a drive (for the Add-destination project picker).
+    private func v3ProjectFolders(on drivePath: String) -> [String] {
+        guard !drivePath.isEmpty else { return [] }
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: drivePath, isDirectory: true),
+            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        return contents.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .map { $0.lastPathComponent }.filter { !$0.hasPrefix(".") }.sorted()
+    }
+
+    /// Existing subfolders inside {drive}/{project} (for the subfolder picker; "Default" is always offered).
+    private func v3Subfolders(drive: String, project: String) -> [String] {
+        guard !drive.isEmpty, !project.isEmpty else { return [] }
+        let fm = FileManager.default
+        let p = (drive as NSString).appendingPathComponent(project)
+        let contents = (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: p, isDirectory: true),
+            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        return contents.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .map { $0.lastPathComponent }.filter { !$0.hasPrefix(".") }.sorted()
+    }
+
+    /// Live path preview for the Add-destination sheet.
+    private var v3AddPreview: String {
+        let drive = v3AllDrives.first { $0.path == v3AddDrivePath }?.name ?? "drive"
+        let proj = v3AddProject.trimmingCharacters(in: .whitespaces)
+        let sub  = (v3AddSubfolder == "Default" || v3AddSubfolder.isEmpty) ? "clips" : v3AddSubfolder
+        return proj.isEmpty ? "Pick a project folder" : "\(drive) / \(proj) / \(sub) / {date} / {card}"
+    }
+
+    /// Set the project on the Add-destination form and auto-derive the name (unless the user edited it).
+    private func v3SetAddProject(_ p: String) {
+        v3AddProject = p
+        v3AddSubfolder = "Default"
+        v3AddError = ""
+        if !v3AddNameEdited { v3AddName = deriveDestName(fromProject: p) }
+    }
+
+    private func v3AddFieldLabel(_ title: String, sub: String?) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                if let sub { Text(sub).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)) }
+            }
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(14).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.10)))
+    }
+
+    /// True if adding this drive+project+subfolder would duplicate an existing destination's resolved
+    /// leaf (same footage tree). Same drive with a DIFFERENT project is allowed.
+    private func v3AddIsDuplicate() -> Bool {
+        let proj = v3AddProject.trimmingCharacters(in: .whitespaces)
+        return destinations.contains { d in
+            !d.isCustomFolder && d.path == v3AddDrivePath
+                && resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName) == (proj.isEmpty ? projectName.trimmingCharacters(in: .whitespaces) : proj)
+                && (d.subfolder.isEmpty ? "Default" : d.subfolder) == v3AddSubfolder
+        }
+    }
+
     private func v3CommitAddDest() {
         // Adding a destination just appends a routing target; it never reinterprets routing for
         // in-flight cards. Cards are routed per-card (drag node / cycle) or fall to the default.
+        let dest: Destination
         if v3AddIsSSD {
-            if let vol = v3UnusedDrives.first(where: { $0.path == v3AddDrivePath }) { v3AddDriveDestination(vol) }
-        } else if !v3AddCustomPath.isEmpty, !destinations.contains(where: { $0.path == v3AddCustomPath }) {
-            let d = Destination(path: v3AddCustomPath,
-                                name: URL(fileURLWithPath: v3AddCustomPath).lastPathComponent,
-                                isCustomFolder: true)
-            destinations.append(d)
-            if defaultDestination == nil { defaultDestIDString = d.id.uuidString }
-            saveDestinations()
+            guard let vol = v3AllDrives.first(where: { $0.path == v3AddDrivePath }) else { showV3AddDest = false; return }
+            let proj = v3AddProject.trimmingCharacters(in: .whitespaces)
+            let typed = v3AddName.trimmingCharacters(in: .whitespaces)
+            let name  = !typed.isEmpty ? typed : (proj.isEmpty ? vol.name : deriveDestName(fromProject: proj))
+            dest = Destination(path: vol.path, name: name, isCustomFolder: false,
+                               projectFolder: proj, subfolder: v3AddSubfolder)
+            // Create the project folder on the drive now so it shows in Finder (mkdir only — no
+            // footage touched). Guard against path-injection in the folder name.
+            if !proj.isEmpty, !proj.contains("/"), !proj.contains("..") {
+                try? FileManager.default.createDirectory(
+                    atPath: (vol.path as NSString).appendingPathComponent(proj), withIntermediateDirectories: true)
+            }
+        } else {
+            guard !v3AddCustomPath.isEmpty, !destinations.contains(where: { $0.path == v3AddCustomPath }) else {
+                showV3AddDest = false; return
+            }
+            dest = Destination(path: v3AddCustomPath,
+                               name: URL(fileURLWithPath: v3AddCustomPath).lastPathComponent, isCustomFolder: true)
         }
+        destinations.append(dest)
+        if defaultDestination == nil { defaultDestIDString = dest.id.uuidString }
+        saveDestinations()
+        refreshFreeSpaceCache()
         showV3AddDest = false
     }
 
@@ -15415,24 +15515,54 @@ extension ContentView {
             if v3AddIsSSD {
                 v3SheetLabel("Drive")
                 Menu {
-                    ForEach(v3UnusedDrives, id: \.path) { vol in
-                        Button("\(vol.name) — \(v3FreeSpace(vol.path))") { v3AddDrivePath = vol.path }
+                    // ALL mounted drives (the same drive can be added again with a different project).
+                    ForEach(v3AllDrives, id: \.path) { vol in
+                        Button("\(vol.name) — \(v3FreeSpace(vol.path))") {
+                            v3AddDrivePath = vol.path; v3SetAddProject("")
+                        }
                     }
                 } label: {
-                    let sel = v3UnusedDrives.first { $0.path == v3AddDrivePath }
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(sel?.name ?? "No drives available")
-                                .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
-                            if let s = sel { Text(v3FreeSpace(s.path)).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5)) }
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+                    v3AddFieldLabel(v3AllDrives.first { $0.path == v3AddDrivePath }?.name ?? "Choose a drive",
+                                    sub: v3AddDrivePath.isEmpty ? nil : v3FreeSpace(v3AddDrivePath))
+                }.menuStyle(.borderlessButton)
+
+                v3SheetLabel("Project folder")
+                HStack(spacing: 8) {
+                    TextField("Project name…", text: Binding(
+                        get: { v3AddProject },
+                        set: { v3AddProject = $0; v3AddError = ""; if !v3AddNameEdited { v3AddName = deriveDestName(fromProject: $0) } }))
+                        .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                        .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+                    let folders = v3ProjectFolders(on: v3AddDrivePath)
+                    if !folders.isEmpty {
+                        Menu {
+                            ForEach(folders, id: \.self) { f in Button(f) { v3SetAddProject(f) } }
+                        } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                                .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                        }.menuStyle(.borderlessButton).fixedSize().help("Pick an existing project folder on this drive")
                     }
-                    .padding(14).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.10)))
                 }
-                .menuStyle(.borderlessButton)
+
+                v3SheetLabel("Subfolder")
+                Menu {
+                    Button("Default (clips)") { v3AddSubfolder = "Default" }
+                    ForEach(v3Subfolders(drive: v3AddDrivePath, project: v3AddProject), id: \.self) { s in
+                        Button(s) { v3AddSubfolder = s }
+                    }
+                } label: {
+                    v3AddFieldLabel(v3AddSubfolder == "Default" ? "Default (clips)" : v3AddSubfolder, sub: nil)
+                }.menuStyle(.borderlessButton)
+
+                v3SheetLabel("Destination name")
+                TextField("Name", text: Binding(get: { v3AddName }, set: { v3AddName = $0; v3AddNameEdited = true }))
+                    .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+
+                Text(v3AddPreview).font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.middle)
             } else {
                 v3SheetLabel("Folder path")
                 Button { v3PickCustomFolderForAdd() } label: {
@@ -15448,12 +15578,21 @@ extension ContentView {
                              style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
                 }.buttonStyle(.plain)
             }
-            Text("Cards route to whichever destination you pick (drag a card's node onto a drive, or use the default). Adding a destination just makes it available as a target.")
-                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+            if !v3AddError.isEmpty {
+                Label(v3AddError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber)
+            } else {
+                Text("Cards route to whichever destination you pick (drag a card's node onto a drive, or use the default).")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 12) {
                 v3SheetCancel { showV3AddDest = false }
                 v3SheetPrimary("Add destination", icon: "plus",
-                               enabled: v3AddIsSSD ? !v3AddDrivePath.isEmpty : !v3AddCustomPath.isEmpty) { v3CommitAddDest() }
+                               enabled: v3AddIsSSD ? !v3AddDrivePath.isEmpty : !v3AddCustomPath.isEmpty) {
+                    if v3AddIsSSD && v3AddIsDuplicate() {
+                        v3AddError = "That drive + project + subfolder is already a destination."
+                    } else { v3CommitAddDest() }
+                }
             }
             .padding(.top, 4)
         }
@@ -15770,7 +15909,7 @@ extension ContentView {
         var paths = Set(destinations.map { $0.path })
         paths.insert(v3DestDrivePath)
         if !primarySSDPath.isEmpty { paths.insert(primarySSDPath) }
-        for v in v3UnusedDrives { paths.insert(v.path) }
+        for v in v3AllDrives { paths.insert(v.path) }
         for p in extra { paths.insert(p) }
         let wanted = paths.filter { !$0.isEmpty }
         guard !wanted.isEmpty else { return }
@@ -17095,8 +17234,9 @@ extension ContentView {
                     }
                 }
                 Text(v3DestFree(d)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                Text(isDefault ? "Default target — unrouted cards land here" : "Routed target")
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                // Project / subfolder — the disambiguator when the same drive is used more than once.
+                Text(v3DestPathLabel(d)).font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(v3Cyan.opacity(0.7)).lineLimit(1).truncationMode(.middle)
             }
             Spacer()
             if runningCount > 0 && isDefault {

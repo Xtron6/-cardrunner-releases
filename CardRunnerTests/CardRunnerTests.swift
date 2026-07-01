@@ -563,4 +563,23 @@ struct CardRunnerTests {
     @Test func buildArgsOmitsSubfolderForDefault() {
         #expect(!buildIngestArgs(cfg(subfolder: "Default")).contains("--subfolder"))
     }
+
+    // MARK: - deriveDestName (auto destination naming, "cleaned raw")
+
+    @Test func deriveDestStripsYYMMDDPrefix() {
+        #expect(deriveDestName(fromProject: "260626_NWSLColumbusGame") == "NWSLColumbusGame")
+    }
+    @Test func deriveDestStripsYYYYMMDDPrefix() {
+        #expect(deriveDestName(fromProject: "20260626_Foo") == "Foo")
+    }
+    @Test func deriveDestStripsISODatePrefix() {
+        #expect(deriveDestName(fromProject: "2026-06-26_Bar") == "Bar")
+    }
+    @Test func deriveDestNoDatePassesThrough() {
+        #expect(deriveDestName(fromProject: "SteadicamBRoll") == "SteadicamBRoll")
+    }
+    @Test func deriveDestDateOnlyFallsBackToRaw() {
+        // Stripping would leave nothing → keep the raw folder name rather than an empty name.
+        #expect(deriveDestName(fromProject: "260626_") == "260626_")
+    }
 }
