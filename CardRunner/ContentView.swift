@@ -2343,6 +2343,7 @@ struct ContentView: View {
     @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
     @FocusState private var editingAwaitingID: UUID?             // which awaiting lane's name field is live
     @FocusState private var editingActiveID: UUID?              // which active lane's name field is live
+    @FocusState private var v3NameFocused: Bool                 // Add/Edit destination-name field focus
     @State private var v3PreEditName: String = ""               // value captured on focus-gain, for Esc-revert
     @State private var v3SheenTrigger = 0                        // bump to fire one gloss sweep
     // Stable timer (a fresh Timer.publish in onReceive would resubscribe every body eval).
@@ -2593,6 +2594,7 @@ struct ContentView: View {
     @State private var dragOverDest: UUID? = nil
     @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
+    @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
     /// FileManager synchronously inside canIngest on every SwiftUI render pass.
@@ -15541,10 +15543,14 @@ extension ContentView {
         v3SubfolderPicker(drivePath: drivePath, project: project, subfolder: subfolder)
 
         v3SheetLabel("Destination name")
-        TextField("Name", text: Binding(get: { name.wrappedValue }, set: { name.wrappedValue = $0; nameEdited.wrappedValue = true }))
+        // Only mark the name "edited" when the text ACTUALLY changes — a focus event that re-submits
+        // the same value must not flip nameEdited and suppress the auto-derive on the next project pick.
+        TextField("Name", text: Binding(get: { name.wrappedValue },
+                                        set: { if $0 != name.wrappedValue { nameEdited.wrappedValue = true }; name.wrappedValue = $0 }))
             .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+            .focused($v3NameFocused).onSubmit { v3NameFocused = false }
             .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(v3NameFocused ? v3Cyan.opacity(0.6) : .white.opacity(0.10)))
 
         Text(v3PathPreview(drivePath: drivePath, project: project.wrappedValue, subfolder: subfolder.wrappedValue))
             .font(.system(size: 11, design: .monospaced))
@@ -15567,6 +15573,9 @@ extension ContentView {
                 }
                 ForEach(folders, id: \.self) { f in
                     Button {
+                        // Resign the name field FIRST so a focused (but un-typed) TextField re-reads
+                        // its binding and the derived name actually appears (the reported glitch).
+                        v3NameFocused = false
                         project.wrappedValue = f
                         subfolder.wrappedValue = v3ResolveSubfolderTarget(drive: drivePath, project: f)
                         error.wrappedValue = ""
@@ -15797,6 +15806,9 @@ extension ContentView {
         }
         .padding(26).frame(width: 460)
         .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+        // Tap anywhere on the card (outside a control) to leave the name field — the modal's
+        // outside-tap dismisses the whole sheet, so this is the only "click out of the field" path.
+        .onTapGesture { v3NameFocused = false }
     }
 
     // MARK: Edit-destination sheet (click a tile)
@@ -15857,6 +15869,7 @@ extension ContentView {
         }
         .padding(26).frame(width: 460)
         .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
+        .onTapGesture { v3NameFocused = false }   // click out of the name field (see Add sheet)
     }
 
     // MARK: New-project-folder sheet
@@ -16884,15 +16897,8 @@ extension ContentView {
                 .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
             }.buttonStyle(.plain).help("Video / Photo mode (⌘1 / ⌘2)")
             Spacer()
-            HStack(spacing: 7) {
-                Circle().fill(autoIngest ? v3Green : v3Amber).frame(width: 7, height: 7)
-                Text("Auto-Ingest \(autoIngest ? "On" : "Off")").font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(.white).padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.white.opacity(0.05), in: Capsule())
-            .overlay(Capsule().strokeBorder((autoIngest ? v3Green : v3Amber).opacity(0.35)))
-            .contentShape(Capsule())
-            .onTapGesture { autoIngest.toggle() }   // fires the real onChange(of: autoIngest)
+            // Auto-ingest toggle lives ONLY in the center console now (Xavier's call — it used to
+            // appear here, below the ring, AND in the footer). See v3Ring.
             }
         }
     }
@@ -17174,6 +17180,7 @@ extension ContentView {
                     // green ✓ to lock it in. Enter/✓/click-away COMMIT the name (persist, no copy);
                     // Start is the only thing that begins the transfer.
                     let editing = (editingAwaitingID == aw.id)
+                    let hovered = (v3HoveredNameID == aw.id)
                     HStack(spacing: 6) {
                         Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : v3Amber.opacity(0.85))
                         TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
@@ -17197,12 +17204,17 @@ extension ContentView {
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(editing ? v3Cyan.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                    .background(editing ? v3Cyan.opacity(0.10) : (hovered ? v3Cyan.opacity(0.05) : Color.clear), in: RoundedRectangle(cornerRadius: 9))
+                    // editing = solid cyan glow; hover = a softer cyan glow signalling "click to edit";
+                    // idle = the dashed amber outline.
                     .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
-                        editing ? AnyShapeStyle(v3Cyan) : AnyShapeStyle(v3Amber.opacity(0.5)),
-                        style: StrokeStyle(lineWidth: editing ? 1.5 : 1, dash: editing ? [] : [4, 3])))
-                    .shadow(color: editing ? v3Cyan.opacity(0.4) : .clear, radius: editing ? 6 : 0)
-                    .animation(.easeInOut(duration: 0.12), value: editing)
+                        editing ? AnyShapeStyle(v3Cyan)
+                                : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.6)) : AnyShapeStyle(v3Amber.opacity(0.5))),
+                        style: StrokeStyle(lineWidth: (editing || hovered) ? 1.5 : 1, dash: (editing || hovered) ? [] : [4, 3])))
+                    .shadow(color: editing ? v3Cyan.opacity(0.4) : (hovered ? v3Cyan.opacity(0.3) : .clear), radius: (editing || hovered) ? 6 : 0)
+                    .animation(.easeInOut(duration: 0.14), value: editing)
+                    .animation(.easeInOut(duration: 0.14), value: hovered)
+                    .onHover { v3HoveredNameID = $0 ? aw.id : (v3HoveredNameID == aw.id ? nil : v3HoveredNameID) }
                     if editing {
                         // Live path preview — shows exactly where the footage will land before commit.
                         Text(v3FolderPreview(aw)).font(.system(size: 10, design: .monospaced))
@@ -17367,23 +17379,9 @@ extension ContentView {
             }
             .frame(width: 320, height: 320)
             .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["ring": $0] }
-            HStack(spacing: 7) {
-                Image(systemName: "bolt.fill").font(.system(size: 11)).foregroundStyle(v3Amber)
-                Text(runningCount > 0 ? "Engine running · Auto Ingest \(autoIngest ? "ON" : "OFF")"
-                     : autoIngest ? "Auto-Ingest ON · ready for the next card" : "Auto-Ingest off")
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-            }
-            .padding(.horizontal, 16).padding(.vertical, 11)
-            .background(v3Purple.opacity(0.18), in: Capsule()).overlay(Capsule().strokeBorder(v3Purple.opacity(0.4)))
-            if v3WaitingToRoute {
-                HStack(spacing: 7) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
-                    Text("\(awaitingCards.count) card\(awaitingCards.count == 1 ? "" : "s") waiting — drag to a drive, or press Start")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .foregroundStyle(v3Amber).padding(.horizontal, 16).padding(.vertical, 10)
-                .background(v3Amber.opacity(0.12), in: Capsule()).overlay(Capsule().strokeBorder(v3Amber.opacity(0.45)))
-            }
+            // The ONE auto-ingest toggle (used to also live in the top bar + footer). The redundant
+            // "N waiting — drag…" strip is gone: v3RingCenter's waiting state already says it.
+            v3AutoIngestToggle
             if v3DestRoot.isEmpty && v3AnyActive {
                 HStack(spacing: 7) {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11))
@@ -17392,16 +17390,27 @@ extension ContentView {
                 .foregroundStyle(v3Amber).padding(.horizontal, 16).padding(.vertical, 10)
                 .background(v3Amber.opacity(0.12), in: Capsule()).overlay(Capsule().strokeBorder(v3Amber.opacity(0.4)))
             }
-            if v3AllDone || (!v3DestRoot.isEmpty && !v3AnyActive) {
-                Button { v3Post(.menuOpenDestination) } label: {
-                    HStack(spacing: 7) { Image(systemName: "folder"); Text("Open in Finder") }
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-                }.buttonStyle(.plain)
-            }
             Spacer(minLength: 0)
         }
+    }
+
+    /// The single auto-ingest toggle — the one and only place auto-ingest is shown/toggled (it used to
+    /// also appear in the top-right pill and the footer). Green = armed, amber = off. Tappable anytime.
+    private var v3AutoIngestToggle: some View {
+        HStack(spacing: 8) {
+            Circle().fill(autoIngest ? v3Green : v3Amber).frame(width: 8, height: 8)
+            Text(runningCount > 0 ? "Engine running · Auto-Ingest \(autoIngest ? "On" : "Off")"
+                                  : "Auto-Ingest \(autoIngest ? "On" : "Off")")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+            Image(systemName: autoIngest ? "bolt.fill" : "bolt.slash.fill")
+                .font(.system(size: 11)).foregroundStyle(autoIngest ? v3Green : v3Amber.opacity(0.85))
+        }
+        .padding(.horizontal, 18).padding(.vertical, 11)
+        .background((autoIngest ? v3Green : v3Amber).opacity(0.12), in: Capsule())
+        .overlay(Capsule().strokeBorder((autoIngest ? v3Green : v3Amber).opacity(0.45)))
+        .contentShape(Capsule())
+        .onTapGesture { autoIngest.toggle() }
+        .help("Toggle Auto-Ingest — when On, a plugged card auto-routes to the default and starts")
     }
     private var v3RingStroke: AnyShapeStyle {
         if v3HasFailures { return AnyShapeStyle(v3Amber) }   // persistent — survives lane cleanup
@@ -17435,6 +17444,14 @@ extension ContentView {
                 Image(systemName: "checkmark.circle").font(.system(size: 34)).foregroundStyle(v3Green)
                 Text("All safe to pull").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
                 Text("\(v3DoneCount) card\(v3DoneCount == 1 ? "" : "s") ready").font(.system(size: 13)).foregroundStyle(.white.opacity(0.55))
+                // Open in Finder lives INSIDE the ring, and ONLY once a transfer is done (Xavier's call).
+                Button { v3Post(.menuOpenDestination) } label: {
+                    HStack(spacing: 6) { Image(systemName: "folder"); Text("Open in Finder") }
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Green)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(v3Green.opacity(0.10), in: Capsule())
+                        .overlay(Capsule().strokeBorder(v3Green.opacity(0.35)))
+                }.buttonStyle(.plain).padding(.top, 4)
             }
         } else {
             VStack(spacing: 6) {
@@ -17652,7 +17669,8 @@ extension ContentView {
 
     // MARK: Bottom bar (real toggles)
     private var v3BottomStatus: String {
-        let lead = v3Summary.isEmpty ? (autoIngest ? "Ready" : "Auto-ingest off") : v3Summary
+        // No auto-ingest mention here — it lives only in the center-console toggle now.
+        let lead = v3Summary.isEmpty ? "Ready" : v3Summary
         let speed = runningCount > 0 ? "  ·  \(v3SpeedText(v3CombinedMBps)) combined" : ""
         if let def = defaultDestination {
             return "\(lead)\(speed)   ·   \(destinations.count) destination\(destinations.count == 1 ? "" : "s") · default \(def.name)"
