@@ -166,8 +166,8 @@ Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`g
 | `cardcopy/cardcopy.c` + `CardRunner/cardcopy` | native copy engine (fcopyfile/clonefile). |
 | `CardRunner/CardRunner.swift` | `@main`; `CardRunnerCommands` (menu + keyboard shortcuts). |
 | `CardRunner/Assets.xcassets/CardRunnerLogo.imageset` | the purple SD-card logo. `CardRunner/Saira-ExtraBoldItalic.ttf` + `Saira-OFL.txt` = bundled wordmark font. `Tech Headlines Italic.otf`, `DMSans-Regular.ttf` also bundled (ATSApplicationFontsPath="."). |
-| `CardRunnerTests/CardRunnerTests.swift` | ~62 unit tests (Swift Testing + XCTest). |
-| `smoke_test.sh` | 37 checks, real shell+cardcopy. Gated in `release.sh`. |
+| `CardRunnerTests/CardRunnerTests.swift` | ~66 unit tests (Swift Testing + XCTest). |
+| `smoke_test.sh` | 40 checks, real shell+cardcopy. Gated in `release.sh`. |
 
 ---
 
@@ -178,4 +178,9 @@ Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`g
 - Routing: **per-card only** (split/mirror removed). Plug a card → auto-route to default + auto-start (instant-ingest promise) when Auto-Ingest is ON. "Waiting/blocked" only when no destination configured.
 - Manual pull default; auto-eject opt-in. Footage safety > convenience.
 - Every footage-touching change goes through the lead+reviewer loop before commit. Don't screen-control the running app unless Xavier asks — he validates on hardware.
-- CARDRUNNER wordmark = Saira ExtraBold Italic. Destination auto-name = cleaned-raw (date-stripped, no camelCase).
+- CARDRUNNER wordmark = Saira ExtraBold Italic.
+- **Destination auto-name = date-stripped + camelCase/acronym/connector spacing** (REVERSED 2026-07 from the old "cleaned-raw, no camelCase"). Connectors (of/the/and/in/on/…) stay lowercase (unless first word); ALL-CAPS acronym runs (NWSL, HOKA) are PRESERVED verbatim; every other word Title-Cased. `260603_HOKAFestivalofMiles` → `HOKA Festival of Miles`. Pure `deriveDestName` + `splitCamelCase` + `kDestNameConnectors`, 9 unit tests.
+- **Subfolder picker shows real on-disk folders with the target highlighted; internal storage keeps the `"Default"` sentinel** (→ shell's `clips` dir) — the "clips" row maps to `"Default"` so the common path emits byte-identical ingest args. NEVER store literal `"clips"`. Auto-pick on project select = existing `clips`, else the footage-bearing subfolder (`kFootageExtensions` scan), else the sentinel. Edit keeps the dest's STORED subfolder (never re-scans → footage can't relocate). Smoke check 11 guards non-`clips` landing.
+- **Project folder in Add/Edit is a DROPDOWN of existing folders only** (no free typing); new folders are created solely via the "New project folder" flow. A stored project missing on disk shows as a selected "(not found)" entry (never blanked).
+- **Waiting-to-route cards show a STATIC amber routing line** (lane → ring → chosen/default destination) at idle — drawn in `v3DrawFunnel`'s static frame, never widening the animated 20fps branch (no core-burn). This is also the confirmation for the drag-to-route node.
+- **v3 modules dismiss on outside-click + Escape** via `v3ModalOverlay` (scrim pattern), not `.sheet`. Outside-tap = Cancel (never commits).

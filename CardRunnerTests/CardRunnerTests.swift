@@ -594,6 +594,11 @@ struct CardRunnerTests {
     @Test func deriveDestSplitsOnUnderscoresAndHyphens() {
         #expect(deriveDestName(fromProject: "260626_columbus-game_broll") == "Columbus Game Broll")
     }
+    @Test func deriveDestDoesNotShredWordsEndingInConnector() {
+        // The connector-peel must not mangle a real word that ends in a 2-letter connector.
+        #expect(deriveDestName(fromProject: "WaterproofCase") == "Waterproof Case")
+        #expect(deriveDestName(fromProject: "BulletproofVest") == "Bulletproof Vest")
+    }
     @Test func deriveDestDateOnlyFallsBackToRaw() {
         // Stripping would leave nothing → keep the raw folder name rather than an empty name.
         #expect(deriveDestName(fromProject: "260626_") == "260626_")

@@ -2081,6 +2081,16 @@ private let kDestNameConnectors: Set<String> = [
     "in", "on", "vs", "via", "per", "with", "from", "into", "onto", "off"
 ]
 
+/// Common whole words that END in a 2-letter connector but must NOT be un-glued (so "Waterproof" isn't
+/// shredded to "Waterpro of"). Heuristic denylist — not exhaustive (the name is a display label, editable,
+/// never a path), just files down the sharpest edges of the connector-peel.
+private let kDestNameNoPeel: Set<String> = [
+    "proof", "waterproof", "bulletproof", "foolproof", "weatherproof", "rainproof",
+    "roof", "aloof", "spoof", "goof", "hoof", "woof",
+    "button", "photo", "veto", "motto", "format", "auto", "intro", "info", "logo",
+    "brand", "grand", "island", "thousand", "weekend", "legend", "second", "behind"
+]
+
 /// Media file extensions used to auto-pick the subfolder that already holds footage when a project
 /// has no "clips" folder (destination subfolder picker). Lowercase, no dot.
 let kFootageExtensions: Set<String> = [
@@ -2139,7 +2149,7 @@ func deriveDestName(fromProject project: String) -> String {
         // Longest matching connector wins so "into" isn't shredded to "…in" + "to".
         let conn = peelable.filter { lower.hasSuffix($0) && lower.count - $0.count >= 2 }
             .max(by: { $0.count < $1.count })
-        if !isFinal, w != w.uppercased(), let conn {
+        if !isFinal, w != w.uppercased(), !kDestNameNoPeel.contains(lower), let conn {
             unglued.append(String(w.dropLast(conn.count)))
             unglued.append(conn)
         } else {
@@ -15656,7 +15666,9 @@ extension ContentView {
         let driveName = v3AllDrives.first { $0.path == drivePath }?.name ?? destinations[idx].name
         let name = !typed.isEmpty ? typed : (proj.isEmpty ? driveName : deriveDestName(fromProject: proj))
         destinations[idx].projectFolder = proj
-        destinations[idx].subfolder = v3EditSubfolder
+        // Normalize a literal "clips" (e.g. legacy data) back to the "Default" sentinel so the common
+        // path keeps emitting byte-identical ingest args (no redundant --subfolder clips).
+        destinations[idx].subfolder = v3CanonSubfolder(v3EditSubfolder)
         destinations[idx].name = name
         if !proj.isEmpty, !proj.contains("/"), !proj.contains("..") {
             try? FileManager.default.createDirectory(
@@ -15704,7 +15716,7 @@ extension ContentView {
             let typed = v3AddName.trimmingCharacters(in: .whitespaces)
             let name  = !typed.isEmpty ? typed : (proj.isEmpty ? vol.name : deriveDestName(fromProject: proj))
             dest = Destination(path: vol.path, name: name, isCustomFolder: false,
-                               projectFolder: proj, subfolder: v3AddSubfolder)
+                               projectFolder: proj, subfolder: v3CanonSubfolder(v3AddSubfolder))
             // Create the project folder on the drive now so it shows in Finder (mkdir only — no
             // footage touched). Guard against path-injection in the folder name.
             if !proj.isEmpty, !proj.contains("/"), !proj.contains("..") {
@@ -16362,6 +16374,8 @@ extension ContentView {
         }
 
         // Waiting-to-route cards: STATIC amber line lane → ring → chosen (or default) destination.
+        // Capped at 8 lines to avoid clutter (each parked lane still shows its "→ Drive" text label);
+        // beyond 8 parked cards the routing is read from the lane labels rather than the connectors.
         let staticDash = StrokeStyle(lineWidth: 2, lineCap: .round, dash: [3, 7])
         for aw in awaitingCards.prefix(8) {
             guard let lr = rects["lane-\(aw.id)"],
