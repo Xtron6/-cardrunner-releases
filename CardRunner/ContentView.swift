@@ -2668,13 +2668,15 @@ struct ContentView: View {
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
+    @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
     // Dynamic drag of a destination tile onto the default box (make-default swap).
     @State private var v3DraggingDestID: UUID? = nil  // the tile being dragged
     @State private var v3DragOffset: CGSize = .zero    // follows the cursor
     @State private var v3DragRotation: Double = 0      // tilts with horizontal velocity
     @State private var v3DefaultPop = false            // golden pop burst on the default box on drop
-    @State private var v3DragGrab: CGSize = .zero       // where within a dragged tile the grab landed
-    @State private var v3DidReorder = false             // a reorder actually happened this drag (→ save)
+    @State private var v3ReorderFrom: Int? = nil        // dragged tile's sibling index at drag start
+    @State private var v3ReorderTo: Int? = nil          // live target sibling index during a reorder
+    @State private var v3DragRowPitch: CGFloat = 96     // tile height + spacing (the make-room gap size)
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
@@ -16978,10 +16980,14 @@ extension ContentView {
                 .onHover { v3GearHovered = $0 }.help("Settings")
             Button { showV3History = true } label: {
                 Image(systemName: "clock.arrow.circlepath")
-                    .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
-                    .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-            }.buttonStyle(.plain).help("Ingest history & stats")
+                    .foregroundStyle(v3HistHovered ? v3Cyan : .white.opacity(0.7)).frame(width: 32, height: 32)
+                    .background(.white.opacity(v3HistHovered ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(v3HistHovered ? v3Cyan.opacity(0.5) : .white.opacity(0.10)))
+                    .shadow(color: v3Cyan.opacity(v3HistHovered ? 0.5 : 0), radius: 10)   // same blue glow as the gear
+                    .scaleEffect(v3HistHovered ? 1.08 : 1)
+            }.buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HistHovered)
+                .onHover { v3HistHovered = $0 }.help("Ingest history & stats")
             // Preset quick-switch — one tap applies a saved preset (mode, verify, naming,
             // subfolder, scaffold, etc.). Only shown when presets exist. applyPreset() sets
             // activePresetID and every backing pref the engine reads.
@@ -17630,8 +17636,9 @@ extension ContentView {
         guard v3DraggingDestID != nil else { return }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             v3DragOffset = .zero; v3DragRotation = 0
+            v3DraggingDestID = nil
+            v3ReorderFrom = nil; v3ReorderTo = nil
         }
-        v3DraggingDestID = nil
         dragOverDest = nil
     }
 
@@ -17698,12 +17705,20 @@ extension ContentView {
             .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
             // Dynamic drag → drop on the default box = make default; drag among tiles = reorder (see
             // v3DestDragGesture). The transforms are applied AFTER the anchor/destFrames reads above.
+            // The lift + tilt animate on drag start/end + velocity; the offset below does NOT (it must
+            // track the cursor 1:1).
             .scaleEffect(v3DraggingDestID == d.id ? 1.06 : 1.0)
             .rotationEffect(.degrees(v3DraggingDestID == d.id ? v3DragRotation : 0))
-            .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
-            .zIndex(v3DraggingDestID == d.id ? 100 : 0)
             .animation(.spring(response: 0.28, dampingFraction: 0.62), value: v3DraggingDestID)
             .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.7), value: v3DragRotation)
+            // A SIBLING slides to make room as the dragged tile crosses it (animated on target change);
+            // the array is NOT mutated until release, so these frames stay stable (no jitter).
+            .offset(y: v3DraggingDestID != nil && v3DraggingDestID != d.id ? v3ReorderShift(for: d) : 0)
+            .animation(.spring(response: 0.32, dampingFraction: 0.82), value: v3ReorderTo)
+            // The DRAGGED tile follows the cursor EXACTLY — plain translation, applied last and with NO
+            // per-frame animation, so it never trails or springs behind the mouse.
+            .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
+            .zIndex(v3DraggingDestID == d.id ? 100 : 0)
             .if(runningCount == 0) { $0.gesture(v3DestDragGesture(d)) }
             // Swipe-away when removed (#7): shrink + slide out; siblings close up (withAnimation on remove).
             .transition(.asymmetric(
@@ -17713,81 +17728,101 @@ extension ContentView {
 
     /// Custom drag for a destination tile — TWO modes chosen by where the cursor is:
     ///  • over the DEFAULT box  → make-default (gold pop on release).
-    ///  • among the tile column → live REORDER (the tiles glide; the array reorders as the dragged
-    ///    tile crosses a neighbour's midpoint; persisted on release).
-    /// The tile is positioned by ABSOLUTE cursor location against its CURRENT resting frame — so when
-    /// the array reorders underneath it, it stays glued to the cursor instead of jumping. `minimumDistance: 8`
-    /// lets a plain click still fall through to the edit tap.
+    ///  • among the tile column → REORDER. The dragged tile follows the cursor 1:1 via plain
+    ///    translation (the array is NOT mutated during the drag, so its resting frame is stable and it
+    ///    never jumps or trails). The *other* tiles slide to make room via `v3ReorderShift`. The array
+    ///    is reordered ONCE, on release, inside a single spring. `minimumDistance: 8` lets a plain
+    ///    click still fall through to the edit tap.
     private func v3DestDragGesture(_ d: Destination) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .named("stage"))
             .onChanged { v in
-                let resting = destFrames[d.id] ?? .zero
-                if v3DraggingDestID != d.id {           // first frame — record the grab point in the tile
-                    v3DragGrab = CGSize(width: v.startLocation.x - resting.midX,
-                                        height: v.startLocation.y - resting.midY)
+                if v3DraggingDestID != d.id {                    // first frame — capture start state
                     v3DraggingDestID = d.id
-                    v3DidReorder = false
+                    v3ReorderFrom = v3SiblingIndex(d.id)
+                    v3ReorderTo = v3ReorderFrom
+                    v3DragRowPitch = (destFrames[d.id]?.height ?? 90) + 14
                 }
-                // Absolute-cursor offset against the current resting frame (survives reorders w/o jump).
-                let targetX = v.location.x - v3DragGrab.width
-                let targetY = v.location.y - v3DragGrab.height
-                v3DragOffset = CGSize(width: targetX - resting.midX, height: targetY - resting.midY)
+                v3DragOffset = v.translation                    // 1:1 cursor tracking (no animation)
                 v3DragRotation = max(-14, min(14, v.velocity.width * 0.012))
 
                 if let defID = defaultDestination?.id, let f = destFrames[defID], f.contains(v.location) {
-                    dragOverDest = defID                 // make-default mode (highlight the golden box)
+                    dragOverDest = defID                        // make-default mode (highlight golden box)
+                    v3ReorderTo = v3ReorderFrom                 // no make-room gap while over the default box
                 } else {
-                    dragOverDest = nil                   // reorder mode
-                    v3ReorderIfNeeded(dragged: d.id, centerY: targetY)
+                    dragOverDest = nil
+                    v3ReorderTo = v3ReorderTargetIndex(dragged: d.id, translationY: v.translation.height)
                 }
             }
             .onEnded { v in
-                var swapped = false
-                if let defID = defaultDestination?.id, defID != d.id,
-                   let f = destFrames[defID], f.contains(v.location) {
-                    swapped = v3MakeDefault(d.id)        // decided at RELEASE, not hover
-                }
-                if swapped {
+                let overDefault = (defaultDestination?.id).flatMap { destFrames[$0] }?.contains(v.location) ?? false
+                var reordered = false
+                if overDefault, defaultDestination?.id != d.id, v3MakeDefault(d.id) {
                     v3DefaultPop = true
                     AudioEngine.shared.modeSwitch()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
                     }
-                } else if v3DidReorder {
-                    saveDestinations()                   // persist ONLY if the order actually changed
+                } else if let from = v3ReorderFrom, let to = v3ReorderTo, to != from {
+                    reordered = true
                 }
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                    v3DragOffset = .zero; v3DragRotation = 0
+                // Commit the reorder (if any) AND settle the tile in one spring: the array move + the
+                // offset/gap reset animate together, so the tile glides from the cursor into its slot.
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    if reordered, let from = v3ReorderFrom, let to = v3ReorderTo {
+                        v3CommitReorder(dragged: d.id, from: from, to: to)
+                    }
+                    v3DraggingDestID = nil
+                    v3DragOffset = .zero
+                    v3DragRotation = 0
+                    v3ReorderFrom = nil
+                    v3ReorderTo = nil
                 }
-                v3DraggingDestID = nil
+                if reordered { saveDestinations() }
                 dragOverDest = nil
             }
     }
 
-    /// Live-reorder the dragged tile among its siblings as its center crosses a neighbour's midpoint.
-    /// Order is display-only (default resolves by ID, routing resolves by ID) so this can't perturb
-    /// routing. Persisted on drop.
-    private func v3ReorderIfNeeded(dragged id: UUID, centerY: CGFloat) {
-        guard let defID = defaultDestination?.id else { return }
+    /// The dragged tile's target index among its siblings, from how far its center has moved past the
+    /// resting midpoints of the others. Reads only STABLE resting frames (the array isn't mutated
+    /// during the drag), so it can't jitter against animating rows.
+    private func v3ReorderTargetIndex(dragged id: UUID, translationY: CGFloat) -> Int? {
+        guard let defID = defaultDestination?.id, let from = v3ReorderFrom else { return v3ReorderFrom }
         let sibs = destinations.filter { $0.id != defID }
-        guard let from = sibs.firstIndex(where: { $0.id == id }) else { return }
-        var target = from
+        let centerY = (destFrames[id]?.midY ?? 0) + translationY
+        var to = from
         for (i, s) in sibs.enumerated() where s.id != id {
             guard let f = destFrames[s.id] else { continue }
-            if i < from && centerY < f.midY { target = min(target, i) }
-            if i > from && centerY > f.midY { target = max(target, i) }
+            if i < from && centerY < f.midY { to = min(to, i) }
+            if i > from && centerY > f.midY { to = max(to, i) }
         }
-        guard target != from else { return }
-        var reordered = sibs
-        let item = reordered.remove(at: from)
-        reordered.insert(item, at: min(max(0, target), reordered.count))
-        // Rebuild: default kept at the front (display renders it separately; if it's later removed,
-        // v3RemoveDestination promotes destinations.first → the new top tile).
+        return to
+    }
+
+    /// The make-room vertical shift for a NON-dragged sibling while a reorder is previewing: siblings
+    /// between the dragged tile's origin and its current target slide by one row-pitch to open the gap.
+    private func v3ReorderShift(for d: Destination) -> CGFloat {
+        guard let from = v3ReorderFrom, let to = v3ReorderTo, to != from,
+              let idx = v3SiblingIndex(d.id) else { return 0 }
+        if to > from { return (idx > from && idx <= to) ? -v3DragRowPitch : 0 }   // dragged going down
+        return (idx >= to && idx < from) ? v3DragRowPitch : 0                       // dragged going up
+    }
+
+    /// Index of a destination among the NON-default tiles (the display order), or nil for the default.
+    private func v3SiblingIndex(_ id: UUID) -> Int? {
+        let defID = defaultDestination?.id
+        return destinations.filter { $0.id != defID }.firstIndex { $0.id == id }
+    }
+
+    /// Move a sibling from → to in the display order and persist. Order is display-only (default +
+    /// routing resolve by ID), so this can't perturb routing. Default kept at array index 0.
+    private func v3CommitReorder(dragged id: UUID, from: Int, to: Int) {
+        guard let defID = defaultDestination?.id else { return }
+        var sibs = destinations.filter { $0.id != defID }
+        guard from >= 0, from < sibs.count else { return }
+        let item = sibs.remove(at: from)
+        sibs.insert(item, at: min(max(0, to), sibs.count))
         let def = destinations.first { $0.id == defID }
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-            destinations = (def.map { [$0] } ?? []) + reordered
-        }
-        v3DidReorder = true
+        destinations = (def.map { [$0] } ?? []) + sibs
     }
 
     /// Shared tile contents (icon, name, free space, role/route line, remove control).
