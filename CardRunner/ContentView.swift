@@ -2645,6 +2645,8 @@ struct ContentView: View {
     @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
+    @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
+    @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     // Dynamic drag of a destination tile onto the default box (make-default swap).
     @State private var v3DraggingDestID: UUID? = nil  // the tile being dragged
     @State private var v3DragOffset: CGSize = .zero    // follows the cursor
@@ -15631,13 +15633,15 @@ extension ContentView {
                 }
                 ForEach(folders, id: \.self) { f in
                     Button {
-                        // Resign the name field FIRST so a focused (but un-typed) TextField re-reads
-                        // its binding and the derived name actually appears (the reported glitch).
+                        // Resign the name field FIRST so a focused TextField re-reads its binding.
                         v3NameFocused = false
                         project.wrappedValue = f
                         subfolder.wrappedValue = v3ResolveSubfolderTarget(drive: drivePath, project: f)
                         error.wrappedValue = ""
-                        if !nameEdited.wrappedValue { name.wrappedValue = deriveDestName(fromProject: f) }
+                        // Picking a project ALWAYS replaces the name with the derived one (Xavier's call) —
+                        // delete-and-replace whatever was typed/blank; nameEdited resets so it's clean.
+                        name.wrappedValue = deriveDestName(fromProject: f)
+                        nameEdited.wrappedValue = false
                     } label: {
                         if f == cur { Label(f, systemImage: "checkmark") } else { Text(f) }
                     }
@@ -15842,7 +15846,8 @@ extension ContentView {
                     .font(.system(size: 14)).padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.18),
                              style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])))
-                }.buttonStyle(.plain)
+                    .contentShape(Rectangle())   // whole dashed box is clickable, not just the text
+                }.buttonStyle(.plain).v3Hover(scale: 1.02, glow: v3Cyan)
             }
             if !v3AddError.isEmpty {
                 Label(v3AddError, systemImage: "exclamationmark.triangle.fill")
@@ -16505,24 +16510,32 @@ extension ContentView {
 
     private func v3SettingsRailIcon(_ cat: V3SettingsCat) -> some View {
         let selected = v3SettingsCat == cat
+        let hovered = v3HoveredRailCat == cat
         return Button {
             withAnimation(.easeInOut(duration: 0.15)) { v3SettingsCat = cat }
         } label: {
             Image(systemName: cat.icon)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(selected ? .white : .white.opacity(0.4))
+                // Unselected icon turns light-blue on hover (extra "clickable" cue beyond the scale).
+                .foregroundStyle(selected ? .white : (hovered ? v3Cyan : .white.opacity(0.4)))
                 .frame(width: 44, height: 44)
-                .background(selected ? AnyShapeStyle(v3Brand.opacity(0.9)) : AnyShapeStyle(Color.clear),
+                .background(selected ? AnyShapeStyle(v3Brand.opacity(0.9))
+                                     : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.10)) : AnyShapeStyle(Color.clear)),
                             in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay(alignment: .leading) {
                     if selected {
                         Capsule().fill(v3Cyan).frame(width: 3, height: 20).offset(x: -19)
                     }
                 }
+                .shadow(color: v3Cyan.opacity(hovered && !selected ? 0.55 : 0), radius: 10)
+                .scaleEffect(hovered ? 1.08 : 1)
                 // Larger cell so the whole rail row is clickable, not just the 44pt icon.
                 .frame(width: 58, height: 50)
                 .contentShape(RoundedRectangle(cornerRadius: 13))
-        }.buttonStyle(.plain).v3Hover(scale: 1.08).help(cat.title)
+        }.buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovered)
+        .onHover { v3HoveredRailCat = $0 ? cat : (v3HoveredRailCat == cat ? nil : v3HoveredRailCat) }
+        .help(cat.title)
     }
 
     private var v3SettingsContent: some View {
@@ -16534,10 +16547,8 @@ extension ContentView {
                     Text(v3SettingsCat.subtitle).font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
                 }
                 Spacer()
-                Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } } label: {
-                    Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.7))
-                        .frame(width: 34, height: 34).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 11))
-                }.buttonStyle(.plain).help("Close")
+                // Same red-on-hover close as the modules (was a plain X — the reported gap).
+                V3CloseButton { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false } }
             }
             .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 18)
             Divider().opacity(0.5)
@@ -16929,10 +16940,14 @@ extension ContentView {
             HStack(spacing: 10) {
             Button { withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true } } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
-                    .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.10)))
-            }.buttonStyle(.plain).help("Settings")
+                    .foregroundStyle(v3GearHovered ? v3Cyan : .white.opacity(0.7)).frame(width: 32, height: 32)
+                    .background(.white.opacity(v3GearHovered ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(v3GearHovered ? v3Cyan.opacity(0.5) : .white.opacity(0.10)))
+                    .shadow(color: v3Cyan.opacity(v3GearHovered ? 0.5 : 0), radius: 10)   // blue "clickable" glow
+                    .scaleEffect(v3GearHovered ? 1.08 : 1)
+            }.buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3GearHovered)
+                .onHover { v3GearHovered = $0 }.help("Settings")
             Button { showV3History = true } label: {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(.white.opacity(0.7)).frame(width: 32, height: 32)
@@ -17842,7 +17857,7 @@ extension ContentView {
                         Spacer()
                     }
                     .padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
-                }.buttonStyle(.plain).v3Hover(scale: 1.0)
+                }.buttonStyle(.plain).v3Hover(scale: 1.0, glow: v3Cyan)
             }
             .padding(6).frame(width: 210)
             .background(Color(hex: "#151024"))
