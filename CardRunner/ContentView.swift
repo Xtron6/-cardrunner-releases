@@ -15999,7 +15999,6 @@ extension ContentView {
                 v3StatCard("CARDS", "\(allTimeStats.totalCards)", "sdcard")
                 v3StatCard("FILES", allTimeStats.totalFiles.formatted(), "doc.on.doc")
                 v3StatCard("TRANSFERRED", v3HumanMB(allTimeStats.totalMB), "externaldrive")
-                v3StatCard("PEAK", "\(allTimeStats.peakMBps) MB/s", "speedometer")
             }
             v3SheetLabel("RECENT INGESTS")
             if historyEntries.isEmpty {
@@ -17717,13 +17716,14 @@ extension ContentView {
 
     // MARK: Bottom bar (real toggles)
     private var v3BottomStatus: String {
-        // No auto-ingest mention here — it lives only in the center-console toggle now.
+        // No auto-ingest mention here — it lives only in the center-console toggle now. The default
+        // destination NAME is shown in the destinations column, so it's not repeated here either.
         let lead = v3Summary.isEmpty ? "Ready" : v3Summary
         let speed = runningCount > 0 ? "  ·  \(v3SpeedText(v3CombinedMBps)) combined" : ""
-        if let def = defaultDestination {
-            return "\(lead)\(speed)   ·   \(destinations.count) destination\(destinations.count == 1 ? "" : "s") · default \(def.name)"
+        if defaultDestination != nil {
+            return "\(lead)\(speed)   ·   \(destinations.count) destination\(destinations.count == 1 ? "" : "s")"
         }
-        let dest = v3DestRoot.isEmpty ? "no destination" : "default \(v3DestDriveName)"
+        let dest = v3DestRoot.isEmpty ? "no destination" : "1 destination"
         return "\(lead)\(speed)  ·  \(dest)"
     }
     private var v3BottomBar: some View {
