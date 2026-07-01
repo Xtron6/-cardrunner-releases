@@ -19,13 +19,19 @@ these over and cherry-pick — restraint is the whole point.
 
 ## The references
 
-### 1. Beautifully-treated scrollbar — fluidfunctionalism.com/docs/scrolling-list
-A refined, self-fading, thin scroll indicator (not the chunky default).
-- **Best fit:** the **Log panel** (`v3LogSheet`) — Xavier's pick. Also the **Ingest History** list and the
-  **Settings** scroll. Anywhere we currently show a native `ScrollView` scrollbar.
-- **How (SwiftUI):** custom overlay scroll indicator that fades in on scroll and out when idle; or
-  `.scrollIndicators(.hidden)` + a bespoke thin capsule that tracks scroll offset. Keep it glassy.
-- **Priority:** HIGH — cheap, high polish, obvious home (log/history/settings).
+### 1. Edge-aware scroll affordance — fluidfunctionalism.com/docs/scrolling-list
+**Reframe (reviewer):** it's not just a thin fading thumb — the real treatment is **edge-aware**: a
+surface-matched gradient fade + chevron at any edge that has *more content beyond it* ("there's more
+below"). That's the higher-value half — CardRunner's real problem isn't ugly scrollbars, it's *hidden
+content* (a 500-line log, 80 history rows).
+- **Best fit / HERO:** the **Log panel** (`v3LogSheet`) bottom-edge fade + chevron + **jump-to-tail** —
+  load-bearing (find the tail of a live log under stress), not decorative. Then **History** + **Settings**
+  scroll edges. Skip the short DEV/failure strips.
+- **How (SwiftUI):** `.scrollIndicators(.hidden)` + a `LinearGradient` mask fading to the surface color
+  (`#0c0822`) at the edge with more content + a chevron; thin capsule thumb tracking `contentOffset`,
+  faded via a **debounced `DispatchWorkItem`** (NOT a Timer). `.onScrollGeometryChange` if we ever bump to
+  macOS 15; else a `GeometryReader` offset read.
+- **Priority:** HIGH — highest value-per-effort, load-bearing.
 
 ### 2. Real transition assets — transitions.dev
 A catalog of well-tuned transitions across 5 params (duration, easing, distance, blur, scale), plus
@@ -69,12 +75,44 @@ cache `getBoundingClientRect`.
 - **Priority:** MEDIUM — genuinely delightful, but easy to overdo; prototype on ONE cluster (dest tiles or
   the settings rail) and judge.
 
-## Suggested sequencing (when we decide to build)
-1. **Scrollbar treatment** (log/history/settings) — highest polish-per-effort, clearest home.
-2. **Module transitions** — mine 2 specific ones from transitions.dev (blur-in modules, staggered list insert).
-3. **Proximity scaling** on ONE cluster (dest tiles or settings rail) as a prototype to feel it out.
-4. **Expandable settings rail** (lab01 #7).
-5. **Gradient borders** on the golden default box + ring (the 2 hero surfaces).
+## Suggested sequencing (reviewer-refined — build the safe/high-value first, proximity LAST)
+1. **Log-panel edge fade + jump-to-tail** (the functional half of #1) — load-bearing, clear home.
+2. **Origin-aware blur-in module transition** — modules grow *from the clicked tile* (reuse `destFrames`);
+   elevates every module at once.
+3. **Golden-box gradient sweep on promotion** — one-shot sweep when a tile becomes the default; ties into
+   the make-default gesture already shipped (`v3DefaultPop` trigger). One surface, one-shot.
+4. **Thin fading thumb + History/Settings edges** — roll the scrollbar treatment to the other lists.
+5. **Expandable settings rail** (lab01 #7) — bigger interaction; do when there's room.
+6. **Proximity scaling on dest tiles** — LAST. Delightful but the ONLY item that can regress the
+   core-burn guardrail (`onContinuousHover` fires a lot): throttle (only recompute on >N-pt move), gate
+   OFF while `runningCount > 0`, reuse `destFrames`, disable under Reduce Motion. Prototype one cluster;
+   be willing to cut it.
+
+**Honest meta-note:** 5 references is a lot of surface for an app whose superpower is *calm trust*.
+Recommendation: ship 1-3, live with them, THEN decide if proximity/drawer earn their complexity.
+
+## Do NOT (where the reference would hurt — every one is a STATUS element)
+- **Gradient border on the center ring** — the ring is load-bearing status (idle/armed/copying/done/failed,
+  each a meaningful color). A gradient muddies the color semantics + reads as motion-on-status. Keep it a
+  solid semantic color.
+- **Gradient border / any animation on an active-copying lane** — the most safety-critical status in the
+  app; it must read as steady progress, not a shimmering party.
+- **transitions.dev error-shake / success-bounce / status-badge motion** — motion on status = reads as
+  instability in a footage tool. Decline.
+- **Proximity scaling on the ring** — even "very faintly": the armed→copying transition can happen while
+  the cursor is near it, animating a status element at the worst moment.
+
+Adopt the transitions.dev principle **"appear gently, dismiss instantly"** app-wide (help text / hover
+glows ease in but cut out instantly — right instinct for a tool where the operator wants to act).
 
 Each goes through the usual plan → lead codes → reviewer loop, keeps build+tests green, and respects the
 guardrails above (no core-burn, status stays calm, Reduce Motion honored).
+
+## Open questions to settle before building
+- Does a destination **"details" drawer** (lab01 idea) compete with the click-to-Edit modal already built?
+  (If clicking a tile opens Edit, a drawer needs a different trigger — a chevron — or it's redundant.)
+- Reduce-Motion for proximity scaling: disable entirely (recommended) or keep the brightness lift without scale?
+- Confirm the **ring stays a solid semantic color** (no gradient border / no proximity) — or does Xavier
+  specifically want it decorated (then we design a version that can't be confused with the status colors)?
+- **lab01 experiments beyond #7:** the page is JS-rendered — grab 2-3 screenshots/GIFs of the ones that
+  caught the eye so we map them concretely instead of guessing.
