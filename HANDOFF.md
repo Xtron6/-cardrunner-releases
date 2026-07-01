@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `dda08df`. Build + **~62 unit** + **37 smoke** all green.
+**Latest commit:** `7ce935b`. Build + **~62 unit** + **37 smoke** all green.
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
 > Read `MEMORY.md` + `cardrunner-roadmap.md` first — they hold the full chronology + locked decisions. This file is the fast snapshot.
@@ -44,10 +44,15 @@ This is the live task. Design-first: a reviewer sub-agent proposed the design, X
 - `v3AddIsDuplicate()` blocks an identical drive+resolvedProject+subfolder leaf (amber inline error); same drive + different project OK.
 - Tiles show `v3DestPathLabel(d)` = `{project} / {subfolder}` so same-drive dests are distinguishable.
 
-**NEXT-CHAT TODO for this task (P1):**
-1. **The click-tile per-destination editor:** clicking a `v3DestTile` opens a per-destination module to edit its project folder / subfolder (drive shown, not re-picked). Lock while `runningCount > 0` (like `v3MakeDefault`). Reuse the Stage-B SSD-tab fields. *Without this, mis-setting a project means Remove + re-Add.*
-2. **Fold in the reviewer's Stage-B P2 while building the editor:** `v3AddIsDuplicate` + `v3DestPathLabel` should normalize an explicit subfolder literally named `"clips"` to be equivalent to `"Default"` (the shell maps Default→clips), so two dests (one Default, one explicit "clips") on the same drive+project aren't treated as distinct. Narrow, non-corrupting, but close it in the editor.
-3. Possible polish: a "New project folder…" affordance with scaffold/color (currently you just type the project name and it's `mkdir`'d on commit); camelCase-spacing name option (deferred — Xavier wants cleaned-raw on real folder names first).
+**STAGE C — COMMITTED (`7ce935b`), reviewer-verified production-ready.** The click-tile editor:
+- Clicking a `v3DestTile` OR the golden `v3DefaultDestBox` opens `v3EditDestSheet` to edit that dest's project/subfolder/name. Drive shown **read-only** (remove+re-add to move drives). Pencil affordance on tiles; whole tile is the hit target (tap gated on `runningCount == 0 && !isCustomFolder`; custom-folder dests skip the editor).
+- Locked while running: `v3OpenEditDest` + `v3CommitEditDest` both guard `runningCount == 0`; Save disabled w/ amber "transfer running" hint. `v3CommitEditDest` mutates `destinations[idx]` in place (id/path/isCustomFolder preserved → default never orphaned) + `saveDestinations` + mkdir's the project folder (guarded vs `/`+`..`, mkdir-only).
+- **Reused Stage-B fields via a shared `v3DestFieldGroup` @ViewBuilder** now used by BOTH Add + Edit sheets (Add refactored onto it, behavior-preserving). Old `v3AddPreview` → parameterized `v3PathPreview`.
+- **P2 fold-in DONE:** `v3CanonSubfolder` collapses `""`/`"Default"`/`"clips"` to one key, used ONLY in the generalized `v3DestLeafConflicts(...excluding:)` dup guard (saved subfolder + shell args untouched). `v3AddIsDuplicate` delegates with `excluding: nil`; editor passes `excluding: v3EditDestID` so an unchanged self-save isn't flagged.
+
+**NEXT-CHAT TODO (the destination redesign is now feature-complete; these are optional polish):**
+1. Possible polish: a "New project folder…" affordance with scaffold/color inside Add/Edit (currently you type the project name and it's `mkdir`'d bare on commit); camelCase-spacing name option (deferred — Xavier wants cleaned-raw on real folder names first).
+2. Move on to **Settings Stage 2** (§8.2) — the next real work item.
 
 ---
 
@@ -117,6 +122,7 @@ Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`g
 
 ## 6. What's been delivered (the good stuff — recent commits, newest first)
 
+- `7ce935b` **Click-tile destination editor (Stage C)** — click a tile/default box → edit project/subfolder/name (drive locked); shared `v3DestFieldGroup` reused by Add+Edit; `v3CanonSubfolder` folds "clips"≡"Default" into the dup guard. Reviewer-verified, both P2 nits applied.
 - `dda08df` **Destination selection UI (Stage B)** — all-drives list (fixes "No drives available"), project/subfolder pickers, cleaned-raw auto-name, live preview, duplicate-leaf guard, tile disambiguation.
 - `f632071` **Per-destination project/subfolder** — model + resolution (Stage A of the active task).
 - `239b897` **Custom-card-name UX** — focus feedback, green-✓ confirm (Enter locks, never starts), real memory (persists per-UUID; survives re-scan by identity), Esc-revert, live path preview. Reviewer-verified.
@@ -145,8 +151,8 @@ Lead coder (you, in-context) implements; a **persistent reviewer sub-agent** (`g
 
 ## 8. Open items / what's next
 
-1. **Finish the destination redesign** (§1) — commit Stage B after review; then P1 = the click-tile per-destination editor.
-2. **Settings Stage 2** — restyle the embedded Presets / Shortcuts / About flows to match the new icon-rail look (they work, but wear old styling). Restore the scaffold per-row edit + subfolder field + rename-template live preview simplified in Stage 1.
+1. **Destination redesign — DONE** (§1, Stages A/B/C all committed + reviewer-verified). Optional polish only (see §1 NEXT-CHAT TODO).
+2. **Settings Stage 2** (now the top real item) — restyle the embedded Presets / Shortcuts / About flows to match the new icon-rail look (they work, but wear old styling). Restore the scaffold per-row edit + subfolder field + rename-template live preview simplified in Stage 1.
 3. Lower-priority: remove now-dead legacy popovers; restyle the engine-triggered sheets (resume / wrong-clock / setup wizard / support bundle) still visually legacy; history/stats UserDefaults durability.
 
 ---
