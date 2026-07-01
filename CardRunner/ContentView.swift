@@ -2677,6 +2677,7 @@ struct ContentView: View {
     @State private var v3ReorderFrom: Int? = nil        // dragged tile's sibling index at drag start
     @State private var v3ReorderTo: Int? = nil          // live target sibling index during a reorder
     @State private var v3DragRowPitch: CGFloat = 96     // tile height + spacing (the make-room gap size)
+    @State private var v3DragSettling: UUID? = nil      // keeps the just-dropped tile on top through its glide
     @State private var v3ShowDateMenu = false          // custom liquid-glass date-filter dropdown
     /// Cached result of the directory-existence check for customDestPath.
     /// Updated whenever customDestPath changes and on launch — avoids calling
@@ -17718,7 +17719,9 @@ extension ContentView {
             // The DRAGGED tile follows the cursor EXACTLY — plain translation, applied last and with NO
             // per-frame animation, so it never trails or springs behind the mouse.
             .offset(v3DraggingDestID == d.id ? v3DragOffset : .zero)
-            .zIndex(v3DraggingDestID == d.id ? 100 : 0)
+            // Stay on top through the drag AND the ~0.35s release glide (zIndex isn't animatable, so a
+            // straight drop would let the tile duck behind a neighbour mid-glide).
+            .zIndex(v3DraggingDestID == d.id || v3DragSettling == d.id ? 100 : 0)
             .if(runningCount == 0) { $0.gesture(v3DestDragGesture(d)) }
             // Swipe-away when removed (#7): shrink + slide out; siblings close up (withAnimation on remove).
             .transition(.asymmetric(
@@ -17764,6 +17767,11 @@ extension ContentView {
                     }
                 } else if let from = v3ReorderFrom, let to = v3ReorderTo, to != from {
                     reordered = true
+                }
+                // Keep this tile on top through the glide (zIndex isn't animatable).
+                v3DragSettling = d.id
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    if v3DragSettling == d.id { v3DragSettling = nil }
                 }
                 // Commit the reorder (if any) AND settle the tile in one spring: the array move + the
                 // offset/gap reset animate together, so the tile glides from the cursor into its slot.
