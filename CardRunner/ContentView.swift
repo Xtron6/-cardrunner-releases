@@ -3127,7 +3127,7 @@ struct ContentView: View {
                 // (The legacy body's own onboarding at ~3448 is gated to isLegacyUI so it can't double-mount.)
                 if showOnboarding {
                     OnboardingView(
-                        runDemo:    { runDemoIngest() },
+                        runDemo:    { runDemoIngest(fromOnboarding: true) },
                         demoStatus: $onboardingDemoStatus,
                         onComplete: { completeOnboarding() }
                     )
@@ -3474,7 +3474,7 @@ struct ContentView: View {
             // only the legacy face (CR_LEGACY_UI=1) shows it here.
             if showOnboarding && isLegacyUI {
                 OnboardingView(
-                    runDemo:    { runDemoIngest() },
+                    runDemo:    { runDemoIngest(fromOnboarding: true) },
                     demoStatus: $onboardingDemoStatus,
                     onComplete: { completeOnboarding() }
                 )
@@ -11080,7 +11080,7 @@ struct ContentView: View {
 
     /// Simulates a complete ingest entirely in Swift — no shell script, no card, no SSD.
     /// Exercises every UI state: scan → queued → copying → verify → completion panel → history.
-    private func runDemoIngest() {
+    private func runDemoIngest(fromOnboarding: Bool = false) {
         guard runningCount == 0 else { return }  // don't stack on top of a real ingest
 
         let demoCard = Volume(name: "DEMO_A7IV", path: "/Volumes/DEMO_A7IV", cameraModel: "Sony A7 IV")
@@ -11107,9 +11107,12 @@ struct ContentView: View {
         runningCount = 1
         statusText   = "Copying from DEMO_A7IV…"
 
-        // Turn on auto-ingest visually so the ring lights up
+        // Turn on auto-ingest visually so the ring lights up — but NEVER for the ONBOARDING demo:
+        // flipping the real `autoIngest` fires onChange → drainAwaiting + scan, which would START a
+        // real parked card, and the demo's end would then CANCEL it (the "Transfer stopped …
+        // Untitled not ingested" alert). The onboarding demo must never touch real ingest state.
         let wasAutoIngest = autoIngest
-        autoIngest = true
+        if !fromOnboarding { autoIngest = true }
 
         demoTask = Task { @MainActor in
             let stepCount = 60          // ~6 seconds at 100ms ticks
@@ -11162,8 +11165,9 @@ struct ContentView: View {
             if self.isLegacyUI { self.triggerCompletionFlash() }
             self.v3CelebrationTrigger += 1   // preview the v3 celebration (Run UI Demo → pick a style → watch)
             AudioEngine.shared.transferComplete()
-            // Demo released the engine — start any real cards queued behind it.
-            self.drainQueue()
+            // Demo released the engine — start any real cards queued behind it. NOT during onboarding:
+            // the onboarding demo must stay fully isolated (no real ingest may start).
+            if !fromOnboarding { self.drainQueue() }
         }
     }
 
@@ -11342,7 +11346,9 @@ struct ContentView: View {
                     // ingested so they can re-insert them.
                     let droppedNames = self.cardQueue.map { $0.card.name }
                     self.cardQueue.removeAll()
-                    if !droppedNames.isEmpty {
+                    // Never surface an ingest alert while the onboarding walkthrough is up (the demo is
+                    // now fully isolated, so this shouldn't fire during onboarding — belt-and-suspenders).
+                    if !droppedNames.isEmpty && !self.showOnboarding {
                         let list = droppedNames.joined(separator: ", ")
                         self.ingestAlertTitle   = "Transfer stopped"
                         self.ingestAlertMessage = "\(droppedNames.count) queued card\(droppedNames.count == 1 ? "" : "s") were not ingested: \(list). Re-insert to ingest."
