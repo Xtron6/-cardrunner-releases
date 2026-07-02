@@ -1644,6 +1644,7 @@ struct V3TileRemoveButton: View {
         .animation(.spring(response: 0.28, dampingFraction: 0.55), value: hovering)
         .onHover { hovering = $0 }
         .help("Remove this destination")
+        .accessibilityLabel("Remove this destination")
     }
 }
 
@@ -1664,6 +1665,7 @@ struct V3CloseButton: View {
         .buttonStyle(.plain)
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovering)
         .onHover { hovering = $0 }
+        .accessibilityLabel("Close")
     }
 }
 
@@ -2793,6 +2795,7 @@ struct ContentView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
                         .foregroundStyle(textMuted)
+                        .accessibilityLabel("Close")
                 }
                 .buttonStyle(.plain)
             }
@@ -2849,6 +2852,7 @@ struct ContentView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
                         .foregroundStyle(textMuted)
+                        .accessibilityLabel("Close")
                 }
                 .buttonStyle(.plain)
             }
@@ -3072,6 +3076,7 @@ struct ContentView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
                         .foregroundStyle(textMuted)
+                        .accessibilityLabel("Close")
                 }
                 .buttonStyle(.plain)
             }
@@ -3482,6 +3487,7 @@ struct ContentView: View {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(.system(size: 12))
                                             .foregroundStyle(textMuted.opacity(0.5))
+                                            .accessibilityLabel("Clear custom card name")
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -3688,6 +3694,7 @@ struct ContentView: View {
                                                     Image(systemName: "pencil")
                                                         .font(.system(size: 9))
                                                         .foregroundStyle(textMuted.opacity(0.6))
+                                                        .accessibilityLabel("Rename folder")
                                                 }
                                                 .buttonStyle(.plain)
                                                 // Delete
@@ -3699,6 +3706,7 @@ struct ContentView: View {
                                                     Image(systemName: "xmark")
                                                         .font(.system(size: 9, weight: .semibold))
                                                         .foregroundStyle(textMuted.opacity(0.6))
+                                                        .accessibilityLabel("Delete folder")
                                                 }
                                                 .buttonStyle(.plain)
                                             }
@@ -4047,6 +4055,7 @@ struct ContentView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel("Close")
                 }
                 .buttonStyle(.plain)
             }
@@ -4542,6 +4551,7 @@ struct ContentView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(textMuted)
                             .frame(width: 24, height: 24)
+                            .accessibilityLabel("Edit preset")
                             .background(Circle().fill(Color.white.opacity(0.05)))
                     }
                     .buttonStyle(.plain)
@@ -4558,6 +4568,7 @@ struct ContentView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(Color.red.opacity(0.6))
                             .frame(width: 24, height: 24)
+                            .accessibilityLabel("Delete preset")
                             .background(Circle().fill(Color.white.opacity(0.05)))
                     }
                     .buttonStyle(.plain)
@@ -9371,6 +9382,7 @@ private struct OnboardingView: View {
                             Button { ob3RemoveFolder(at: idx) } label: {
                                 Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white.opacity(0.3))
                                     .contentShape(Rectangle())
+                                    .accessibilityLabel("Remove folder")
                             }.buttonStyle(.plain).v3Hover(scale: 1.15)
                         }
                         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -12594,6 +12606,7 @@ extension ContentView {
                 Text(msg).font(.system(size: 13, weight: .medium)).foregroundStyle(.white).lineLimit(2)
                 Button { withAnimation(v3Anim(.easeInOut(duration: 0.2))) { v3Toast = nil } } label: {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                        .accessibilityLabel("Dismiss notification")
                 }.buttonStyle(.plain)
             }
             .padding(.horizontal, 16).padding(.vertical, 11)
@@ -12897,6 +12910,8 @@ extension ContentView {
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: hovered)
         .onHover { v3HoveredRailCat = $0 ? cat : (v3HoveredRailCat == cat ? nil : v3HoveredRailCat) }
         .help(cat.title)
+        .accessibilityLabel(cat.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var v3SettingsContent: some View {
@@ -13478,7 +13493,7 @@ extension ContentView {
                     .scaleEffect(v3GearHovered ? 1.08 : 1)
             }.buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3GearHovered)
-                .onHover { v3GearHovered = $0 }.help("Settings")
+                .onHover { v3GearHovered = $0 }.help("Settings").accessibilityLabel("Settings")
             Button { v3PresentModal($showV3History) } label: {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(v3HistHovered ? v3Cyan : .white.opacity(0.7)).frame(width: 32, height: 32)
@@ -13488,7 +13503,7 @@ extension ContentView {
                     .scaleEffect(v3HistHovered ? 1.08 : 1)
             }.buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HistHovered)
-                .onHover { v3HistHovered = $0 }.help("Ingest history & stats")
+                .onHover { v3HistHovered = $0 }.help("Ingest history & stats").accessibilityLabel("Ingest history & stats")
             // Preset quick-switch — one tap applies a saved preset (mode, verify, naming,
             // subfolder, scaffold, etc.). Only shown when presets exist. applyPreset() sets
             // activePresetID and every backing pref the engine reads.
@@ -14062,6 +14077,7 @@ extension ContentView {
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(v3Green.opacity(0.4)))
             }.buttonStyle(.plain).v3Hover(scale: 1.05, glow: v3Green)
             .help("Eject all cards that are safe to pull")
+            .accessibilityLabel("Eject all cards that are safe to pull")
         }
         .frame(width: 360)
     }
