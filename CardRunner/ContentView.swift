@@ -1669,6 +1669,7 @@ struct ContentView: View {
     @State private var v3ProjScaffoldOn: [String: Bool] = [:]
     @State private var v3ProjParent = ""             // parent dir the new project folder is created in (drive root by default)
     @State private var v3ProjParentOverridden = false // true once the user picks a custom parent via "Change…"
+    @State private var v3ProjColorHover: Int? = nil  // color swatch under the cursor in the New-project sheet
 
     // New project folder sheet
     @State private var showNewProjectSheet: Bool = false
@@ -11311,10 +11312,19 @@ extension ContentView {
         showV3AddDest = true
     }
 
+    /// Today's date in the Settings ▸ Naming "folder date format", as a project-name PREFIX ending in
+    /// "_" (e.g. "260730_"). Maps the shell strftime tokens to DateFormatter patterns.
+    private func v3TodayProjectPrefix() -> String {
+        let map = ["%y%m%d": "yyMMdd", "%Y%m%d": "yyyyMMdd",
+                   "%Y-%m-%d": "yyyy-MM-dd", "%y.%m.%d": "yy.MM.dd", "%A": "EEEE"]
+        let fmt = DateFormatter(); fmt.dateFormat = map[dateFolderFormat] ?? "yyMMdd"
+        return fmt.string(from: Date()) + "_"
+    }
+
     private func v3OpenNewProject() {
-        let fmt = DateFormatter(); fmt.dateFormat = "yyMMdd"
-        v3ProjName = projectName.trimmingCharacters(in: .whitespaces).isEmpty
-            ? "\(fmt.string(from: Date()))_" : projectName
+        // Always prefill with JUST today's date + "_" (in the settings format) — never the last
+        // project name — so the operator types only the shoot name after the underscore.
+        v3ProjName = v3TodayProjectPrefix()
         v3ProjColorIndex = v3TagColors.firstIndex { $0.name == finderTagColor && finderTagEnabled } ?? 4
         v3ProjScaffoldOn = Dictionary(uniqueKeysWithValues: scaffoldFolderList.map { ($0, true) })
         // Default the new folder to the SSD/drive ROOT of the default destination (e.g. a "Brooks PR"
@@ -11660,6 +11670,27 @@ extension ContentView {
                 let url = URL(fileURLWithPath: root)
                 try? (url as NSURL).setResourceValue([v3TagColors[v3ProjColorIndex].tag], forKey: .tagNamesKey)
             }
+            // Register the new project as a routing DESTINATION and make it the default, so cards
+            // route into it. A drive-root parent → an SSD destination (footage lands in <name>/clips/…,
+            // matching the normal SSD model); a custom parent → a custom-folder destination pointing
+            // straight at the created folder. Reuse an existing destination for the same leaf instead
+            // of duplicating. v3MakeDefault is runningCount-gated, so this never re-routes an in-flight
+            // card — it only sets where the NEXT card goes.
+            let isDriveRoot = base.hasPrefix("/Volumes/") && v3VolumeRoot(of: base) == base
+            let newDest: Destination = isDriveRoot
+                ? Destination(path: base, name: deriveDestName(fromProject: name), isCustomFolder: false,
+                              projectFolder: name, subfolder: "Default")
+                : Destination(path: root, name: deriveDestName(fromProject: name), isCustomFolder: true)
+            if let existing = destinations.first(where: { d in
+                isDriveRoot ? (!d.isCustomFolder && d.path == base && d.projectFolder == name)
+                            : (d.isCustomFolder && d.path == root) }) {
+                v3MakeDefault(existing.id)
+            } else {
+                destinations.append(newDest)
+                v3MakeDefault(newDest.id)
+            }
+            saveDestinations()
+            refreshFreeSpaceCache()
         }
         showV3NewProject = false
     }
@@ -11837,13 +11868,28 @@ extension ContentView {
             v3SheetLabel("FOLDER COLOR")
             HStack(spacing: 10) {
                 ForEach(Array(v3TagColors.enumerated()), id: \.offset) { i, c in
+                    let isSel = v3ProjColorIndex == i
+                    let isHov = v3ProjColorHover == i
                     ZStack {
                         Circle().fill(i == 0 ? AnyShapeStyle(.white.opacity(0.06)) : AnyShapeStyle(c.color))
                             .frame(width: 30, height: 30)
-                        if i == 0 { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.5)) }
+                        if i == 0 {
+                            Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+                        } else if isSel {
+                            // Small checkmark marks the chosen color.
+                            Image(systemName: "checkmark").font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white).shadow(color: .black.opacity(0.35), radius: 1)
+                        }
                     }
-                    .overlay(Circle().strokeBorder(.white, lineWidth: v3ProjColorIndex == i ? 2 : 0))
-                    .contentShape(Circle()).onTapGesture { v3ProjColorIndex = i }
+                    .overlay(Circle().strokeBorder(.white, lineWidth: isSel ? 2 : 0))
+                    // Hover: grow + glow in the swatch's own color (before selection).
+                    .scaleEffect(isHov ? 1.24 : (isSel ? 1.08 : 1.0))
+                    .shadow(color: (i == 0 ? Color.white : c.color).opacity(isHov ? 0.75 : 0), radius: isHov ? 9 : 0)
+                    .animation(v3Anim(.spring(response: 0.28, dampingFraction: 0.6)), value: isHov)
+                    .animation(v3Anim(.spring(response: 0.3, dampingFraction: 0.65)), value: v3ProjColorIndex)
+                    .contentShape(Circle())
+                    .onHover { v3ProjColorHover = $0 ? i : (v3ProjColorHover == i ? nil : v3ProjColorHover) }
+                    .onTapGesture { v3ProjColorIndex = i }
                 }
             }
             HStack(spacing: 6) {
@@ -13933,6 +13979,13 @@ extension ContentView {
         .shadow(color: v3Amber.opacity(v3DefaultPop ? 0.9 : 0), radius: v3DefaultPop ? 28 : 0)
         .scaleEffect(v3DefaultPop ? 1.05 : 1.0)
         .animation(.spring(response: 0.26, dampingFraction: 0.45), value: v3DefaultPop)
+        // Blue hover illumination — same "this is interactive" cue as the source card-name field.
+        // Suppressed while this tile is a drag-over drop target (already cyan) so cues don't stack.
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(
+            v3Cyan.opacity(v3HoveredDestID == d.id && dragOverDest != d.id ? 0.55 : 0), lineWidth: 1.5))
+        .shadow(color: v3Cyan.opacity(v3HoveredDestID == d.id && dragOverDest != d.id ? 0.28 : 0),
+                radius: v3HoveredDestID == d.id && dragOverDest != d.id ? 8 : 0)
+        .animation(v3Anim(.easeInOut(duration: 0.14)), value: v3HoveredDestID)
         // Hover bounce — applied after the anchor/destFrames reads so geometry stays un-scaled.
         .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
@@ -13954,6 +14007,13 @@ extension ContentView {
                     .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
                     .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
             })
+            // Blue hover illumination — matches the source card-name field's hover cue. Suppressed
+            // while dragging or when this tile is a drag-over drop target (already cyan).
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
+                v3Cyan.opacity(v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 0.55 : 0), lineWidth: 1.5))
+            .shadow(color: v3Cyan.opacity(v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 0.28 : 0),
+                    radius: v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 8 : 0)
+            .animation(v3Anim(.easeInOut(duration: 0.14)), value: v3HoveredDestID)
             // Hover bounce (subtle) signals the tile is clickable — suppressed while ANY tile is being
             // dragged (so tiles sliding under the cursor during a reorder don't flicker their bounce).
             // Applied AFTER the anchor/destFrames reads above so routing-line geometry + drop hit-testing
