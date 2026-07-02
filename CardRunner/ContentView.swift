@@ -6745,6 +6745,7 @@ struct ContentView: View {
         activeIngests[processID]?.destinationID = (destination ?? defaultDestination)?.id
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
+        activeIngests[processID]?.mirrorCount = mirrorPaths.count   // N-way mirror targets, for the done-tile confirmation
 
         // Clear stale summary card
         lastNewFiles        = 0
@@ -13985,6 +13986,15 @@ extension ContentView {
                      ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
                      : String(format: "%.0f MB/s", max(0, ing.liveMBps)))
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                // Low-headroom heads-up — the destination is cutting it close (< 1.2× needed). The
+                // hard pre-flight abort already blocks a too-full drive; this is the early soft signal.
+                if ing.lowDiskWarning {
+                    HStack(spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundStyle(v3Amber)
+                        Text("Destination nearly full — \(String(format: "%.0f", ing.destFreeGB)) GB free")
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(v3Amber)
+                    }
+                }
             }
         case .finalizing:
             HStack(spacing: 7) { ProgressView().controlSize(.small)
@@ -14015,6 +14025,12 @@ extension ContentView {
                 // just an assertion; the reconciliation is what earns trust).
                 Text(v3DoneSummary(ing))
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.55))
+                // Mirror confirmation — a .done card means EVERY target landed (a mirror failure would
+                // have tripped PHASE failed), so the operator can see the redundant copies are all there.
+                if ing.mirrorCount > 0 {
+                    Text("→ primary + \(ing.mirrorCount) mirror\(ing.mirrorCount == 1 ? "" : "s")  ✓ all landed")
+                        .font(.system(size: 10)).foregroundStyle(v3Green.opacity(0.85))
+                }
                 if !ing.collisionRenames.isEmpty {
                     Text("\(ing.collisionRenames.count) file\(ing.collisionRenames.count == 1 ? "" : "s") auto-renamed to avoid overwriting a same-name clip")
                         .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.9)).fixedSize(horizontal: false, vertical: true)

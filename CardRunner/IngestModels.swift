@@ -398,6 +398,7 @@ struct ActiveIngest {
     var durationSec: Int = 0
     var destPath: String = ""
     var verified: Bool = false       // true once a successful copy has been checksum-verified (verifyTransfer on)
+    var mirrorCount: Int = 0         // # of --secondary mirror targets; a .done card means ALL of them landed (a mirror fail → PHASE failed)
 
     // Full-verify progress (populated by VERIFY_PROGRESS)
     var verifyTotal: Int = 0
