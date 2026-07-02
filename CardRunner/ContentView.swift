@@ -13224,6 +13224,10 @@ extension ContentView {
                 }
             }
             Spacer(minLength: 0)
+            // Top-bias: lift the centered group so the cards align with the RING, which itself sits
+            // a little above stage-center because the auto-ingest pill hangs below it in the middle
+            // column. Fixed nudge (≈half of this) toward the top. One number — tune to taste.
+            Color.clear.frame(height: 170)
         }
     }
 
@@ -13825,6 +13829,7 @@ extension ContentView {
             }
             v3AddDestinationMenu
             Spacer(minLength: 0)
+            Color.clear.frame(height: 170)   // match v3Sources top-bias so both columns align with the ring
         }
         // Reset net: a make-default drag resets its transform only in .onEnded, but that may never
         // arrive if a transfer starts mid-drag (the gesture is runningCount-gated off) or the list
