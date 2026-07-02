@@ -980,10 +980,10 @@ private struct AnimationPreviewWidget: View {
             // ── Label + description + button ───────────────────────────────
             VStack(alignment: .leading, spacing: 6) {
                 Text(animationType.label)
-                    .font(.custom("DM Sans", size: 12).weight(.semibold))
+                    .font(.system(size:12).weight(.semibold))
                     .foregroundStyle(useLightMode ? Color(hex: "#0F1923") : .white)
                 Text(animationType.previewDescription)
-                    .font(.custom("DM Sans", size: 10))
+                    .font(.system(size:10))
                     .foregroundStyle(Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -993,7 +993,7 @@ private struct AnimationPreviewWidget: View {
                             Image(systemName: previewing ? "stop.circle" : "play.circle.fill")
                                 .font(.system(size: 11))
                             Text(previewing ? "Playing…" : "▶  Preview")
-                                .font(.custom("DM Sans", size: 11).weight(.medium))
+                                .font(.system(size:11).weight(.medium))
                         }
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(
@@ -1225,13 +1225,18 @@ struct V3HoverModifier: ViewModifier {
     var brighten: Bool
     var enabled: Bool
     @State private var hovering = false
+    // Reduce Motion: suppress the tactile SCALE bounce (the motion part) and swap the spring for a
+    // quick ease. Brightness + glow are opacity, not motion, so they stay — the control still reads
+    // as reacting, it just doesn't move. (UI-future.md: respect Reduce Motion.)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var active: Bool { hovering && enabled }
     func body(content: Content) -> some View {
         content
             .brightness(active && brighten ? 0.06 : 0)
-            .scaleEffect(active ? scale : 1)
+            .scaleEffect(active && !reduceMotion ? scale : 1)
             .shadow(color: (glow ?? .clear).opacity(active ? 0.5 : 0), radius: 12)
-            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: active)
+            .animation(reduceMotion ? .easeInOut(duration: 0.12)
+                                    : .spring(response: 0.3, dampingFraction: 0.65), value: active)
             .onHover { hovering = $0 }
     }
 }
@@ -1484,6 +1489,19 @@ enum V3SettingsCat: String, CaseIterable, Identifiable {
 // MARK: - Main View
 
 struct ContentView: View {
+
+    // Accessibility: honor the system "Reduce Motion" setting across the v3 UI. Decorative springs
+    // (module open/close, settings swoosh, tile pops, banner slides) route through `v3Anim(_:)` so
+    // they collapse to a quick cross-fade — the load-bearing status (ring %, funnel) is already calm.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Wrap a decorative animation so it degrades under Reduce Motion. Returns a fast ease (a gentle
+    /// cross-fade, no bounce/scale travel) when the setting is on, else the supplied animation.
+    private func v3Anim(_ a: Animation) -> Animation { reduceMotion ? .easeInOut(duration: 0.12) : a }
+    /// Module (settings / add / edit / history / log) enter-exit. Scale-in normally; plain
+    /// cross-fade (no scale travel) under Reduce Motion.
+    private var v3ModuleTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97, anchor: .center))
+    }
 
     // Theme base — mode-aware so icons/buttons stay readable in both modes
     private var accentBlue:   Color { useLightMode ? Color(hex: "#2472A4") : Color(hex: "#3DC8F5") }
@@ -1879,6 +1897,7 @@ struct ContentView: View {
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
+    @State private var v3LogAtBottom: Bool = true     // Activity-log: is the live tail on-screen? (drives follow + jump-to-tail)
     @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…)
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
@@ -2533,7 +2552,7 @@ struct ContentView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Color(hex: "#F59E0B"))
                 Text("Interrupted Transfer")
-                    .font(.custom("DM Sans", size: 16).weight(.bold))
+                    .font(.system(size:16).weight(.bold))
                     .foregroundStyle(textPrimary)
                 Spacer()
                 Button {
@@ -2591,7 +2610,7 @@ struct ContentView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(accentBlue)
                 Text("Choose dates to ingest")
-                    .font(.custom("DM Sans", size: 16).weight(.bold))
+                    .font(.system(size:16).weight(.bold))
                     .foregroundStyle(textPrimary)
                 Spacer()
                 Button {
@@ -2617,10 +2636,10 @@ struct ContentView: View {
                         .scaleEffect(1.2)
                         .tint(accentBlue)
                     Text("Scanning card for dates…")
-                        .font(.custom("DM Sans", size: 13).weight(.semibold))
+                        .font(.system(size:13).weight(.semibold))
                         .foregroundStyle(textPrimary)
                     Text("The card was already mounted. This usually takes a few seconds.")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .foregroundStyle(textMuted)
                         .multilineTextAlignment(.center)
                 }
@@ -2634,17 +2653,17 @@ struct ContentView: View {
                         .font(.system(size: 28))
                         .foregroundStyle(Color(hex: "#F59E0B"))
                     Text("Couldn't read dates from this card.")
-                        .font(.custom("DM Sans", size: 13).weight(.semibold))
+                        .font(.system(size:13).weight(.semibold))
                         .foregroundStyle(textPrimary)
                     Text("The card may still be initialising. Try scanning again, or tap \u{201C}Ingest all\u{201D} to copy everything.")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .foregroundStyle(textMuted)
                         .multilineTextAlignment(.center)
                     Button {
                         retryDateScan()
                     } label: {
                         Label("Scan again", systemImage: "arrow.clockwise")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(accentBlue)
                     }
                     .buttonStyle(.plain)
@@ -2657,7 +2676,7 @@ struct ContentView: View {
                 // ── Select all / deselect all ─────────────────────────────────
                 HStack {
                     Text(allSelected ? "Deselect all" : "Select all")
-                        .font(.custom("DM Sans", size: 11).weight(.medium))
+                        .font(.system(size:11).weight(.medium))
                         .foregroundStyle(accentBlue)
                         .onTapGesture {
                             if allSelected {
@@ -2668,7 +2687,7 @@ struct ContentView: View {
                         }
                     Spacer()
                     Text("\(datePickerDates.count) date\(datePickerDates.count == 1 ? "" : "s") found")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .foregroundStyle(textMuted)
                 }
                 .padding(.horizontal, 24)
@@ -2698,11 +2717,11 @@ struct ContentView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
                                             Text(info.displayDate)
-                                                .font(.custom("DM Sans", size: 13).weight(.semibold))
+                                                .font(.system(size:13).weight(.semibold))
                                                 .foregroundStyle(textPrimary)
                                             if info.isToday {
                                                 Text("today")
-                                                    .font(.custom("DM Sans", size: 10).weight(.medium))
+                                                    .font(.system(size:10).weight(.medium))
                                                     .foregroundStyle(accentBlue)
                                                     .padding(.horizontal, 6)
                                                     .padding(.vertical, 2)
@@ -2710,7 +2729,7 @@ struct ContentView: View {
                                             }
                                         }
                                         Text("\(info.fileCount) file\(info.fileCount == 1 ? "" : "s") · \(info.displaySize)")
-                                            .font(.custom("DM Sans", size: 11))
+                                            .font(.system(size:11))
                                             .foregroundStyle(textMuted)
                                     }
 
@@ -2739,7 +2758,7 @@ struct ContentView: View {
                     datePickerCards = []; datePickerDates = []; datePickerSelected = []
                 }
                 .buttonStyle(.plain)
-                .font(.custom("DM Sans", size: 13).weight(.medium))
+                .font(.system(size:13).weight(.medium))
                 .foregroundStyle(textMuted)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -2778,7 +2797,7 @@ struct ContentView: View {
                         Image(systemName: "arrow.down.circle.fill")
                         Text(label)
                     }
-                    .font(.custom("DM Sans", size: 13).weight(.semibold))
+                    .font(.system(size:13).weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 8)
@@ -2811,10 +2830,10 @@ struct ContentView: View {
                     .foregroundStyle(Color(hex: "#F59E0B"))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Wrong camera clock detected")
-                        .font(.custom("DM Sans", size: 15).weight(.bold))
+                        .font(.system(size:15).weight(.bold))
                         .foregroundStyle(textPrimary)
                     Text("Select which reels to ingest — files will land in today's folder")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .foregroundStyle(textMuted)
                 }
                 Spacer()
@@ -2837,7 +2856,7 @@ struct ContentView: View {
             HStack {
                 let allReelsSel = reelPickerReels.allSatisfy { reelPickerSelected.contains($0.folderName) }
                 Text(allReelsSel ? "Deselect all" : "Select all")
-                    .font(.custom("DM Sans", size: 11).weight(.medium))
+                    .font(.system(size:11).weight(.medium))
                     .foregroundStyle(accentBlue)
                     .onTapGesture {
                         if allReelsSel {
@@ -2848,7 +2867,7 @@ struct ContentView: View {
                     }
                 Spacer()
                 Text("\(reelPickerReels.count) reel\(reelPickerReels.count == 1 ? "" : "s") found")
-                    .font(.custom("DM Sans", size: 11))
+                    .font(.system(size:11))
                     .foregroundStyle(textMuted)
             }
             .padding(.horizontal, 24)
@@ -2875,10 +2894,10 @@ struct ContentView: View {
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(reel.folderName)
-                                        .font(.custom("DM Sans", size: 13).weight(.semibold))
+                                        .font(.system(size:13).weight(.semibold))
                                         .foregroundStyle(textPrimary)
                                     Text("\(reel.fileCount) file\(reel.fileCount == 1 ? "" : "s") · \(reel.displaySize)")
-                                        .font(.custom("DM Sans", size: 11))
+                                        .font(.system(size:11))
                                         .foregroundStyle(textMuted)
                                 }
 
@@ -2905,7 +2924,7 @@ struct ContentView: View {
                     reelPickerCard = nil; reelPickerReels = []; reelPickerSelected = []
                 }
                 .buttonStyle(.plain)
-                .font(.custom("DM Sans", size: 13).weight(.medium))
+                .font(.system(size:13).weight(.medium))
                 .foregroundStyle(textMuted)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -2927,7 +2946,7 @@ struct ContentView: View {
                         Image(systemName: "arrow.down.circle.fill")
                         Text("Ingest \(reelPickerSelected.count) reel\(reelPickerSelected.count == 1 ? "" : "s")")
                     }
-                    .font(.custom("DM Sans", size: 13).weight(.semibold))
+                    .font(.system(size:13).weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 8)
@@ -2995,11 +3014,11 @@ struct ContentView: View {
                     // Name
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Preset Name")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
                         TextField("e.g. Run & Gun, Studio, B-cam", text: draft.name)
                             .textFieldStyle(.roundedBorder)
-                            .font(.custom("DM Sans", size: 13))
+                            .font(.system(size:13))
                         if isDuplicate {
                             Label("A preset with this name already exists.", systemImage: "exclamationmark.circle")
                                 .font(.caption2).foregroundStyle(.orange)
@@ -3011,14 +3030,14 @@ struct ContentView: View {
                     // Import mode
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Import Mode")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
                         HStack(spacing: 8) {
                             ForEach([("Video", "video"), ("Photo", "photo")], id: \.1) { label, val in
                                 let sel = presetEditorDraft.importMode == val
                                 Button { draft.importMode.wrappedValue = val } label: {
                                     Text(label)
-                                        .font(.custom("DM Sans", size: 12).weight(.medium))
+                                        .font(.system(size:12).weight(.medium))
                                         .padding(.horizontal, 14).padding(.vertical, 6)
                                         .background(RoundedRectangle(cornerRadius: 8)
                                             .fill(sel ? Color.accentColor.opacity(0.25) : Color.white.opacity(0.06))
@@ -3037,7 +3056,7 @@ struct ContentView: View {
                     // Ingest order
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Ingest Order")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
                         Text("Newest first lets editors start on the latest footage immediately.")
                             .font(.caption).foregroundColor(.secondary)
@@ -3046,7 +3065,7 @@ struct ContentView: View {
                                 let sel = presetEditorDraft.ingestOrder == val
                                 Button { draft.ingestOrder.wrappedValue = val } label: {
                                     Text(label)
-                                        .font(.custom("DM Sans", size: 12).weight(.medium))
+                                        .font(.system(size:12).weight(.medium))
                                         .padding(.horizontal, 14).padding(.vertical, 6)
                                         .background(RoundedRectangle(cornerRadius: 8)
                                             .fill(sel ? Color.accentColor.opacity(0.25) : Color.white.opacity(0.06))
@@ -3065,7 +3084,7 @@ struct ContentView: View {
                     // Date format
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Date Folder Format")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                             ForEach(dateFormats, id: \.format) { option in
@@ -3074,7 +3093,7 @@ struct ContentView: View {
                                 let stroke: Color = sel ? Color.accentColor.opacity(0.7) : borderStroke.opacity(0.5)
                                 Button { draft.dateFolderFormat.wrappedValue = option.format } label: {
                                     Text(option.label)
-                                        .font(.custom("DM Sans", size: 11).weight(.medium))
+                                        .font(.system(size:11).weight(.medium))
                                         .lineLimit(1).minimumScaleFactor(0.85)
                                         .frame(maxWidth: .infinity)
                                         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -3096,7 +3115,7 @@ struct ContentView: View {
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(accentPurple.opacity(0.85))
                             Text("Destination")
-                                .font(.custom("DM Sans", size: 12).weight(.semibold))
+                                .font(.system(size:12).weight(.semibold))
                                 .foregroundStyle(textPrimary.opacity(0.7))
                             InfoPopover("By default presets use your selected SSD + project folder. Enable Custom Folder to lock this preset to a specific path on your Mac (Desktop, NAS, any folder). The date-folder structure is still created inside that folder.")
                         }
@@ -3107,7 +3126,7 @@ struct ContentView: View {
                                 let selected = draft.useCustomDest.wrappedValue == isCustom
                                 Button { draft.useCustomDest.wrappedValue = isCustom } label: {
                                     Text(label)
-                                        .font(.custom("DM Sans", size: 11).weight(.medium))
+                                        .font(.system(size:11).weight(.medium))
                                         .lineLimit(1)
                                         .padding(.horizontal, 10).padding(.vertical, 5)
                                         .frame(maxWidth: .infinity)
@@ -3131,11 +3150,11 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     if draft.customDestPath.wrappedValue.isEmpty {
                                         Text("No folder chosen")
-                                            .font(.custom("DM Sans", size: 11))
+                                            .font(.system(size:11))
                                             .foregroundStyle(textMuted)
                                     } else {
                                         Text(URL(fileURLWithPath: draft.customDestPath.wrappedValue).lastPathComponent)
-                                            .font(.custom("DM Sans", size: 11).weight(.semibold))
+                                            .font(.system(size:11).weight(.semibold))
                                             .foregroundStyle(textPrimary)
                                             .lineLimit(1)
                                         Text(draft.customDestPath.wrappedValue)
@@ -3168,7 +3187,7 @@ struct ContentView: View {
                                     }
                                 } label: {
                                     Text(draft.customDestPath.wrappedValue.isEmpty ? "Choose…" : "Change…")
-                                        .font(.custom("DM Sans", size: 11).weight(.medium))
+                                        .font(.system(size:11).weight(.medium))
                                         .padding(.horizontal, 10).padding(.vertical, 4)
                                         .background(Capsule()
                                             .fill(accentViolet.opacity(0.15))
@@ -3191,7 +3210,7 @@ struct ContentView: View {
                     // Transfer options
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Transfer Options")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
 
                         // Today only toggle
@@ -3202,12 +3221,12 @@ struct ContentView: View {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Today only")
-                                    .font(.custom("DM Sans", size: 11).weight(.medium))
+                                    .font(.system(size:11).weight(.medium))
                                     .foregroundStyle(textPrimary)
                                 Text(draft.dateFilterMode.wrappedValue == "today"
                                      ? "Only today's files are ingested."
                                      : "All files ingested — confirm before start.")
-                                    .font(.custom("DM Sans", size: 9))
+                                    .font(.system(size:9))
                                     .foregroundStyle(textMuted)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -3226,7 +3245,7 @@ struct ContentView: View {
                                     .foregroundStyle(accentBlue.opacity(0.7))
                                 TextField("e.g. Steadicam, Drone, B-Cam  (leave empty to omit)", text: draft.customCardName)
                                     .textFieldStyle(.plain)
-                                    .font(.custom("DM Sans", size: 11))
+                                    .font(.system(size:11))
                                     .foregroundStyle(textPrimary)
                                 if !presetEditorDraft.customCardName.isEmpty {
                                     Button {
@@ -3268,7 +3287,7 @@ struct ContentView: View {
                     // Pro Tools
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Pro Tools")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                             .foregroundStyle(textPrimary.opacity(0.7))
 
                         presetToggleRow("Dual-destination backup", "externaldrive.fill", binding: draft.dualDestEnabled,
@@ -3348,7 +3367,7 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(accentBlue)
                             Text("Project Scaffold")
-                                .font(.custom("DM Sans", size: 12).weight(.semibold))
+                                .font(.system(size:12).weight(.semibold))
                                 .foregroundStyle(textPrimary.opacity(0.7))
                             InfoPopover("Folders automatically created in each project when this preset is active. Leave blank to use the global default set in Advanced settings.")
                             Spacer()
@@ -3372,7 +3391,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
                                     Text(isUsingGlobal ? "Using global default" : "Custom folders for this preset")
-                                        .font(.custom("DM Sans", size: 10))
+                                        .font(.system(size:10))
                                         .foregroundStyle(textMuted)
                                     Spacer()
                                     if !isUsingGlobal {
@@ -3380,7 +3399,7 @@ struct ContentView: View {
                                             draft.scaffoldFolders.wrappedValue = ""
                                             presetNewScaffoldFolder = ""
                                         }
-                                        .font(.custom("DM Sans", size: 10))
+                                        .font(.system(size:10))
                                         .foregroundStyle(textMuted)
                                         .buttonStyle(.plain)
                                     }
@@ -3398,7 +3417,7 @@ struct ContentView: View {
                                                 // Edit mode: single field with full path (e.g. "Footage/A-Camera")
                                                 TextField("", text: $editingPresetScaffoldText)
                                                     .textFieldStyle(.plain)
-                                                    .font(.custom("DM Sans", size: 11))
+                                                    .font(.system(size:11))
                                                     .foregroundStyle(textPrimary)
                                                     .onSubmit {
                                                         let trimmed = editingPresetScaffoldText.trimmingCharacters(in: .whitespaces)
@@ -3416,7 +3435,7 @@ struct ContentView: View {
                                                     }
                                                     editingPresetScaffoldIndex = nil
                                                 }
-                                                .font(.custom("DM Sans", size: 10).weight(.semibold))
+                                                .font(.system(size:10).weight(.semibold))
                                                 .foregroundStyle(accentBlue)
                                                 .buttonStyle(.plain)
                                             } else {
@@ -3424,11 +3443,11 @@ struct ContentView: View {
                                                 let parts = presetFolders[i].components(separatedBy: "/")
                                                 HStack(spacing: 2) {
                                                     Text(parts[0])
-                                                        .font(.custom("DM Sans", size: 11))
+                                                        .font(.system(size:11))
                                                         .foregroundStyle(textPrimary)
                                                     if parts.count > 1 {
                                                         Text("/ \(parts[1...].joined(separator: "/"))")
-                                                            .font(.custom("DM Sans", size: 11))
+                                                            .font(.system(size:11))
                                                             .foregroundStyle(textMuted)
                                                     }
                                                 }
@@ -3475,7 +3494,7 @@ struct ContentView: View {
                                             .foregroundStyle(accentBlue)
                                         TextField("Folder", text: $presetNewScaffoldFolder)
                                             .textFieldStyle(.plain)
-                                            .font(.custom("DM Sans", size: 11))
+                                            .font(.system(size:11))
                                             .foregroundStyle(textPrimary)
                                             .onSubmit {
                                                 var t = presetNewScaffoldFolder.trimmingCharacters(in: .whitespaces)
@@ -3487,11 +3506,11 @@ struct ContentView: View {
                                                 presetNewScaffoldSubfolder = ""
                                             }
                                         Text("/")
-                                            .font(.custom("DM Sans", size: 11))
+                                            .font(.system(size:11))
                                             .foregroundStyle(textMuted.opacity(presetNewScaffoldFolder.isEmpty ? 0.35 : 0.7))
                                         TextField("subfolder (opt.)", text: $presetNewScaffoldSubfolder)
                                             .textFieldStyle(.plain)
-                                            .font(.custom("DM Sans", size: 11))
+                                            .font(.system(size:11))
                                             .foregroundStyle(textPrimary)
                                             .onSubmit {
                                                 var t = presetNewScaffoldFolder.trimmingCharacters(in: .whitespaces)
@@ -3513,7 +3532,7 @@ struct ContentView: View {
                                                 presetNewScaffoldFolder    = ""
                                                 presetNewScaffoldSubfolder = ""
                                             }
-                                            .font(.custom("DM Sans", size: 10).weight(.medium))
+                                            .font(.system(size:10).weight(.medium))
                                             .foregroundStyle(accentBlue)
                                             .buttonStyle(.plain)
                                         }
@@ -3562,7 +3581,7 @@ struct ContentView: View {
                                   info: String? = nil, onColor: Color = CardRunnerTheme.neonBlue) -> some View {
         HStack(spacing: 6) {
             Label(label, systemImage: icon)
-                .font(.custom("DM Sans", size: 12))
+                .font(.system(size:12))
                 .foregroundStyle(textPrimary)
             if let info { InfoPopover(info) }
             Spacer()
@@ -3866,7 +3885,7 @@ struct ContentView: View {
                         Image(systemName: "envelope.fill")
                             .font(.caption)
                         Text("Email Support")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
@@ -3891,7 +3910,7 @@ struct ContentView: View {
                         Image(systemName: "doc.on.clipboard.fill")
                             .font(.caption)
                         Text("Copy Bundle")
-                            .font(.custom("DM Sans", size: 12).weight(.semibold))
+                            .font(.system(size:12).weight(.semibold))
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
@@ -3930,11 +3949,11 @@ struct ContentView: View {
                 }
 
                 Text("CardRunner")
-                    .font(.custom("DM Sans", size: 20).bold())
+                    .font(.system(size:20).bold())
                     .foregroundStyle(.white)
 
                 Text("A smoother ingest workflow for creators")
-                    .font(.custom("DM Sans", size: 11))
+                    .font(.system(size:11))
                     .foregroundStyle(Color.white.opacity(0.45))
             }
 
@@ -3946,14 +3965,14 @@ struct ContentView: View {
                 // Version + update button
                 VStack(spacing: 8) {
                     Text("CardRunner \(shortVersion)")
-                        .font(.custom("DM Sans", size: 13).weight(.medium))
+                        .font(.system(size:13).weight(.medium))
                         .foregroundStyle(Color.white.opacity(0.7))
 
                     Button {
                         (NSApp.delegate as? AppDelegate)?.updaterController.checkForUpdates(nil)
                     } label: {
                         Text("Check for Updates")
-                            .font(.custom("DM Sans", size: 12).weight(.medium))
+                            .font(.system(size:12).weight(.medium))
                             .foregroundStyle(Color.white.opacity(0.8))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 6)
@@ -3980,12 +3999,12 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.green)
                             Text("Licensed")
-                                .font(.custom("DM Sans", size: 12).weight(.semibold))
+                                .font(.system(size:12).weight(.semibold))
                                 .foregroundStyle(Color.white.opacity(0.85))
                         }
                         if let email = license.customerEmail {
                             Text("Registered to: \(email)")
-                                .font(.custom("DM Sans", size: 11))
+                                .font(.system(size:11))
                                 .foregroundStyle(Color.white.opacity(0.45))
                         }
                         Text(license.maskedKey())
@@ -3994,14 +4013,14 @@ struct ContentView: View {
 
                         if case .grace(let days) = license.status {
                             Text("Offline — \(days) day\(days == 1 ? "" : "s") remaining")
-                                .font(.custom("DM Sans", size: 10))
+                                .font(.system(size:10))
                                 .foregroundStyle(.orange.opacity(0.85))
                         }
 
                         Button("Deactivate on this Mac") {
                             showDeactivateConfirm = true
                         }
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.white.opacity(0.35))
                         .padding(.top, 1)
@@ -4014,14 +4033,14 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.orange)
                             Text("Not activated")
-                                .font(.custom("DM Sans", size: 12).weight(.semibold))
+                                .font(.system(size:12).weight(.semibold))
                                 .foregroundStyle(Color.white.opacity(0.6))
                         }
                         Button {
                             withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = false }
                         } label: {
                             Text("Enter license key…")
-                                .font(.custom("DM Sans", size: 11).weight(.medium))
+                                .font(.system(size:11).weight(.medium))
                                 .foregroundStyle(accentBlue)
                         }
                         .buttonStyle(.plain)
@@ -4037,7 +4056,7 @@ struct ContentView: View {
                         NSWorkspace.shared.open(URL(string: "https://www.xaviergallo.com/cardrunner")!)
                     } label: {
                         Text("xaviergallo.com/cardrunner")
-                            .font(.custom("DM Sans", size: 12).weight(.medium))
+                            .font(.system(size:12).weight(.medium))
                             .foregroundStyle(accentBlue)
                     }
                     .buttonStyle(.plain)
@@ -4048,20 +4067,20 @@ struct ContentView: View {
                             NSWorkspace.shared.open(URL(string: "https://www.xaviergallo.com/cardrunner-license")!)
                         } label: {
                             Text("License Terms")
-                                .font(.custom("DM Sans", size: 12).weight(.medium))
+                                .font(.system(size:12).weight(.medium))
                                 .foregroundStyle(accentBlue)
                         }
                         .buttonStyle(.plain)
 
                         Text("·")
-                            .font(.custom("DM Sans", size: 12))
+                            .font(.system(size:12))
                             .foregroundStyle(Color.white.opacity(0.25))
 
                         Button {
                             NSWorkspace.shared.open(URL(string: "https://www.xaviergallo.com/cardrunner-privacy-policy")!)
                         } label: {
                             Text("Privacy Policy")
-                                .font(.custom("DM Sans", size: 12).weight(.medium))
+                                .font(.system(size:12).weight(.medium))
                                 .foregroundStyle(accentBlue)
                         }
                         .buttonStyle(.plain)
@@ -4073,7 +4092,7 @@ struct ContentView: View {
 
                 // Copyright
                 Text("© 2025–2026 Xavier Gallo / XG Creative LLC")
-                    .font(.custom("DM Sans", size: 11))
+                    .font(.system(size:11))
                     .foregroundStyle(Color.white.opacity(0.3))
                     .padding(.vertical, 9)
             }
@@ -4172,10 +4191,10 @@ struct ContentView: View {
                         .font(.system(size: 28))
                         .foregroundStyle(textMuted.opacity(0.5))
                     Text("No presets yet")
-                        .font(.custom("DM Sans", size: 13).weight(.medium))
+                        .font(.system(size:13).weight(.medium))
                         .foregroundStyle(textMuted)
                     Text("Tap \"New Preset…\" to create one — you can customize all options right in the editor.")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                         .foregroundStyle(textMuted.opacity(0.8))
                         .multilineTextAlignment(.center)
                 }
@@ -4206,7 +4225,7 @@ struct ContentView: View {
                     atLimit ? "6 preset limit reached" : "New Preset…",
                     systemImage: atLimit ? "lock.circle" : "plus.circle"
                 )
-                .font(.custom("DM Sans", size: 11))
+                .font(.system(size:11))
                 .foregroundStyle(atLimit ? textMuted.opacity(0.5) : accentBlue)
             }
             .buttonStyle(.plain)
@@ -4232,7 +4251,7 @@ struct ContentView: View {
                     applyPreset(preset.wrappedValue)
                 } label: {
                     Text(preset.wrappedValue.name)
-                        .font(.custom("DM Sans", size: 12).weight(.medium))
+                        .font(.system(size:12).weight(.medium))
                         .foregroundStyle(isActive ? accentBlue : textPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -4246,7 +4265,7 @@ struct ContentView: View {
                         applyPreset(preset.wrappedValue)
                     } label: {
                         Text(isActive ? "Active" : "Apply")
-                            .font(.custom("DM Sans", size: 10).weight(.medium))
+                            .font(.system(size:10).weight(.medium))
                             .foregroundStyle(isActive ? accentBlue : textMuted)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
@@ -4354,7 +4373,7 @@ struct ContentView: View {
             Image(systemName: icon)
                 .font(.system(size: 9))
             Text(label)
-                .font(.custom("DM Sans", size: 10))
+                .font(.system(size:10))
         }
         .foregroundStyle(textMuted)
         .padding(.horizontal, 7)
@@ -8259,9 +8278,9 @@ private struct WelcomeCelebrationView: View {
                 .opacity(bgOpacity)
                 .animation(.easeInOut(duration: 0.5), value: bgOpacity)
 
-                // ── "hello." — DM Sans italic, write-on left-to-right ────────
+                // ── "hello." — SF italic, write-on left-to-right ────────
                 Text("hello.")
-                    .font(.custom("DM Sans", size: 82).italic())
+                    .font(.system(size:82).italic())
                     .foregroundStyle(
                         LinearGradient(
                             colors: [.white, Color(hex: "#c8e8ff")],
@@ -8879,7 +8898,7 @@ private struct OnboardingView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Color(hex: "#0eb0e9").opacity(0.70))
                         .padding(.top, 1)
-                    Text("Your footage will land in a date folder — e.g. \(Text("`\(exampleDate)`").font(.custom("DM Mono", size: 11)).foregroundStyle(Color(hex: "#0eb0e9").opacity(0.85))). The format is customizable in Settings.")
+                    Text("Your footage will land in a date folder — e.g. \(Text("`\(exampleDate)`").font(.system(size: 11, design: .monospaced)).foregroundStyle(Color(hex: "#0eb0e9").opacity(0.85))). The format is customizable in Settings.")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.white.opacity(0.38))
                         .fixedSize(horizontal: false, vertical: true)
@@ -9319,7 +9338,7 @@ private struct BuyLink: View {
             NSWorkspace.shared.open(URL(string: "https://xaviergallo.lemonsqueezy.com/checkout")!)
         } label: {
             Text("Buy CardRunner →")
-                .font(.custom("DM Sans", size: 13).weight(.semibold))
+                .font(.system(size:13).weight(.semibold))
                 .foregroundStyle(Color(hex: "#0eb0e9").opacity(hovered ? 1.0 : 0.85))
                 .underline(hovered)
                 .scaleEffect(hovered ? 1.03 : 1.0)
@@ -9387,13 +9406,13 @@ private struct NewProjectPopover: View {
             // ── Header ──────────────────────────────────────────────────────
             VStack(alignment: .leading, spacing: 3) {
                 Text("New Project Folder")
-                    .font(.custom("DM Sans", size: 13).weight(.semibold))
+                    .font(.system(size:13).weight(.semibold))
                     .foregroundStyle(textPrimary)
                 HStack(spacing: 4) {
                     Image(systemName: "internaldrive")
                         .font(.system(size: 10))
                     Text("\(primaryName)/")
-                        .font(.custom("DM Sans", size: 11))
+                        .font(.system(size:11))
                 }
                 .foregroundStyle(textSecondary)
             }
@@ -9406,14 +9425,14 @@ private struct NewProjectPopover: View {
             // ── Name field ──────────────────────────────────────────────────
             VStack(alignment: .leading, spacing: 6) {
                 Text("Folder name")
-                    .font(.custom("DM Sans", size: 10).weight(.medium))
+                    .font(.system(size:10).weight(.medium))
                     .foregroundStyle(textSecondary)
                     .textCase(.uppercase)
                     .kerning(0.5)
 
                 TextField("e.g. ClientShoot", text: $name)
                     .textFieldStyle(.plain)
-                    .font(.custom("DM Sans", size: 13))
+                    .font(.system(size:13))
                     .foregroundStyle(textPrimary)
                     .focused($nameFocused)
                     .padding(.horizontal, 10)
@@ -9434,7 +9453,7 @@ private struct NewProjectPopover: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("Folder color")
-                    .font(.custom("DM Sans", size: 10).weight(.medium))
+                    .font(.system(size:10).weight(.medium))
                     .foregroundStyle(textSecondary)
                     .textCase(.uppercase)
                     .kerning(0.5)
@@ -9486,7 +9505,7 @@ private struct NewProjectPopover: View {
                         Image(systemName: "square.grid.2x2")
                             .font(.system(size: 10))
                         Text("Scaffold folders will be created inside")
-                            .font(.custom("DM Sans", size: 10).weight(.medium))
+                            .font(.system(size:10).weight(.medium))
                     }
                     .foregroundStyle(accent.opacity(0.9))
 
@@ -9494,7 +9513,7 @@ private struct NewProjectPopover: View {
                     FlowLayout(spacing: 4) {
                         ForEach(Array(displayed.enumerated()), id: \.offset) { _, folder in
                             Text(folder)
-                                .font(.custom("DM Sans", size: 10).weight(.medium))
+                                .font(.system(size:10).weight(.medium))
                                 .foregroundStyle(textSecondary)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
@@ -9503,7 +9522,7 @@ private struct NewProjectPopover: View {
                         }
                         if scaffoldFolders.count > 8 {
                             Text("+\(scaffoldFolders.count - 8) more")
-                                .font(.custom("DM Sans", size: 10))
+                                .font(.system(size:10))
                                 .foregroundStyle(textSecondary.opacity(0.6))
                         }
                     }
@@ -9524,7 +9543,7 @@ private struct NewProjectPopover: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("You can customise which folders get auto-created on every new project — enable scaffold and edit your list in Settings.")
-                            .font(.custom("DM Sans", size: 10))
+                            .font(.system(size:10))
                             .foregroundStyle(textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
 
@@ -9532,7 +9551,7 @@ private struct NewProjectPopover: View {
                             hintShown = true
                             onOpenSettings()
                         }
-                        .font(.custom("DM Sans", size: 10).weight(.semibold))
+                        .font(.system(size:10).weight(.semibold))
                         .foregroundStyle(accent)
                         .buttonStyle(.plain)
                     }
@@ -9560,7 +9579,7 @@ private struct NewProjectPopover: View {
                 Button("Cancel") {
                     isPresented = false
                 }
-                .font(.custom("DM Sans", size: 12))
+                .font(.system(size:12))
                 .foregroundStyle(textSecondary)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
@@ -9571,7 +9590,7 @@ private struct NewProjectPopover: View {
                 Button("Create Folder") {
                     onCreate()
                 }
-                .font(.custom("DM Sans", size: 12).weight(.semibold))
+                .font(.system(size:12).weight(.semibold))
                 .foregroundStyle(.white)
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
@@ -10118,6 +10137,9 @@ private struct SwooshSelectionModifier: ViewModifier {
     let axis: Axis
     /// 0 = settled pill · 1 = mid-flight liquid smear.
     @State private var smear: CGFloat = 0
+    // Reduce Motion: skip the squash-and-stretch flourish (the pill still repositions, it just
+    // doesn't distort). UI-future.md: respect Reduce Motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content.background {
@@ -10139,6 +10161,7 @@ private struct SwooshSelectionModifier: ViewModifier {
     /// One-shot: ramp into the smear fast as the pill departs, then let it wobble back to shape
     /// over the travel. No always-on animation (see the TimelineView core-burn gotcha).
     private func pulse() {
+        guard !reduceMotion else { smear = 0; return }   // no liquid distortion under Reduce Motion
         withAnimation(.easeOut(duration: 0.14)) { smear = 1 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.55)) { smear = 0 }
@@ -10486,7 +10509,7 @@ struct LicenseGateView: View {
                         .foregroundStyle(textPrimary)
 
                     Text("A smoother ingest workflow for creators")
-                        .font(.custom("DM Sans", size: 14))
+                        .font(.system(size:14))
                         .foregroundStyle(textSecondary)
                 }
 
@@ -10503,10 +10526,10 @@ struct LicenseGateView: View {
                                 .foregroundStyle(Color(hex: "#F59E0B"))
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Your license key needs to be updated")
-                                    .font(.custom("DM Sans", size: 12).weight(.semibold))
+                                    .font(.system(size:12).weight(.semibold))
                                     .foregroundStyle(textPrimary)
                                 Text("We've moved our store. Please enter the new key from your purchase email or dashboard.")
-                                    .font(.custom("DM Sans", size: 11))
+                                    .font(.system(size:11))
                                     .foregroundStyle(textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -10578,7 +10601,7 @@ struct LicenseGateView: View {
                                 ProgressView().controlSize(.small).tint(.white)
                             }
                             Text(isActivating ? "Activating…" : "Activate CardRunner")
-                                .font(.custom("DM Sans", size: 14).weight(.semibold))
+                                .font(.system(size:14).weight(.semibold))
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
@@ -10617,7 +10640,7 @@ struct LicenseGateView: View {
                 // Buy link
                 HStack(spacing: 4) {
                     Text("Don't have a license?")
-                        .font(.custom("DM Sans", size: 13))
+                        .font(.system(size:13))
                         .foregroundStyle(textSecondary)
                     BuyLink()
                 }
@@ -11939,13 +11962,52 @@ extension ContentView {
                 v3SheetClose { showV3Log = false }
             }
             ScrollViewReader { proxy in
-                ScrollView {
-                    Text(logText.isEmpty ? "No activity yet this session." : logText)
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
-                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                        .id("v3logbottom")
+                GeometryReader { outer in
+                    ScrollView {
+                        Text(logText.isEmpty ? "No activity yet this session." : logText)
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
+                            .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                            .id("v3logbottom")
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: V3LogTailKey.self,
+                                    value: g.frame(in: .named("v3logscroll")).maxY)
+                            })
+                    }
+                    .coordinateSpace(name: "v3logscroll")
+                    .onPreferenceChange(V3LogTailKey.self) { tailMaxY in
+                        // Tail marker within a few pt of the viewport bottom → the live tail is on-screen.
+                        let atBottom = tailMaxY <= outer.size.height + 6
+                        if v3LogAtBottom != atBottom { v3LogAtBottom = atBottom }
+                    }
+                    // Follow the live log ONLY while already pinned to the tail — never yank the operator
+                    // back down while they're reading history above during a transfer.
+                    .onChange(of: logText) { _, _ in
+                        if v3LogAtBottom { proxy.scrollTo("v3logbottom", anchor: .bottom) }
+                    }
+                    .onAppear { proxy.scrollTo("v3logbottom", anchor: .bottom) }
+                    // Bottom edge cue: content dissolves into shadow when there's more log below the fold.
+                    .overlay(alignment: .bottom) {
+                        if !v3LogAtBottom {
+                            LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+                                .frame(height: 44).allowsHitTesting(false)
+                        }
+                    }
+                    // Jump-to-tail — appears only when scrolled up; snaps to the live tail under stress.
+                    .overlay(alignment: .bottomTrailing) {
+                        if !v3LogAtBottom {
+                            Button {
+                                withAnimation(v3Anim(.easeOut(duration: 0.2))) { proxy.scrollTo("v3logbottom", anchor: .bottom) }
+                                v3LogAtBottom = true
+                            } label: {
+                                HStack(spacing: 5) { Image(systemName: "chevron.down"); Text("Jump to latest") }
+                                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                                    .padding(.horizontal, 12).padding(.vertical, 7)
+                                    .background(v3Cyan.opacity(0.9), in: Capsule())
+                                    .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                            }.buttonStyle(.plain).v3Hover(scale: 1.05).padding(10).transition(.opacity)
+                        }
+                    }
                 }
-                .onAppear { proxy.scrollTo("v3logbottom", anchor: .bottom) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(12).background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
@@ -12193,7 +12255,7 @@ extension ContentView {
                     .transition(.opacity).zIndex(80)
                 v3SettingsView
                     .shadow(color: .black.opacity(0.55), radius: 40, y: 14)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                    .transition(v3ModuleTransition)
                     // Robust Escape-to-close (onExitCommand needs first-responder focus, which the
                     // overlay lacks — the hidden .cancelAction button works regardless).
                     .background(Button("", action: closeSettings).keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
@@ -12253,7 +12315,7 @@ extension ContentView {
                 // responder (unlike .onExitCommand, which needs focus). Modules are conditionally
                 // rendered so only the open one's shortcut is live (no dup-cancelAction).
                 .background(Button("", action: dismiss).keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                .transition(v3ModuleTransition)
                 .onExitCommand(perform: dismiss)
                 .zIndex(61)
         }
@@ -12413,7 +12475,7 @@ extension ContentView {
         let hovered = v3HoveredRailCat == cat
         return Button {
             // Spring drives the matched-geometry pill so it SWOOSHES from the old tab to this one.
-            withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { v3SettingsCat = cat }
+            withAnimation(v3Anim(.spring(response: 0.38, dampingFraction: 0.72))) { v3SettingsCat = cat }
         } label: {
             Image(systemName: cat.icon)
                 .font(.system(size: 17, weight: .medium))
@@ -13509,7 +13571,7 @@ extension ContentView {
         HStack(spacing: 10) {
             // (A) The whole panel is ONE tappable button → toggle the review disclosure.
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) { v3DoneExpanded.toggle() }
+                withAnimation(v3Anim(.easeInOut(duration: 0.18))) { v3DoneExpanded.toggle() }
             } label: {
                 HStack(spacing: 12) {
                     Text("\(v3DoneLanes.count)")
@@ -13874,10 +13936,12 @@ extension ContentView {
                 let overDefault = (defaultDestination?.id).flatMap { destFrames[$0] }?.contains(v.location) ?? false
                 var reordered = false
                 if overDefault, defaultDestination?.id != d.id, v3MakeDefault(d.id) {
-                    v3DefaultPop = true
                     AudioEngine.shared.modeSwitch()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
+                    if !reduceMotion {                       // skip the decorative pop burst under Reduce Motion
+                        v3DefaultPop = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            withAnimation(.easeOut(duration: 0.25)) { v3DefaultPop = false }
+                        }
                     }
                 } else if let from = v3ReorderFrom, let to = v3ReorderTo, to != from {
                     reordered = true
@@ -14232,6 +14296,14 @@ extension ContentView {
 }
 
 // MARK: - v3 funnel anchor key (sources → ring → destinations connectors)
+
+/// Reports the Activity-log tail marker's Y within the scroll viewport, so the sheet can tell
+/// whether the live tail is visible (pinned → keep following) or scrolled away (show jump-to-tail).
+/// Event-driven (fires on scroll), never an always-on loop — respects the core-burn guardrail.
+struct V3LogTailKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
 
 struct V3AnchorKey: PreferenceKey {
     static var defaultValue: [String: Anchor<CGRect>] = [:]
