@@ -7554,6 +7554,15 @@ struct ContentView: View {
                     // up-to-date (newFiles==0) card verified nothing, so it must not claim the badge.
                     ingest.verified    = self.verifyTransfer && newFiles > 0
                     self.activeIngests[processID] = ingest
+                } else if !didFail, FileManager.default.fileExists(atPath: card.path) {
+                    // 0-new run (up-to-date / manifest-skip / wrong-mode): its lane was just removed
+                    // and no .done tile is created, which would leave a STILL-MOUNTED card with NO
+                    // representation — it vanishes while its "Already up to date" / "wrong mode" prompt
+                    // sits there (jarring on the auto-ingest path). Re-park it as a waiting card so a
+                    // mounted card is ALWAYS visible in SOURCES; the prompt is the call-to-action, and
+                    // acting on it (Re-ingest / Switch & copy → startIngest) removes this awaiting entry
+                    // at lane creation. Dedup-safe (the lane is already gone, so enqueueAwaiting adds it).
+                    withAnimation(v3Anim(.easeInOut(duration: 0.15))) { self.enqueueAwaiting([card]) }
                 }
 
                 // A slot just freed — admit any queued cards the scheduler now allows
