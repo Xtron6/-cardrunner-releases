@@ -240,6 +240,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.0</title>
+            <pubDate>Thu, 02 Jul 2026 18:30:47 +0000</pubDate>
+            <sparkle:version>21</sparkle:version>
+            <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Route every card its own way — send each card to its own destination, drag a card onto a drive to route it, and copy to a primary plus any number of mirror drives in one pass</li><li>Safe-to-pull confidence — a finished card stays in a green safe-to-pull pile with a VERIFIED badge and exactly what landed (files, duration, average speed), so you can confirm the offload before pulling the card</li><li>Wrong-mode guardrail — pop in video while in Photo mode (or stills in Video mode) and CardRunner tells you plainly and offers a one-tap Switch and Copy, instead of a misleading already-up-to-date when nothing was backed up</li><li>Cards never disappear — a card stays visible from the moment it is inserted, through scanning and copying, to done, with no flicker or vanish-and-reappear</li><li>See more at a glance — live low-disk warning while copying, mirror confirmation on finished cards, and an offline badge when a destination drive is unplugged</li><li>Richer history — every past ingest shows where the footage landed with a Reveal-in-Finder button, plus a breakdown of anything skipped and why</li><li>Report an Issue straight from Settings > About, plus full VoiceOver accessibility across the app</li><li>Dozens of reliability fixes across the ingest lifecycle, card detection, and the safe-to-pull workflow</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.0/CardRunner-1.8.0.dmg"
+                sparkle:edSignature="BiiTJY1gHz+zuCj1kI+DWINMtWva2vGI1/xu/BjWp9vfhv5TG5WY5PtnVs+RoEQeBWhDk5EV3QZqqJxY3yUEDg=="
+                length="11552301"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
