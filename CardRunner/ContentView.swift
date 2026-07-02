@@ -1906,6 +1906,8 @@ struct ContentView: View {
     @State private var logText: String = ""
     @AppStorage("pref_showLog") private var showLog: Bool = false
     @State private var statusText: String = "Auto ingest is off"
+    @State private var v3Toast: String? = nil          // transient error/notice banner — the v3 UI has no status bar
+    @State private var v3ToastToken = UUID()
     @State private var runningCount: Int = 0
     @State private var seenCardPaths: Set<String> = []
     @State private var seenCardUUIDs: Set<String> = []   // UUID-keyed dedup — survives remount (O6)
@@ -6279,9 +6281,24 @@ struct ContentView: View {
     /// Press "Start" on a waiting card — routes it to its chosen destination (or the
     /// default) and begins the lifecycle. Marks the card seen so the auto-scan loop
     /// won't re-park it.
+    /// True if there's a real destination to route a card to (a chosen/default Destination, or the
+    /// legacy custom/primary fallback). Used to avoid dropping an awaiting card into a routing path
+    /// that would immediately bail — leaving the card vanished with no feedback.
+    private func v3HasUsableDestination(_ dest: Destination?) -> Bool {
+        if let d = dest ?? defaultDestination, !d.path.isEmpty { return true }
+        if useCustomDest, !customDestPath.isEmpty { return true }
+        return !primarySSDPath.isEmpty
+    }
+
     @MainActor private func startAwaiting(_ awaitingID: UUID) {
         guard let item = awaitingCards.first(where: { $0.id == awaitingID }) else { return }
         let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
+        // Don't hand the card to a routing path with NO destination — it would vanish silently.
+        // Keep it parked and say why.
+        guard v3HasUsableDestination(dest) else {
+            v3ShowToast("Add a destination before starting \(item.customName.isEmpty ? item.card.name : item.customName).")
+            return
+        }
         seenCardPaths.insert(item.card.path)
         if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
         pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6621,6 +6638,7 @@ struct ContentView: View {
                       FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDestDir),
                       isDestDir.boolValue else {
                     statusText = "Custom destination folder not found."
+                    v3ShowToast("\(card.name): destination folder not found — the drive may be ejected or the folder moved.")
                     return
                 }
                 useCustomDestForThisCard = true
@@ -6648,6 +6666,7 @@ struct ContentView: View {
                   FileManager.default.fileExists(atPath: customDestPath, isDirectory: &isDestDir),
                   isDestDir.boolValue else {
                 statusText = "Custom destination folder not found."
+                v3ShowToast("\(card.name): destination folder not found — the drive may be ejected or the folder moved.")
                 return
             }
             useCustomDestForThisCard = true
@@ -7449,6 +7468,7 @@ struct ContentView: View {
         } catch {
             appendLog("❌ Failed to run script for card \(card.name): \(error.localizedDescription)\n")
             statusText = "Error starting ingest."
+            v3ShowToast("Couldn't start the transfer for \(card.name). Re-insert the card to retry.")
             runningCount = max(0, runningCount - 1)
             // Capture the per-card folder name before discarding the lane, so the "do not
             // format" record shows the same name the operator typed.
@@ -12523,6 +12543,37 @@ extension ContentView {
         withAnimation(v3Anim(.spring(response: 0.32, dampingFraction: 0.84))) { b.wrappedValue = on }
     }
 
+    /// Show a transient error/notice banner. The legacy status bar was deleted with the old UI, so
+    /// recoverable errors (bad destination, folder-create failure, a card that couldn't start) were
+    /// failing SILENTLY — this surfaces them. Auto-dismisses; footage-safety alerts still use the
+    /// modal alert path, not this.
+    private func v3ShowToast(_ msg: String) {
+        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { v3Toast = msg }
+        let token = UUID(); v3ToastToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) {
+            if self.v3ToastToken == token { withAnimation(self.v3Anim(.easeInOut(duration: 0.2))) { self.v3Toast = nil } }
+        }
+    }
+
+    /// Floating notice banner (amber) — errors the v3 UI would otherwise swallow.
+    @ViewBuilder private var v3ToastBanner: some View {
+        if let msg = v3Toast {
+            HStack(spacing: 9) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(v3Amber)
+                Text(msg).font(.system(size: 13, weight: .medium)).foregroundStyle(.white).lineLimit(2)
+                Button { withAnimation(v3Anim(.easeInOut(duration: 0.2))) { v3Toast = nil } } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                }.buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 11)
+            .background(Color(hex: "#2a1e0a").opacity(0.96), in: Capsule())
+            .overlay(Capsule().strokeBorder(v3Amber.opacity(0.55)))
+            .shadow(color: .black.opacity(0.4), radius: 14, y: 4)
+            .padding(.top, 14)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
     // MARK: Body
 
     var bodyV3: some View {
@@ -12543,6 +12594,10 @@ extension ContentView {
                 v3BottomBar
             }
             .padding(26)
+
+            // Floating error/notice banner — pinned to the top, above all content + modals.
+            VStack { v3ToastBanner; Spacer(minLength: 0) }
+                .padding(.horizontal, 26).allowsHitTesting(v3Toast != nil).zIndex(200)
 
             // Subtle iridescent gloss sweep — a feathered, skewed band that drifts across the
             // stage every ~20 s. Idle between passes (KeyframeAnimator one-shot, timer-triggered)
