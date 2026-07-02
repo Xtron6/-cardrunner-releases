@@ -1756,6 +1756,8 @@ struct ContentView: View {
     @Namespace private var ingestToggleNS
     @Namespace private var destToggleNS
     @Namespace private var statsToggleNS
+    @Namespace private var v3AddDestSegNS   // liquid swoosh: SSD ↔ Custom Folder segment
+    @Namespace private var v3DateSegNS      // liquid swoosh: Date range ↔ Single day segment
     // Hover tracking for destination tab + folder button
     @State private var destTabHovered: Bool? = nil   // nil=none, false=SSD, true=Custom
     @State private var customDestBtnHovered: Bool  = false
@@ -10078,6 +10080,73 @@ extension View {
         }
         #endif
     }
+
+    /// Sliding "swoosh" selection background — a single matched-geometry pill that lives in
+    /// the CURRENTLY-selected item's slot. When `isSelected` flips inside a `withAnimation`,
+    /// SwiftUI interpolates the pill's frame from the old slot to the new one, so it flies
+    /// (swooshes) between them instead of just appearing. As it travels it deforms — elongating
+    /// along the travel `axis`, thinning across it, and rounding toward a capsule — then settles
+    /// back into the pill, so it reads like liquid flowing rather than a rigid box sliding.
+    ///
+    /// Reusable across any selection group (settings rail, segmented toggles, tab bars):
+    /// apply to EVERY item in the group with the SAME `namespace` + `groupID` (one groupID
+    /// per independent selector), and drive the selection change inside
+    /// `withAnimation(.spring(...))`. Pass the brand fill as `AnyShapeStyle(...)`. Use
+    /// `axis: .horizontal` for left/right selectors so the stretch follows the motion.
+    func swooshSelection(_ isSelected: Bool,
+                         in namespace: Namespace.ID,
+                         groupID: String,
+                         fill: AnyShapeStyle,
+                         cornerRadius: CGFloat = 13,
+                         glow: Color? = nil,
+                         glowRadius: CGFloat = 12,
+                         axis: Axis = .vertical) -> some View {
+        modifier(SwooshSelectionModifier(isSelected: isSelected, namespace: namespace,
+                                         groupID: groupID, fill: fill, cornerRadius: cornerRadius,
+                                         glow: glow, glowRadius: glowRadius, axis: axis))
+    }
+}
+
+/// Backs `View.swooshSelection` — a matched-geometry pill with a one-shot liquid "smear" as it
+/// travels. The stretch is a self-contained pulse (0 → peak → 0) triggered when this item becomes
+/// selected; it decays with an under-damped spring so the pill wobbles into shape like a droplet.
+private struct SwooshSelectionModifier: ViewModifier {
+    let isSelected: Bool
+    let namespace: Namespace.ID
+    let groupID: String
+    let fill: AnyShapeStyle
+    let cornerRadius: CGFloat
+    let glow: Color?
+    let glowRadius: CGFloat
+    let axis: Axis
+    /// 0 = settled pill · 1 = mid-flight liquid smear.
+    @State private var smear: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content.background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: cornerRadius + smear * 10, style: .continuous)
+                    .fill(fill)
+                    .shadow(color: glow ?? .clear, radius: glow == nil ? 0 : glowRadius + smear * 8)
+                    // Elongate along the travel axis, thin across it — squash-and-stretch = liquid.
+                    .scaleEffect(x: axis == .horizontal ? 1 + smear * 0.5 : 1 - smear * 0.22,
+                                 y: axis == .horizontal ? 1 - smear * 0.22 : 1 + smear * 0.5,
+                                 anchor: .center)
+                    .matchedGeometryEffect(id: groupID, in: namespace)
+                    .onAppear { pulse() }
+            }
+        }
+        .onChange(of: isSelected) { _, now in if now { pulse() } }
+    }
+
+    /// One-shot: ramp into the smear fast as the pill departs, then let it wobble back to shape
+    /// over the travel. No always-on animation (see the TimelineView core-burn gotcha).
+    private func pulse() {
+        withAnimation(.easeOut(duration: 0.14)) { smear = 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.55)) { smear = 0 }
+        }
+    }
 }
 // MARK: - Shimmer Bar
 
@@ -11537,7 +11606,8 @@ extension ContentView {
                 Spacer(); v3SheetClose { showV3AddDest = false }
             }
             v3SheetLabel("DESTINATION")
-            v3Segment(left: ("externaldrive", "SSD"), right: ("folder", "Custom Folder"), leftSelected: v3AddIsSSD) { picked in
+            v3Segment(left: ("externaldrive", "SSD"), right: ("folder", "Custom Folder"),
+                      leftSelected: v3AddIsSSD, in: v3AddDestSegNS, group: "addDestSeg") { picked in
                 // Spring the module's height between the tall SSD tab and the short Custom tab
                 // instead of an abrupt big↔small jump.
                 withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { v3AddIsSSD = picked }
@@ -11735,20 +11805,26 @@ extension ContentView {
     }
     private func v3SheetClose(_ act: @escaping () -> Void) -> some View { V3CloseButton(action: act) }
     private func v3Segment(left: (String, String), right: (String, String),
-                           leftSelected: Bool, _ pick: @escaping (Bool) -> Void) -> some View {
+                           leftSelected: Bool, in namespace: Namespace.ID, group: String,
+                           _ pick: @escaping (Bool) -> Void) -> some View {
         HStack(spacing: 0) {
-            v3SegmentHalf(left.0, left.1, selected: leftSelected) { pick(true) }
-            v3SegmentHalf(right.0, right.1, selected: !leftSelected) { pick(false) }
+            v3SegmentHalf(left.0, left.1, selected: leftSelected, in: namespace, group: group) { pick(true) }
+            v3SegmentHalf(right.0, right.1, selected: !leftSelected, in: namespace, group: group) { pick(false) }
         }
         .padding(4).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.08)))
     }
-    private func v3SegmentHalf(_ icon: String, _ title: String, selected: Bool, _ act: @escaping () -> Void) -> some View {
+    private func v3SegmentHalf(_ icon: String, _ title: String, selected: Bool,
+                               in namespace: Namespace.ID, group: String,
+                               _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
             HStack(spacing: 8) { Image(systemName: icon); Text(title).font(.system(size: 14, weight: .semibold)) }
                 .foregroundStyle(selected ? .white : .white.opacity(0.6))
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background(selected ? AnyShapeStyle(v3Brand) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 9))
+                // Liquid swoosh: the brand pill flows left↔right between the two halves on select.
+                .swooshSelection(selected, in: namespace, groupID: group,
+                                 fill: AnyShapeStyle(v3Brand), cornerRadius: 9,
+                                 glow: v3Purple.opacity(0.5), axis: .horizontal)
                 .contentShape(Rectangle())   // whole half is clickable, not just the text
         }.buttonStyle(.plain)
         .v3Hover(scale: 1.0)                  // brighten on hover; no scale inside the fixed track
@@ -12282,19 +12358,29 @@ extension ContentView {
         let selected = v3SettingsCat == cat
         let hovered = v3HoveredRailCat == cat
         return Button {
-            withAnimation(.easeInOut(duration: 0.15)) { v3SettingsCat = cat }
+            // Spring drives the matched-geometry pill so it SWOOSHES from the old tab to this one.
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { v3SettingsCat = cat }
         } label: {
             Image(systemName: cat.icon)
                 .font(.system(size: 17, weight: .medium))
                 // Unselected icon turns light-blue on hover (extra "clickable" cue beyond the scale).
                 .foregroundStyle(selected ? .white : (hovered ? v3Cyan : .white.opacity(0.4)))
                 .frame(width: 44, height: 44)
-                .background(selected ? AnyShapeStyle(v3Brand.opacity(0.9))
-                                     : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.10)) : AnyShapeStyle(Color.clear)),
-                            in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                // Hover highlight (non-selected only) — sits behind the icon, separate from the swoosh.
+                .background {
+                    if hovered && !selected {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous).fill(v3Cyan.opacity(0.10))
+                    }
+                }
+                // The sliding purple "swoosh": one matched pill flies between tabs on selection.
+                .swooshSelection(selected, in: settingsTabNS, groupID: "settingsRail",
+                                 fill: AnyShapeStyle(v3Brand.opacity(0.95)),
+                                 cornerRadius: 13, glow: v3Purple.opacity(0.55))
+                // Leading cyan accent travels with the pill (matched to the same swoosh).
                 .overlay(alignment: .leading) {
                     if selected {
                         Capsule().fill(v3Cyan).frame(width: 3, height: 20).offset(x: -19)
+                            .matchedGeometryEffect(id: "settingsRailAccent", in: settingsTabNS)
                     }
                 }
                 .shadow(color: v3Cyan.opacity(hovered && !selected ? 0.55 : 0), radius: 10)
@@ -13848,7 +13934,9 @@ extension ContentView {
 
             v3SheetLabel("MODE")
             v3Segment(left: ("calendar", "Date range"), right: ("calendar.day.timeline.left", "Single day"),
-                      leftSelected: !v3RangeSingleDay) { v3RangeSingleDay = !$0 }
+                      leftSelected: !v3RangeSingleDay, in: v3DateSegNS, group: "dateModeSeg") { pickedLeft in
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { v3RangeSingleDay = !pickedLeft }
+            }
 
             HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
