@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `dbd449b`. Build (Debug+Release) + **40 smoke** green, tree clean. The original §1 punch-list AND a follow-on UX/feature batch are **RESOLVED**; final reviewers certified **PRODUCTION-READY** (no P0/P1). **68 unit + 40 smoke green** (the CLI unit host was intermittently wedged with "runner hung before establishing connection" — a `pkill testmanagerd` + ~14s settle then re-run cleared it; see [[cardrunner-unit-host-wedge]]).
+**Latest commit:** `d8c6851`. ⚠️ **THERE IS UNCOMMITTED WORK (Batch D) in the working tree** — build-green, ContentView.swift only, NOT yet committed (the commit was interrupted). `git diff` to see it; commit it first thing (message + contents in §1 RESUME). Everything through `d8c6851` builds Debug+Release green + smoke 40/40. See §1 RESUME for the active goal + the audit-driven work in flight.
 
 **★ FOLLOW-ON UX/FEATURE BATCH (2026-07-02, `c260e50`→`dbd449b`, all reviewer-verified no P0/P1):** cards vertically centered on the ring (biased up); **New project folder** now lands at the SSD/**drive root** (+ "Change…" folder-picker override) AND becomes a routing **destination + default** (toggle `pref_newProjectSetsDefault`); name prefill = today's date in the settings format ending `_`; **reusable `.v3EditableField`** blue-glow (Add-dest Name, New-project Folder name, dest NAME hover pill, scaffold fields); color swatches hover grow+glow + selected checkmark; **F** opens the LIVE transfer folder (`v3LiveTransferFolder` — resolves the in-flight lane's routed dest, since `ActiveIngest.destPath` is empty until completion); **Enter** commits the single-purpose sheets (Add/Edit dest, Date range) via opt-in `.defaultAction` — NOT New Project (scaffold inline-field conflict); **every modal grows+fades in** (`v3PresentModal` wraps opens in withAnimation so `v3ModuleTransition` runs); Ingest History stats pinned top; **reimagined scaffold editor** `V3ScaffoldFolderEditor` (shared Settings + New-project — indented list, inline rename w/ blue glow, per-row +subfolder, cascade delete, add-root, per-project include checkmarks; structural edits update the GLOBAL template, checkmarks are project-local; fixed the old commit that clobbered the global scaffold list). DEV spawners: kept in Release behind the secret ⌥-click-version unlock (`22941a7`).
 
@@ -21,7 +21,42 @@ CardRunner is a **camera-card offload tool** for video/photo shooters: plug an S
 
 ---
 
-## 1. ★ CURRENT STATE — PUNCH-LIST RESOLVED, PRODUCTION-READY (pending Xavier's hardware/unit sign-off)
+## 1. ★★ RESUME HERE (2026-07-02, mid-batch) — footage-confidence + flaws work
+
+**ACTIVE GOAL (session Stop-hook, still in force):** *"run 2 agents (one reviewer, you = lead coder) in parallel to knock out all these fixes and confidence boosts. Work in a loop, fix then review, until production ready."* Plus Xavier's **#4 decision (DONE):** a completed card shows the celebration burst then **lives in the green "safe to pull" pile until the user ejects/pulls it** (card finishes → sits there ready for eject). Continue the fix→review loop until production-ready, then the hook auto-clears.
+
+**FIRST THING: commit the uncommitted Batch D** (build-green, working tree, ContentView only). Suggested message:
+```
+Parity/polish: history detail, modal exclusion, reduce-motion, dead-code
+- Ingest History rows show WHERE footage landed (dest breadcrumb) + a "Reveal"
+  button (Finder) when the drive's mounted, and a skip-reason breakdown
+  (v3HistoryDestLabel / v3SkipBreakdown) — data was already stored, just unshown.
+- Only ONE modal open at a time: v3PresentModal closes any other before opening
+  (History + Log could stack → two scrims + two Escape handlers).
+- Awaiting-lane name-pill animations now respect Reduce Motion (v3Anim).
+- Deleted 3 dead legacy folder-creation paths (createNewProjectFolder /
+  applyCustomFolderColor / createCustomDestSubfolder) + 6 orphaned @State.
+```
+
+**WHERE THINGS STAND — a 3-agent AUDIT (footage-safety confidence · old-vs-new parity · general flaws) drove this batch.** Core finding: *the engine is trustworthy (real per-file SHA-256 verify on by default, single authoritative fail-gate, green impossible while any failure exists, card kept mounted on fail, pre-flight space check) — the gap was that the app COMPUTED a rich trustworthy result and SHOWED almost none of it.* Batches so far:
+
+- **A — Completed cards live in the safe-to-pull pile** (`13e3cb6`, reviewer no-P0). Real completed cards were `removeValue`'d on completion so the per-card pile / "All safe to pull" ring / celebration were effectively DEV-only (`v3AllDone` already required `!activeIngests.isEmpty` — design INTENDED retention). Now: on `!didFail`, re-insert as `phase=.done` (`verified = verifyTransfer && newFiles>0`, `liveMBps=0`); `didUnmount` clears the tile by `sourcePath` when the card leaves; per-card `v3PullCard` ejects that card. **Ripple fix:** new `v3ActiveWork = activeIngests.filter{ $0.phase != .done }` backs the live aggregates (doneBytes/totalBytesNew/…/currentFileName/scheduler `runningDestDevices`/`v3AnyActive`/`v3CombinedMBps`/ring "engine running" count); `v3AllDone` gained `awaitingCards.isEmpty`. Done tile shows "✓ VERIFIED" badge + "N files · duration · avg MB/s" + collision-rename notice. New `ActiveIngest.verified`.
+- **B — Surfaced computed-but-hidden signals** (`849a6f3`): low-disk warning on the copying lane (`ing.lowDiskWarning`); N-way **mirror confirmation** on the done tile ("→ primary + N mirrors ✓ all landed" — a `.done` card means all mirrors landed; new `ActiveIngest.mirrorCount`).
+- **C — Silent errors + card-vanish** (`d8c6851`): the v3 UI had NO status bar so recoverable errors set `statusText` and were never shown. New `v3ShowToast(_:)` + a floating amber notice banner (pinned top, auto-dismiss). `startAwaiting` now guards `v3HasUsableDestination` → a card with no destination stays PARKED + toast instead of vanishing; the custom-dest-not-found / ingest-launch bails now toast.
+- **D — parity/polish (UNCOMMITTED, build-green):** see the commit message above.
+
+**REMAINING / DEFERRED (finish these, then final-review → production-ready):**
+- **Column scroll for many-card overflow** (auditor P1) — DEFERRED: interacts with the funnel anchors / `destFrames` / the centering spacers; needs care (a `SmoothScrollView` exists at ~9923). Rare case (funnel already caps at 6-8). Do carefully.
+- Parity **B4/B5**: re-attach the live `SparklineView` (defined ~10220, `speedHistory` still fed, ZERO call sites) + the live-session peak/avg MB/s readout (only in Settings all-time now).
+- Parity **B8/B9**: rename-template live preview in Settings ▸ Naming (`renameTemplatePreview(_:)` still exists); make the Report-an-Issue / support bundle reachable from Settings ▸ About (currently Help-menu only, still built at ~4040).
+- General P2s: **unmounted-dest badge** (a default dest can silently point at an ejected drive — `defaultDestination` at ~5335 has no mount check); a **VoiceOver-label pass** on icon-only buttons; verify-wording ("spot-checked" vs actual SHA-256 — LOW, `statusText` isn't shown in v3 anymore except via the new toast).
+- Then: run the reviewer on C+D (and any new work), build Debug+Release + `./smoke_test.sh` + unit (`⌘U` / the `pkill testmanagerd`+settle trick), and certify production-ready.
+
+**The three full audit reports (footage-safety-confidence, parity, general-flaws) were consumed live in this chat — their findings are captured above; re-run fresh audit agents if you want the raw detail.** All the audit's HIGH-impact items are DONE (A/B/C); what remains is MEDIUM/LOW polish.
+
+---
+
+## 1b. Prior state — original punch-list + follow-on UX batch (both RESOLVED, production-ready)
 
 **The entire §1 punch-list is DONE** (5 commits on `2df488b` → `fedea5d`), delivered by a 3-agent team (planner + reviewer + lead) and certified **PRODUCTION-READY by 3 independent final reviewer passes** (footage-safety lens, release-readiness lens, holistic lens) — no P0/P1. See the roadmap memory top entry for the full blow-by-blow.
 
