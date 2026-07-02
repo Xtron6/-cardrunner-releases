@@ -1898,9 +1898,7 @@ struct ContentView: View {
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
     @State private var v3LogAtBottom: Bool = true     // Activity-log: is the live tail on-screen? (drives follow + jump-to-tail)
-    #if DEBUG
-    @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…) — DEBUG-only
-    #endif
+    @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…)
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
@@ -3969,6 +3967,14 @@ struct ContentView: View {
                     Text("CardRunner \(shortVersion)")
                         .font(.system(size:13).weight(.medium))
                         .foregroundStyle(Color.white.opacity(0.7))
+                        // Secret developer unlock: ⌥-click the version number. There is NO visible
+                        // toggle, so a normal user never reveals the DEV bar / fake-fixture spawners.
+                        .gesture(TapGesture().modifiers(.option).onEnded { v3ToggleDevUnlock() })
+                    if debugMode {
+                        Text("Developer tools unlocked · ⌥-click version to hide")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(v3Purple.opacity(0.75))
+                    }
 
                     Button {
                         (NSApp.delegate as? AppDelegate)?.updaterController.checkForUpdates(nil)
@@ -12801,14 +12807,12 @@ extension ContentView {
     private var v3SettingsAbout: some View {
         VStack(alignment: .leading, spacing: 26) {
             v3SettingsEmbed { settingsAboutTab }
-            v3SettingsSection("DEVELOPER") {
-                // Restore the legacy cleanup contract: turning Debug off clears the dry-run
-                // surfaces so a simulate-only state can never get stranded behind a hidden control.
-                v3ToggleRow("Debug mode", "Reveal the Log panel and Dry-Run controls.", $debugMode) { now in
-                    if !now { showDryRunToggle = false; dryRun = false; showLog = false } else { showDryRunToggle = true }
-                }
-                if debugMode {
-                    v3SettingDivider()
+            // DEVELOPER tools are hidden — there is NO visible toggle. Unlock with the secret
+            // ⌥-click on the version number in the About card above (v3ToggleDevUnlock). A normal
+            // user never sees this section; when unlocked it exposes the Dry-Run controls, the
+            // onboarding tools, and the main-screen DEV bar (Show Log / fake-fixture spawners).
+            if debugMode {
+                v3SettingsSection("DEVELOPER") {
                     v3ToggleRow("Show Dry-Run toggle", "Expose a simulate-only switch.", $showDryRunToggle) { now in
                         if !now { dryRun = false }
                     }
@@ -12824,10 +12828,26 @@ extension ContentView {
                             isShowingSettings = false; showOnboarding = true
                         }.buttonStyle(.plain).font(.system(size: 13, weight: .semibold)).foregroundStyle(v3Cyan)
                         Spacer()
+                        // Explicit lock affordance (in addition to ⌥-clicking the version again).
+                        Button("Hide developer tools") { v3ToggleDevUnlock() }
+                            .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+                            .help("Re-hide the developer tools")
                     }.padding(.horizontal, 18).padding(.vertical, 13)
                 }
             }
         }
+    }
+
+    /// Secret developer-tools unlock. Toggled by ⌥-clicking the version number in Settings ▸ About
+    /// (and the "Hide developer tools" button) — deliberately NOT a visible switch, so a normal user
+    /// never stumbles on the fake-fixture spawners. Preserves the legacy cleanup contract: locking
+    /// clears the dry-run / log surfaces so a simulate-only state can't get stranded behind a hidden
+    /// control. The fake fixtures remain footage-safe regardless (tagged /dev/cardrunner-fake/).
+    private func v3ToggleDevUnlock() {
+        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { debugMode.toggle() }
+        if debugMode { showDryRunToggle = true }
+        else { showDryRunToggle = false; dryRun = false; showLog = false }
+        AudioEngine.shared.modeSwitch()   // faint audible confirmation of the state flip
     }
 
     // Finder-tag color swatch picker (7 colors), rebuilt for the new look.
@@ -12903,11 +12923,11 @@ extension ContentView {
                 Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
-            // Fake-fixture spawners are DEBUG-ONLY. They inject phantom cards/lanes that mutate
-            // v3FailedCount / v3AllDone / the ring, so they must NOT be reachable in a shipped
-            // build — even behind the user-flippable Debug Mode. (P1-2) The legitimate debug
-            // features above/below — Run UI Demo, Show Log, Log Files, Dry Run — stay available.
-            #if DEBUG
+            // Fake-fixture spawners. They inject phantom cards/lanes that mutate v3FailedCount /
+            // v3AllDone / the ring, so they must never be reachable by a normal user — the entire
+            // DEV bar is hidden behind a SECRET unlock (⌥-click the version in Settings ▸ About),
+            // not any visible toggle. (P1-2 resolved by obscurity, not compile-out — Xavier wants
+            // these in the shipped build.) All fakes are tagged /dev/cardrunner-fake/ → footage-safe.
             Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 18)
 
             // Spawn fake fixtures to exercise the UI with no hardware: +Card = a waiting gold
@@ -12938,7 +12958,6 @@ extension ContentView {
                 }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.55)).v3Hover(scale: 1.05)
                     .help("Remove the fake test fixtures")
             }
-            #endif
 
             Spacer()
 
@@ -12954,10 +12973,9 @@ extension ContentView {
         .padding(.horizontal, 2)
     }
 
-    // DEV-only fake fixtures (see v3DebugStrip). Exercise the UI states with no hardware.
-    // All are tagged with the /dev/cardrunner-fake/ marker so Clear removes ONLY them.
-    // DEBUG-ONLY (P1-2): compiled out of release so phantom cards can never reach a shipped build.
-    #if DEBUG
+    // DEV fake fixtures (see v3DebugStrip). Exercise the UI states with no hardware. All are tagged
+    // with the /dev/cardrunner-fake/ marker so Clear removes ONLY them and they never call the shell.
+    // Reachable in Release ONLY via the secret ⌥-click unlock (Settings ▸ About version), not a toggle.
     private static let v3FakePrefix = "/dev/cardrunner-fake/"
 
     /// A "waiting to route" card → the gold waiting tile.
@@ -13046,7 +13064,6 @@ extension ContentView {
             }
         }
     }
-    #endif  // DEBUG — end DEV-only fake-fixture block (P1-2)
 
     /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
     /// stage over ~7 s, opacity easing in/out so it never pops. Fired occasionally by v3SheenTimer
@@ -13518,15 +13535,11 @@ extension ContentView {
                     // must run while the card is still in awaitingCards (startAwaiting removes it).
                     persistAwaitingName(aw.id)
                     editingAwaitingID = nil
-                    // DEV: a fake card has no real footage, so run a SIMULATED transfer end-to-end
-                    // instead of the shell (which would just report "no footage on this card").
-                    // The fake path + simulator are DEBUG-only (P1-2); RELEASE always starts for real.
-                    #if DEBUG
+                    // A fake card (spawned only via the secret DEV unlock) has no real footage, so
+                    // run a SIMULATED transfer end-to-end instead of the shell (which would just
+                    // report "no footage on this card"). Real cards always start a real ingest.
                     if aw.card.path.hasPrefix(Self.v3FakePrefix) { v3DevSimulateIngest(aw) }
                     else { startAwaiting(aw.id) }
-                    #else
-                    startAwaiting(aw.id)
-                    #endif
                 } label: {
                     Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 18).padding(.vertical, 6)
