@@ -4297,6 +4297,27 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
 
+                    // Report an Issue — generate the support bundle, then close Settings and
+                    // present the sheet (same anti-stacking pattern used for the preset editor).
+                    // Previously reachable only from the Help menu.
+                    Button {
+                        supportBundleText = generateSupportBundle()
+                        isShowingSettings = false   // close settings so we don't stack sheets
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            isShowingSupportBundle = true
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "ladybug")
+                                .font(.system(size: 11))
+                            Text("Report an Issue…")
+                                .font(.system(size:12).weight(.medium))
+                        }
+                        .foregroundStyle(accentBlue)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Generate a support bundle you can copy or email to support.")
+
                     // License Terms + Privacy Policy on one line
                     HStack(spacing: 10) {
                         Button {
@@ -6277,18 +6298,35 @@ struct ContentView: View {
     /// legacy custom/primary fallback). Used to avoid dropping an awaiting card into a routing path
     /// that would immediately bail — leaving the card vanished with no feedback.
     private func v3HasUsableDestination(_ dest: Destination?) -> Bool {
-        if let d = dest ?? defaultDestination, !d.path.isEmpty { return true }
-        if useCustomDest, !customDestPath.isEmpty { return true }
-        return !primarySSDPath.isEmpty
+        v3DestinationBlockReason(dest) == nil
+    }
+
+    /// Returns nil when routing THIS card would actually succeed right now, otherwise a
+    /// human reason it must stay parked. Mirrors the resolution branches in
+    /// `routeCardsForIngest` exactly — a non-empty saved primary path is NOT enough
+    /// (the drive must be mounted → `selectedPrimary != nil`), and an SSD destination
+    /// needs a resolvable project folder. Keeping this in lockstep is what stops a manual
+    /// Start from consuming a card that would then silently bail inside the routing Task.
+    private func v3DestinationBlockReason(_ dest: Destination?) -> String? {
+        if let d = dest ?? defaultDestination, !d.path.isEmpty {
+            if d.isCustomFolder { return nil }   // folder existence is re-checked at copy time (toasts there)
+            let proj = resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName)
+            return proj.isEmpty ? "set a project name before starting." : nil
+        }
+        if useCustomDest, !customDestPath.isEmpty { return nil }
+        if primarySSDPath.isEmpty { return "add a destination before starting." }
+        if selectedPrimary == nil { return "primary SSD isn’t mounted — reconnect it or choose another destination." }
+        if projectName.trimmingCharacters(in: .whitespaces).isEmpty { return "set a project name before starting." }
+        return nil
     }
 
     @MainActor private func startAwaiting(_ awaitingID: UUID) {
         guard let item = awaitingCards.first(where: { $0.id == awaitingID }) else { return }
         let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
-        // Don't hand the card to a routing path with NO destination — it would vanish silently.
-        // Keep it parked and say why.
-        guard v3HasUsableDestination(dest) else {
-            v3ShowToast("Add a destination before starting \(item.customName.isEmpty ? item.card.name : item.customName).")
+        // Don't hand the card to a routing path that would bail — it would vanish silently.
+        // Keep it parked and say exactly why (missing dest / unmounted primary / no project).
+        if let reason = v3DestinationBlockReason(dest) {
+            v3ShowToast("\(item.customName.isEmpty ? item.card.name : item.customName): \(reason)")
             return
         }
         seenCardPaths.insert(item.card.path)
@@ -6643,6 +6681,7 @@ struct ContentView: View {
                 let trimmedProject = resolveProjectFolder(destProject: dest.projectFolder, globalProject: projectName)
                 guard !trimmedProject.isEmpty else {
                     statusText = "Project name required."
+                    v3ShowToast("\(card.name): set a project name before starting.")
                     return
                 }
                 useCustomDestForThisCard = false
@@ -6670,11 +6709,13 @@ struct ContentView: View {
             // Legacy fallback — primary SSD + project.
             guard let primary = selectedPrimary else {
                 statusText = "Select a primary SSD."
+                v3ShowToast("\(card.name): primary SSD isn’t mounted — reconnect it or choose another destination.")
                 return
             }
             let trimmedProject = projectName.trimmingCharacters(in: .whitespaces)
             guard !trimmedProject.isEmpty else {
                 statusText = "Project name required."
+                v3ShowToast("\(card.name): set a project name before starting.")
                 return
             }
             useCustomDestForThisCard = false
@@ -11479,6 +11520,12 @@ extension ContentView {
     /// Free-space label for a destination tile.
     private func v3DestFree(_ d: Destination) -> String { v3FreeSpace(d.path) }
 
+    /// A configured destination whose drive/folder is no longer reachable — the off-main-thread
+    /// free-space probe published the "—" sentinel (see `freeSpaceLabel`). Reusing that cache means
+    /// no synchronous statting in the render path. nil cache ("…", still probing) is NOT offline,
+    /// so nothing flickers offline on launch before the first probe lands.
+    private func v3DestOffline(_ d: Destination) -> Bool { v3FreeSpaceCache[d.path] == "—" }
+
     /// Project / subfolder summary for a destination tile — the disambiguator when the same physical
     /// drive backs more than one destination. Reflects the fallback (empty project → global project).
     private func v3DestPathLabel(_ d: Destination) -> String {
@@ -12433,6 +12480,14 @@ extension ContentView {
     }
 
     private var v3CombinedMBps: Double { v3ActiveWork.reduce(0) { $0 + $1.liveMBps } }
+    // Live-session peak / average, computed from the rolling speedHistory that feeds the
+    // sparkline (non-zero samples only, so idle scan/flush gaps don't drag the average down).
+    private var v3SessionPeakMBps: Double { speedHistory.max() ?? 0 }
+    private var v3SessionAvgMBps: Double {
+        let moving = speedHistory.filter { $0 > 0 }
+        guard !moving.isEmpty else { return 0 }
+        return moving.reduce(0, +) / Double(moving.count)
+    }
     private var v3ActiveLanes: [(id: UUID, ing: ActiveIngest)] { v3Lanes.filter { $0.ing.phase != .done } }
     private var v3DoneLanes: [(id: UUID, ing: ActiveIngest)] { v3Lanes.filter { $0.ing.phase == .done } }
 
@@ -13053,6 +13108,15 @@ extension ContentView {
                         Button("Reset") { renameTemplate = "{cardname}_{original}" }
                             .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
                     }.padding(.horizontal, 18).padding(.vertical, 12)
+                    // Live preview of the template against a sample clip (mirrors the preset editor).
+                    let renamePreview = renameTemplatePreview(renameTemplate)
+                    HStack(spacing: 6) {
+                        Image(systemName: "eye").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                        Text(renamePreview)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(renamePreview.hasPrefix("⚠") ? Color.orange : v3Cyan)
+                    }
+                    .padding(.horizontal, 18).padding(.bottom, 12)
                 }
             }
             v3SettingsSection("PROJECT SCAFFOLD") {
@@ -14115,6 +14179,14 @@ extension ContentView {
             }
             .frame(width: 320, height: 320)
             .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["ring": $0] }
+            // Live combined-speed sparkline — mounts only during an active copy (needs ≥2 samples),
+            // so idle / all-done ring states are untouched. No TimelineView: the Canvas redraws on
+            // the existing per-second speedHistory update, not a continuous animation loop.
+            if runningCount > 0 && speedHistory.count >= 2 {
+                SparklineView(samples: speedHistory, currentMBps: v3CombinedMBps, color: v3Cyan)
+                    .frame(width: 200, height: 40)
+                    .transition(.opacity)
+            }
             // The ONE auto-ingest toggle (used to also live in the top bar + footer). The redundant
             // "N waiting — drag…" strip is gone: v3RingCenter's waiting state already says it.
             v3AutoIngestToggle
@@ -14198,6 +14270,10 @@ extension ContentView {
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.75))
                 Text("\(v3SpeedText(v3CombinedMBps)) combined")
                     .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                if v3SessionPeakMBps > 0 {
+                    Text("peak \(v3SpeedText(v3SessionPeakMBps)) · avg \(v3SpeedText(v3SessionAvgMBps))")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
                 if !v3Summary.isEmpty {
                     Text(v3Summary).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
                 }
@@ -14472,6 +14548,17 @@ extension ContentView {
                     if isDefault {
                         Text("DEFAULT").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
                             .padding(.horizontal, 7).padding(.vertical, 3).background(v3Amber.opacity(0.14), in: Capsule())
+                    }
+                    // A configured drive can silently eject — flag it so a card isn't routed to a
+                    // destination that would bail at copy time. Reads the free-space probe cache.
+                    if v3DestOffline(d) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 8))
+                            Text("OFFLINE")
+                        }
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
+                        .padding(.horizontal, 7).padding(.vertical, 3).background(v3Amber.opacity(0.16), in: Capsule())
+                        .help("This destination isn’t reachable — the drive may be ejected or the folder moved. Reconnect it before routing a card here.")
                     }
                 }
                 Text(v3DestFree(d)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
