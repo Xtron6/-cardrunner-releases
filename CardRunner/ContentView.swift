@@ -1092,7 +1092,7 @@ enum ShortcutAction: String, CaseIterable {
         case .openSettings:     return "Open Settings"
         case .openLog:          return "Toggle Log Panel"
         case .openHistory:      return "Toggle History Panel"
-        case .openInFinder:     return "Open Last Destination in Finder"
+        case .openInFinder:     return "Open Destination in Finder (live during a transfer)"
         case .switchPreset1:    return "Switch to Preset 1"
         case .switchPreset2:    return "Switch to Preset 2"
         case .switchPreset3:    return "Switch to Preset 3"
@@ -1260,6 +1260,35 @@ extension View {
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(tint.opacity(border), lineWidth: 1.5))
             .shadow(color: tint.opacity(glow), radius: glowRadius, y: 0)
+    }
+}
+
+/// Blue "editable text" treatment — the card-name field's look (tinted fill + border + soft glow on
+/// hover/focus), reusable for ANY editable TextField. Pass the field's `@FocusState` value + accent.
+/// Reduce-Motion aware. Apply AFTER the field's own `.padding(...)` so the fill wraps the padded field.
+struct V3EditableFieldModifier: ViewModifier {
+    var focused: Bool
+    var accent: Color
+    var cornerRadius: CGFloat
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        let hot = hovering || focused
+        content
+            .background((hot ? accent.opacity(focused ? 0.10 : 0.06) : Color.white.opacity(0.04)),
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(
+                focused ? AnyShapeStyle(accent)
+                        : (hovering ? AnyShapeStyle(accent.opacity(0.6)) : AnyShapeStyle(.white.opacity(0.12))),
+                lineWidth: hot ? 1.5 : 1))
+            .shadow(color: accent.opacity(hot ? (focused ? 0.4 : 0.28) : 0), radius: hot ? 6 : 0)
+            .animation(reduceMotion ? .easeInOut(duration: 0.12) : .easeInOut(duration: 0.14), value: hot)
+            .onHover { hovering = $0 }
+    }
+}
+extension View {
+    func v3EditableField(focused: Bool, accent: Color, cornerRadius: CGFloat = 10) -> some View {
+        modifier(V3EditableFieldModifier(focused: focused, accent: accent, cornerRadius: cornerRadius))
     }
 }
 
@@ -1670,6 +1699,7 @@ struct ContentView: View {
     @State private var v3ProjParent = ""             // parent dir the new project folder is created in (drive root by default)
     @State private var v3ProjParentOverridden = false // true once the user picks a custom parent via "Change…"
     @State private var v3ProjColorHover: Int? = nil  // color swatch under the cursor in the New-project sheet
+    @FocusState private var v3ProjNameFocused: Bool  // New-project FOLDER NAME field focus (blue-glow field)
     @AppStorage("pref_newProjectSetsDefault") private var v3NewProjSetsDefault: Bool = true  // New project → also make it the default dest
 
     // New project folder sheet
@@ -4469,11 +4499,11 @@ struct ContentView: View {
             // Settings is open so a module can't render BEHIND the settings scrim (which would also
             // put two Escape/.cancelAction handlers on screen at once).
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleHistory)) { _ in
-                if !isShowingSettings { showV3History.toggle() }
+                if !isShowingSettings { v3PresentModal($showV3History, !showV3History) }
             }
             // View → Show Log  (⌘⇧G)
             .onReceive(NotificationCenter.default.publisher(for: .menuToggleLog)) { _ in
-                if !isShowingSettings { showV3Log.toggle() }
+                if !isShowingSettings { v3PresentModal($showV3Log, !showV3Log) }
             }
             // Help → Report an Issue…
             .onReceive(NotificationCenter.default.publisher(for: .menuReportIssue)) { _ in
@@ -7432,12 +7462,17 @@ struct ContentView: View {
             isShowingSettings = true
         case .openLog:
             // Route to the v3 log sheet, mirroring the menu handler (menuToggleLog).
-            if !isShowingSettings { showV3Log.toggle() }
+            if !isShowingSettings { v3PresentModal($showV3Log, !showV3Log) }
         case .openHistory:
             // Route to the v3 history sheet, mirroring the menu handler (menuToggleHistory).
-            if !isShowingSettings { showV3History.toggle() }
+            if !isShowingSettings { v3PresentModal($showV3History, !showV3History) }
         case .openInFinder:
-            let dest = finderDestPath
+            // During a transfer, jump to the folder footage is landing in RIGHT NOW (the first
+            // in-flight lane's destination); otherwise the last-ingested / default destination.
+            let live = activeIngests.values.first {
+                [.scanning, .building, .copying, .finalizing, .verifying].contains($0.phase)
+            }?.destPath
+            let dest = (live?.isEmpty == false) ? live! : finderDestPath
             if !dest.isEmpty {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dest))
             }
@@ -11311,7 +11346,7 @@ extension ContentView {
         v3AddName = ""
         v3AddNameEdited = false
         v3AddError = ""
-        showV3AddDest = true
+        v3PresentModal($showV3AddDest)
     }
 
     /// Today's date in the Settings ▸ Naming "folder date format", as a project-name PREFIX ending in
@@ -11333,7 +11368,7 @@ extension ContentView {
         // project default → /Volumes/Gallo 8TB), NOT inside the project subfolder. "Change…" overrides.
         v3ProjParent = v3ProjDefaultParent
         v3ProjParentOverridden = false
-        showV3NewProject = true
+        v3PresentModal($showV3NewProject)
     }
 
     private func v3PickCustomFolderForAdd() {
@@ -11476,8 +11511,8 @@ extension ContentView {
                                         set: { if $0 != name.wrappedValue { nameEdited.wrappedValue = true }; name.wrappedValue = $0 }))
             .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
             .focused($v3NameFocused).onSubmit { v3NameFocused = false }
-            .padding(12).background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(v3NameFocused ? v3Cyan.opacity(0.6) : .white.opacity(0.10)))
+            .padding(12)
+            .v3EditableField(focused: v3NameFocused, accent: v3Cyan)
 
         Text(v3PathPreview(drivePath: drivePath, project: project.wrappedValue, subfolder: subfolder.wrappedValue))
             .font(.system(size: 11, design: .monospaced))
@@ -11560,7 +11595,7 @@ extension ContentView {
         v3EditNameEdited = true
         v3EditError = ""
         refreshFreeSpaceCache()
-        showV3EditDest = true
+        v3PresentModal($showV3EditDest)
     }
 
     /// Save the destination editor. Mutates the existing `Destination` in place (never re-routes an
@@ -11865,8 +11900,9 @@ extension ContentView {
             v3SheetLabel("FOLDER NAME")
             TextField("Project name", text: $v3ProjName)
                 .textFieldStyle(.plain).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
-                .padding(14).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
-                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(v3Purple.opacity(0.5)))
+                .focused($v3ProjNameFocused)
+                .padding(14)
+                .v3EditableField(focused: v3ProjNameFocused, accent: v3Cyan, cornerRadius: 11)
             Text("Auto-filled with today's date — add a shoot name (e.g. 260629_NWSL).")
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
             v3SheetLabel("FOLDER COLOR")
@@ -11986,6 +12022,9 @@ extension ContentView {
                 .opacity(enabled ? 1 : 0.4)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(!enabled).v3Hover(glow: v3Purple, enabled: enabled)
+            // Enter/Return commits the sheet (Add destination, Create folder, …). Only the open
+            // modal's primary button exists (modals are conditionally rendered), so no conflict.
+            .keyboardShortcut(.defaultAction)
     }
 
     // MARK: Ingest-history sheet
@@ -12011,7 +12050,7 @@ extension ContentView {
                 }.frame(maxHeight: 360)
             }
         }
-        .padding(26).frame(width: 580, height: 560)
+        .padding(26).frame(width: 580, height: 560, alignment: .top)   // pin content (stats) to the TOP, not center
         .background(Color(hex: "#0c0822")).preferredColorScheme(.dark)
     }
 
@@ -12266,6 +12305,14 @@ extension ContentView {
     }
     private func v3SpeedText(_ mbps: Double) -> String {
         mbps >= 1000 ? String(format: "%.2f GB/s", mbps / 1000) : String(format: "%.0f MB/s", mbps)
+    }
+
+    /// Present (or toggle) a modal WITH the grow+fade animation. The modal content carries
+    /// `.transition(v3ModuleTransition)` (subtle scale-in + opacity), but a transition only animates
+    /// inside an animation transaction — so every OPEN goes through here (dismiss already animates).
+    /// Reduce-Motion aware via v3Anim.
+    private func v3PresentModal(_ b: Binding<Bool>, _ on: Bool = true) {
+        withAnimation(v3Anim(.spring(response: 0.32, dampingFraction: 0.84))) { b.wrappedValue = on }
     }
 
     // MARK: Body
@@ -12955,7 +13002,7 @@ extension ContentView {
                 .help(awaitingCards.isEmpty ? "Simulate a full ingest (no card needed) — exercises every lane/ring state"
                                             : "Unavailable while cards are waiting to route — the demo would auto-start them")
 
-            Button { showV3Log = true } label: {
+            Button { v3PresentModal($showV3Log) } label: {
                 Label("Show Log", systemImage: "doc.plaintext").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
@@ -13169,7 +13216,7 @@ extension ContentView {
             }.buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3GearHovered)
                 .onHover { v3GearHovered = $0 }.help("Settings")
-            Button { showV3History = true } label: {
+            Button { v3PresentModal($showV3History) } label: {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(v3HistHovered ? v3Cyan : .white.opacity(0.7)).frame(width: 32, height: 32)
                     .background(.white.opacity(v3HistHovered ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 10))
@@ -14374,7 +14421,7 @@ extension ContentView {
         v3RangeFrom = inFmt.date(from: dateFilterFrom) ?? Date()
         v3RangeTo   = inFmt.date(from: dateFilterTo) ?? v3RangeFrom
         v3RangeSingleDay = (dateFilterSubMode != "range")
-        showV3DateRange = true
+        v3PresentModal($showV3DateRange)
     }
 
     /// Apply the chosen range: writes the custom-mode prefs the engine reads via buildIngestArgs.
