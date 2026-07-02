@@ -2034,6 +2034,11 @@ struct ContentView: View {
     @State private var wrongModeCard: Volume? = nil
     @State private var wrongModeDestID: UUID? = nil
     @State private var wrongModeCount: Int = 0
+    // Cards whose Start was pressed and whose scan/routing is in flight — the awaiting lane stays
+    // VISIBLE (showing "Starting…") through the async analyze/scan instead of vanishing, and its
+    // Start button is disabled so it can't be double-started. Cleared when the live lane is created
+    // (startIngest) or the routing resolves to a picker/queue/bail. Keyed by source path.
+    @State private var v3StartingPaths: Set<String> = []
 
     // Card nickname memory — UUID → human label persisted across sessions
     @State private var knownCardNicknames: [String: String] = [:]
@@ -6380,10 +6385,15 @@ struct ContentView: View {
             v3ShowToast("\(item.customName.isEmpty ? item.card.name : item.customName): \(reason)")
             return
         }
+        // Re-entry guard: ignore a second Start while this card's scan is already in flight.
+        guard !v3StartingPaths.contains(item.card.path) else { return }
         seenCardPaths.insert(item.card.path)
         if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
         pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
-        awaitingCards.removeAll { $0.id == awaitingID }
+        // Keep the awaiting lane VISIBLE (as "Starting…") through the async scan instead of removing
+        // it here — it's handed off to the live lane atomically when startIngest creates it, so the
+        // card is never in neither list. Removing it up-front is exactly what made it vanish.
+        withAnimation(v3Anim(.easeInOut(duration: 0.15))) { _ = v3StartingPaths.insert(item.card.path) }
         routeCardsForIngest([item.card], destination: dest)
     }
 
@@ -6424,6 +6434,11 @@ struct ContentView: View {
         // before deciding whether to start ingest or show a picker.
         Task {
             for card in cards {
+                // Clear the "Starting…" guard once this card's routing resolves to ANY outcome
+                // (immediate ingest, picker, queue, or bail) — runs on every path out of the loop
+                // body, including `continue`. The awaiting lane itself is removed at lane creation
+                // (startIngest); this just re-enables the Start button if no lane was created.
+                defer { let p = card.path; Task { @MainActor in self.v3StartingPaths.remove(p) } }
                 // ── Guard: if any picker is already open, queue this card ─────
                 let anySheetOpen = await MainActor.run {
                     self.showDatePickerSheet || self.showReelPickerSheet
@@ -6834,6 +6849,13 @@ struct ContentView: View {
             cameraModel: card.cameraModel,
             projectRoot: resolvedProjectRoot
         )
+        // Hand off from the awaiting pile to this live lane ATOMICALLY — the card was kept visible as
+        // an awaiting "Starting…" lane through the scan; now that its real lane exists, drop the
+        // awaiting entry so the card is shown exactly once (never in neither list = no vanish/respawn).
+        withAnimation(v3Anim(.easeInOut(duration: 0.15))) {
+            awaitingCards.removeAll { $0.card.path == card.path }
+        }
+        v3StartingPaths.remove(card.path)
         // Lane display + the folder this card copied under (same resolved value as --cardlabel).
         // cardLabel is retained so a during-transfer rename knows the original folder name.
         activeIngests[processID]?.friendlyName = effectiveCardLabel
@@ -14037,25 +14059,37 @@ extension ContentView {
                     .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.head)
             }
             HStack(spacing: 7) {
-                Text("Name the folder, then Start")
+                let starting = v3StartingPaths.contains(aw.card.path)
+                Text(starting ? "Scanning card…" : "Name the folder, then Start")
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
                 Spacer()
-                Button {
-                    // Remember the typed name for next time even without an explicit ✓/Enter —
-                    // must run while the card is still in awaitingCards (startAwaiting removes it).
-                    persistAwaitingName(aw.id)
-                    editingAwaitingID = nil
-                    // A fake card (spawned only via the secret DEV unlock) has no real footage, so
-                    // run a SIMULATED transfer end-to-end instead of the shell (which would just
-                    // report "no footage on this card"). Real cards always start a real ingest.
-                    if aw.card.path.hasPrefix(Self.v3FakePrefix) { v3DevSimulateIngest(aw) }
-                    else { startAwaiting(aw.id) }
-                } label: {
-                    Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 18).padding(.vertical, 6)
-                        .background(v3Green, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }.buttonStyle(.plain).v3Hover(scale: 1.06, glow: v3Green).help("Start now using \(v3AwaitingDestName(aw))")
+                if starting {
+                    // Scan/routing in flight — the lane stays put (no vanish); show progress here and
+                    // suppress the Start button so it can't be double-started.
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Starting…").font(.system(size: 13, weight: .bold)).foregroundStyle(v3Green)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(v3Green.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                } else {
+                    Button {
+                        // Remember the typed name for next time even without an explicit ✓/Enter —
+                        // must run while the card is still in awaitingCards.
+                        persistAwaitingName(aw.id)
+                        editingAwaitingID = nil
+                        // A fake card (spawned only via the secret DEV unlock) has no real footage, so
+                        // run a SIMULATED transfer end-to-end instead of the shell (which would just
+                        // report "no footage on this card"). Real cards always start a real ingest.
+                        if aw.card.path.hasPrefix(Self.v3FakePrefix) { v3DevSimulateIngest(aw) }
+                        else { startAwaiting(aw.id) }
+                    } label: {
+                        Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
+                            .padding(.horizontal, 18).padding(.vertical, 6)
+                            .background(v3Green, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }.buttonStyle(.plain).v3Hover(scale: 1.06, glow: v3Green).help("Start now using \(v3AwaitingDestName(aw))")
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12).frame(width: 360)
