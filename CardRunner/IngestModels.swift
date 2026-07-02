@@ -3,7 +3,7 @@
 //  Stage 1a). Value types only — no ContentView coupling, no UI.
 import Foundation
 
-struct Volume: Identifiable, Hashable {
+nonisolated struct Volume: Identifiable, Hashable {
     let id = UUID()
     let name: String
     let path: String
@@ -19,7 +19,7 @@ struct Volume: Identifiable, Hashable {
 /// user picked, footage lands directly under `<path>/<date>/…`). `id` is stable across
 /// launches so per-card routing (`QueuedIngest.destinationID`, `AwaitingCard.destinationID`)
 /// and the default-destination preference can reference it.
-struct Destination: Identifiable, Hashable, Codable {
+nonisolated struct Destination: Identifiable, Hashable, Codable {
     var id = UUID()
     var path: String
     var name: String
@@ -55,7 +55,7 @@ struct Destination: Identifiable, Hashable, Codable {
 /// user drags its node onto a destination (or presses Start). `destinationID` is the
 /// drive the user has chosen for it (nil = use the default). Mirrors the demo's
 /// `.awaiting` card state.
-struct AwaitingCard: Identifiable, Hashable {
+nonisolated struct AwaitingCard: Identifiable, Hashable {
     let id = UUID()
     let card: Volume
     var destinationID: UUID? = nil
@@ -70,7 +70,7 @@ struct AwaitingCard: Identifiable, Hashable {
 /// is the N-way mirror list — one `--secondary <path>` is emitted per entry (already filtered
 /// to exclude the primary destination and any path on the source card). When `useCustomDest`
 /// is true the builder emits `--dest-root`+`--primary <volumeRoot>`; otherwise `--primary`+`--project`.
-struct IngestArgsConfig {
+nonisolated struct IngestArgsConfig {
     var scriptPath: String
     var appVersion: String
     var cardPath: String
@@ -114,7 +114,7 @@ struct IngestArgsConfig {
 }
 
 /// One distinct capture-date found on a card during pre-ingest scanning.
-struct CardDateInfo: Identifiable {
+nonisolated struct CardDateInfo: Identifiable {
     var id: String { yyyymmdd }
     let yyyymmdd: String    // e.g. "20260529"
     let fileCount: Int
@@ -134,7 +134,7 @@ struct CardDateInfo: Identifiable {
 }
 
 /// Top-level capture folder (reel) found on a camera card during wrong-clock analysis.
-struct ReelInfo: Identifiable {
+nonisolated struct ReelInfo: Identifiable {
     let id: UUID = UUID()
     let folderName: String      // top-level folder name (relative to card/scan root)
     let folderPath: String      // absolute path
@@ -148,7 +148,7 @@ struct ReelInfo: Identifiable {
 }
 
 /// Full card analysis: date groups + reel structure + wrong-clock detection result.
-struct CardAnalysis {
+nonisolated struct CardAnalysis {
     let dates: [CardDateInfo]
     let reels: [ReelInfo]
     let hasImplausibleDates: Bool
@@ -163,7 +163,7 @@ struct CardAnalysis {
 
 /// A card waiting in the sequential ingest queue, optionally bound to a specific
 /// capture date (when the user chose individual dates in the picker).
-struct QueuedIngest {
+nonisolated struct QueuedIngest {
     let card: Volume
     /// YYYYMMDD to pass as --date-from, or nil to use the current dateFilterMode.
     let dateOverride: String?
@@ -198,7 +198,7 @@ struct QueuedIngest {
 /// Written to disk just before a transfer starts.  Deleted on clean process exit.
 /// If the app or Mac dies mid-transfer the file persists and is offered as a
 /// resume prompt on next launch.
-struct IngestCheckpoint: Identifiable, Codable {
+nonisolated struct IngestCheckpoint: Identifiable, Codable {
     let id: UUID
     let cardPath: String
     let cardName: String
@@ -221,7 +221,7 @@ struct IngestCheckpoint: Identifiable, Codable {
     let resumeArgs: [String]?
 }
 
-struct IngestHistoryEntry: Identifiable, Codable {
+nonisolated struct IngestHistoryEntry: Identifiable, Codable {
     let id: UUID
     let cardName: String
     let status: String
@@ -296,7 +296,7 @@ struct IngestHistoryEntry: Identifiable, Codable {
     }
 }
 
-struct AllTimeStats: Codable {
+nonisolated struct AllTimeStats: Codable {
     var totalCards: Int = 0
     var totalFiles: Int = 0
     var totalMB: Double = 0        // megabytes (raw from log NewMB or byte count ÷ 1 048 576)
@@ -323,7 +323,7 @@ struct AllTimeStats: Codable {
 }
 
 // MARK: - Failed Ingest Record
-struct FailedIngestRecord: Codable, Identifiable {
+nonisolated struct FailedIngestRecord: Codable, Identifiable {
     let id: UUID
     let cardName: String       // volume name e.g. "Untitled"
     var volumeUUID: String? = nil  // physical card identity — so a success only clears THIS card's record
@@ -335,7 +335,7 @@ struct FailedIngestRecord: Codable, Identifiable {
     let reason: String         // "Cancelled" or "Error"
 }
 
-enum IngestPhase: String {
+nonisolated enum IngestPhase: String {
     case idle       = "idle"
     case scanning   = "scanning"
     case building   = "building"
@@ -359,7 +359,7 @@ enum IngestPhase: String {
     }
 }
 
-struct ActiveIngest {
+nonisolated struct ActiveIngest {
     var cardName: String = ""
     var volumeUUID: String? = nil    // source card's volume UUID — lets a lane persist a nickname
     var sourcePath: String = ""      // source card's mount path — distinguishes two same-named UUID-less cards
@@ -440,7 +440,7 @@ struct ActiveIngest {
 /// must never regress: a transfer is a failure if the script exited non-zero OR any
 /// copy/verify error line was parsed (hasCopyError). Success is NEVER inferred from
 /// free-text status. See CardRunnerTests for the locked behavior matrix.
-struct IngestOutcome: Equatable {
+nonisolated struct IngestOutcome: Equatable {
     enum Status: String { case completed = "Completed", upToDate = "Up to date", error = "Error" }
     let didFail: Bool
     let status: Status
@@ -453,7 +453,7 @@ struct IngestOutcome: Equatable {
 }
 
 /// State the admission decision needs, kept free of View/@State so it's unit-testable.
-struct SchedulerSnapshot {
+nonisolated struct SchedulerSnapshot {
     /// Physical-volume device IDs (st_dev) of ingests currently running — one per card.
     let runningDestDevices: [dev_t]
     /// True while the onboarding demo holds the engine.

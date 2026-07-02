@@ -238,7 +238,7 @@ private struct VisualEffectBlur: NSViewRepresentable {
 
 // MARK: - Ingest Preset
 
-struct IngestPreset: Codable, Identifiable, Equatable {
+nonisolated struct IngestPreset: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String
 
@@ -2027,6 +2027,13 @@ struct ContentView: View {
     @State private var manifestReingestCard: Volume? = nil
     @State private var manifestReingestDestID: UUID? = nil
     @State private var manifestReingestCount: Int = 0
+    // Nothing copied because EVERY file was the wrong media type for the current mode (e.g. video
+    // clips while in Photo mode). "Already up to date" would be dangerously misleading — the footage
+    // is NOT backed up — so this offers a one-tap mode switch + re-copy of the still-mounted card.
+    @State private var showWrongModeSwitch: Bool = false
+    @State private var wrongModeCard: Volume? = nil
+    @State private var wrongModeDestID: UUID? = nil
+    @State private var wrongModeCount: Int = 0
 
     // Card nickname memory — UUID → human label persisted across sessions
     @State private var knownCardNicknames: [String: String] = [:]
@@ -2884,10 +2891,13 @@ struct ContentView: View {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 28))
                         .foregroundStyle(Color(hex: "#F59E0B"))
-                    Text("Couldn't read dates from this card.")
+                    Text("No \(importMode == "video" ? "video" : "photo") dates found on this card.")
                         .font(.system(size:13).weight(.semibold))
                         .foregroundStyle(textPrimary)
-                    Text("The card may still be initialising. Try scanning again, or tap \u{201C}Ingest all\u{201D} to copy everything.")
+                    // The date scan only counts files matching the current mode, so an all-\(other-type)
+                    // card reads as "no dates" here — call that out (it's the same trap as the wrong-mode
+                    // ingest alert) rather than implying the card is unreadable.
+                    Text("If this card holds \(importMode == "video" ? "photos" : "video") (e.g. video while you're in Photo mode), switch modes to see them. Otherwise the card may still be initialising — scan again, or tap \u{201C}Ingest all\u{201D} to copy everything.")
                         .font(.system(size:11))
                         .foregroundStyle(textMuted)
                         .multilineTextAlignment(.center)
@@ -4658,7 +4668,6 @@ struct ContentView: View {
     // with an already-long modifier chain on the root ZStack.
     private var menuNotificationHandlers: some View {
         let spring  = Animation.spring(response: 0.32, dampingFraction: 0.62)
-        let spring2 = Animation.spring(response: 0.38, dampingFraction: 0.78)
         return Color.clear
             // File → Settings…  (⌘,)
             .onReceive(NotificationCenter.default.publisher(for: .menuOpenSettings)) { _ in
@@ -5062,11 +5071,42 @@ struct ContentView: View {
                     if let card = manifestReingestCard {
                         let dest = manifestReingestDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
                         manifestReingestCard = nil
+                        // Auto-eject may have removed the card after the 0-copied run — don't dead-click.
+                        guard FileManager.default.fileExists(atPath: card.path) else {
+                            v3ShowToast("Re-insert \(card.name) to re-ingest its footage.")
+                            return
+                        }
                         startIngest(for: card, destination: dest, ignoreManifest: true)
                     }
                 }
             } message: {
                 Text("No new files — all \(manifestReingestCount) clip\(manifestReingestCount == 1 ? "" : "s") were already copied from this card on a previous transfer. Re-ingest copies them again to the chosen destination (your earlier copy is untouched).")
+            }
+            // Wrong-mode: every file was the OTHER media type. `importMode` is still the current mode
+            // here (the switch happens in the action), so targetMode is the mode we need to switch TO.
+            .alert("Nothing copied — wrong mode", isPresented: $showWrongModeSwitch) {
+                let targetMode = importMode == "video" ? "Photo" : "Video"
+                Button("OK", role: .cancel) { wrongModeCard = nil }
+                Button("Switch to \(targetMode) & copy") {
+                    if let card = wrongModeCard {
+                        let dest = wrongModeDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
+                        wrongModeCard = nil
+                        importMode = importMode == "video" ? "photo" : "video"
+                        // With auto-eject ON a 0-copied run may have already ejected the card. Switch the
+                        // mode regardless (so the next insert is correct) and ask for a re-insert rather
+                        // than silently no-op'ing startIngest against a gone source.
+                        guard FileManager.default.fileExists(atPath: card.path) else {
+                            v3ShowToast("Switched to \(targetMode) mode — re-insert \(card.name) to copy its footage.")
+                            return
+                        }
+                        startIngest(for: card, destination: dest)
+                    }
+                }
+            } message: {
+                let fileType   = importMode == "video" ? "photo" : "video"
+                let currentM   = importMode == "video" ? "Video" : "Photo"
+                let targetMode = importMode == "video" ? "Photo" : "Video"
+                Text("These \(wrongModeCount) file\(wrongModeCount == 1 ? " is a" : "s are") \(fileType) file\(wrongModeCount == 1 ? "" : "s"), but CardRunner is in \(currentM) mode — so nothing was copied and this footage is NOT backed up yet. Switch to \(targetMode) mode to copy \(wrongModeCount == 1 ? "it" : "them"). Your card is untouched.")
             }
             .sheet(isPresented: $showDatePickerSheet) {
                 datePickerSheet
@@ -7426,6 +7466,16 @@ struct ContentView: View {
                         self.manifestReingestDestID = ingest.destinationID
                         self.manifestReingestCount  = ingest.skipManifest
                         self.showManifestReingest   = true
+                    } else if ingest.skipWrongMode > 0 && ingest.skipManifest == 0
+                                && ingest.skipDestExists == 0 && NSApplication.shared.isActive {
+                        // EVERY file was the wrong media type for the current mode (e.g. video clips
+                        // in Photo mode) — so NOTHING is backed up. Do NOT say "Already up to date"
+                        // (a user could pull the card thinking they're safe). Surface the mode
+                        // mismatch and offer a one-tap switch + copy of the still-mounted card.
+                        self.wrongModeCard   = card
+                        self.wrongModeDestID = ingest.destinationID
+                        self.wrongModeCount  = ingest.skipWrongMode
+                        self.showWrongModeSwitch = true
                     } else {
                         let alertBody = skipSummaryLine.isEmpty
                             ? "No new files found on \(card.name)."
@@ -12561,8 +12611,9 @@ extension ContentView {
         let wanted = paths.filter { !$0.isEmpty }
         guard !wanted.isEmpty else { return }
         Task.detached(priority: .utility) {
-            var results: [String: String] = [:]
-            for p in wanted { results[p] = Self.freeSpaceLabel(forPath: p) }
+            // Build immutably so `results` is captured as a `let` across the actor hop
+            // (a captured `var` in concurrently-executing code is a Swift 6 data-race error).
+            let results = wanted.reduce(into: [String: String]()) { $0[$1] = Self.freeSpaceLabel(forPath: $1) }
             await MainActor.run { for (k, v) in results { self.v3FreeSpaceCache[k] = v } }
         }
     }
