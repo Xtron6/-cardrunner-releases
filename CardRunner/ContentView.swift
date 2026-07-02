@@ -13002,33 +13002,10 @@ extension ContentView {
                     v3ScaffoldEditor.padding(.horizontal, 18).padding(.vertical, 12)
                 }
             }
-            // Broadcast day-folder structure (competition-day roots keyed by a short code, e.g.
-            // TUWE / CURL). The engine feature is complete end-to-end; this restores the only
-            // missing piece — the toggle that died with the deleted legacy Pro Tools tab (P1-4).
-            v3SettingsSection("BROADCAST — WINTER OLYMPICS") {
-                v3ToggleRow("Olympics day-folder structure",
-                            "Organize footage into competition-day folders instead of plain dates. For broadcast day workflows.",
-                            $winterOlympicsMode)
-                if winterOlympicsMode {
-                    v3SettingDivider()
-                    HStack(spacing: 10) {
-                        Text("Day code").font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
-                        TextField("TUWE", text: Binding(
-                            get: { olympicsCode },
-                            // Uppercase + strip spaces so the folder segment is clean; the arg
-                            // emitter (IngestLogic) trims and skips an empty code, so a blank field
-                            // simply omits --olympics-code rather than emitting a bare flag.
-                            set: { olympicsCode = $0.uppercased().filter { !$0.isWhitespace } }))
-                            .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
-                            .frame(maxWidth: 120)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                        Button("Reset") { olympicsCode = "TUWE" }
-                            .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
-                        Spacer()
-                    }.padding(.horizontal, 18).padding(.vertical, 12)
-                }
-            }
+            // Winter Olympics broadcast day-folder mode is ARCHIVED — hidden from the UI per Xavier.
+            // The engine feature + plumbing stay intact (@AppStorage winterOlympicsMode / pref_olympicsCode
+            // at ~1814, buildIngestArgs emission, support-bundle readout), so it's dormant-not-deleted:
+            // still settable via `defaults write` and re-exposable by restoring this settings section.
         }
     }
 
