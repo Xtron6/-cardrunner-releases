@@ -4,7 +4,7 @@
 **Owner:** Xavier Gallo (maxmcfin@gmail.com). macOS SwiftUI app, **Mac-only**, direct-distribution (Sparkle, not App Store).
 **Repo root:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
 **Branch:** `nway-rebuild` (ALL work lives here; `main` is the original stub — do NOT branch off main).
-**Latest commit:** `54b1e4a`. Build + **68 unit** + **40 smoke** all green, tree clean.
+**Latest commit:** `fedea5d`. Build (Debug+Release) + **40 smoke** green, tree clean. The full §1 punch-list is **RESOLVED** and 3 independent final reviewers certified **PRODUCTION-READY** (no P0/P1). ⚠️ **68 unit tests NOT re-run this session** — the CLI test host was environmentally wedged ("runner hung before establishing connection", 7× — never a named failure); confirm via **Xcode ⌘U**. The unit-tested logic core (IngestLogic/IngestModels) is barely touched (only the `--latest` field removal).
 
 > Persistent project memory: `~/.claude/projects/-Users-xaviergallo-Documents-The-Everything-DIY-Apps-Apps-CardRunner/memory/`
 > Read `MEMORY.md` (index) → `cardrunner-roadmap.md` (full chronology + locked decisions, newest entries first) → this file (fast snapshot) → `UI-future.md` (repo root; design North Star).
@@ -19,25 +19,30 @@ CardRunner is a **camera-card offload tool** for video/photo shooters: plug an S
 
 ---
 
-## 1. ★ CURRENT STATE + PUNCH-LIST (the next tasks)
+## 1. ★ CURRENT STATE — PUNCH-LIST RESOLVED, PRODUCTION-READY (pending Xavier's hardware/unit sign-off)
 
-**The big overhaul is DONE and green:** legacy UI fully removed, v3 is the only face, footage-safety logic core extracted, and the mid-transfer / waiting-card / safe-to-pull UI redesigned to match Xavier's "dream" Claude-Design mockups. A full 3-agent audit (this session) found **no P0 / no footage-safety gaps**. Remaining items, prioritized:
+**The entire §1 punch-list is DONE** (5 commits on `2df488b` → `fedea5d`), delivered by a 3-agent team (planner + reviewer + lead) and certified **PRODUCTION-READY by 3 independent final reviewer passes** (footage-safety lens, release-readiness lens, holistic lens) — no P0/P1. See the roadmap memory top entry for the full blow-by-blow.
 
-### P1 — should fix / decide
-1. **Funnel animates forever after a failure — core-burn (a real regression to fix).** `ContentView.swift` ~`12122`: the funnel-animation gate is `if runningCount > 0 || dragLine != nil || !v3ActiveLanes.isEmpty`. `v3ActiveLanes` includes `.failed` lanes (they linger in `activeIngests`), so after any failed transfer the 20fps `TimelineView` Canvas never stops → burns a core with nothing flowing (the exact thing the code is paranoid about). **Fix:** gate on IN-FLIGHT phases only — `v3ActiveLanes.contains { [.copying,.finalizing,.verifying,.scanning,.building].contains($0.phase) }` — so fake + real copies still animate but a purely-`.failed` residue doesn't. (The `|| !v3ActiveLanes.isEmpty` clause was added so DEV fake copying lanes animate; preserve that, just exclude failed/idle.)
-2. **DEV fake-fixtures ship in RELEASE.** The DEV bar spawners (`+Card/Copy/Done/Fail/Clear`) + `v3DevSimulateIngest` are gated only by the *user-flippable* `debugMode` `@AppStorage` (Settings▸About▸Developer), NOT `#if DEBUG`. Footage-safe, but a release user could spawn phantom cards (they mutate `v3FailedCount`/`v3AllDone`/ring). **Decision for Xavier:** wrap them in `#if DEBUG`, or keep as "advanced, at your own risk."
-3. **Stale celebration from the fake sim (cheap).** `v3DevSimulateIngest` sets `v3PendingCelebration=true`; if other lanes are active it isn't consumed and can fire later on a real batch. Fix: reset `v3PendingCelebration=false` in `v3DevClearFakeCards`, and/or don't arm it when non-fake lanes exist. Bundle with #2.
-4. **Winter Olympics mode + code: UNREACHABLE.** Full engine feature (`CardRunner.sh:2448-2449`), plumbing + `@AppStorage("winterOlympicsMode")`/`pref_olympicsCode` (`ContentView.swift:1592-93`) + `buildIngestArgs` emission intact, but the ONLY UI died with the deleted legacy ProTools tab — now only settable via `defaults write`. **Decision:** re-expose a v3 toggle (Settings▸Naming or a "Pro" section) or delete the dead plumbing.
-5. **`⌘⇧O` + destination readout use the LEGACY field.** `menuOpenDestination` (~`4418`) and `v3DestRoot` (~`12030`) read `selectedPrimary`/`primarySSDPath`, not the v3 `defaultDestination` — can open the wrong/no folder for a multi-destination user. (Copy path is correct; this is just the readout/Open-in-Finder.)
+### What shipped
+- **P1-1** funnel core-burn: gate narrowed to `v3FunnelFlowing` (in-flight phases only) at ~`12186`. (Auditor note: real failures are always removed from `activeIngests`, so this was DEV-fixture-reachable-only — fix still correct.)
+- **P1-2/3** DEV fake-fixtures (spawners + 6 helpers + `v3DevSimulateIngest` + Start branch) now `#if DEBUG` (with `#else startAwaiting`); `v3DevClearFakeCards` resets `v3PendingCelebration`. **Release build is now a must-pass gate** and is green.
+- **P1-4** Winter Olympics RE-EXPOSED: "BROADCAST — WINTER OLYMPICS" section in `v3SettingsNaming` (toggle + uppercased/trimmed day-code field).
+- **P1-5** `menuOpenDestination` (⌘⇧O + the ring's "Open in Finder" — same notification, a 3rd site the old list missed) → `defaultDestination?.path`; new `v3LaneDestName(_:)` for per-lane "→ Drive" labels. `v3DestRoot`/`v3DestDrivePath` kept (they back the legacy no-dest golden box).
+- **P2:** `--latest` pruned (shell flag kept for back-compat); `SettingsTab` deep-link bug fixed (writers → `v3SettingsCat`) then enum deleted; dead `.failed` %-overlay branch removed. (`updateCurrentPreset` was already gone.)
+- **UI sweep (restrained, "ship 1-3"):** Reduce Motion now honored (`v3Anim`/`v3ModuleTransition` + hover/swoosh/module/pop gates); log-panel **jump-to-tail + edge-fade** (North Star #1, event-driven); typography unified (97 DM Sans + 1 DM Mono → SF).
 
-### P2 — cleanup / cosmetic
-- Prune `--latest N` (intentionally dropped, but `latestCount` field + arg branch remain: `IngestLogic.swift:51`).
-- Delete dead `updateCurrentPreset()` (0 callers) and the dead old `SettingsTab` enum (`ContentView.swift:217`).
-- Dead `.failed` branch in the %-overlay (`~12160`, only rendered for copying/finalizing/verifying).
-- **Restyle the 4 engine-triggered sheets to v3** (reel picker, resume, wrong-clock, About tab still use legacy `DM Sans` — functional, visually legacy). Known-open North-Star item.
-- **Monolith split Stage 1b + 2** (see §3) — ContentView is still ~14.2k lines in one struct.
+### ⚠️ Still Xavier's to validate (automated review + smoke can't cover these)
+1. **68/68 unit tests via Xcode ⌘U** — the CLI host was environmentally wedged this session (runner-hung ×7, never a named failure). Logic core barely touched (only the `--latest` field).
+2. **Funnel calm-after-failure (P1-1)** — trigger a real failed transfer; confirm via Activity Monitor the funnel Canvas stops redrawing (no pegged core), the red connector stays a static frame, and the failure strip surfaces.
+3. **Release build is what ships** — in a Release run with Debug Mode ON, confirm the DEV `+Card/Copy/Done/Fail/Clear` spawners are **absent** (Run-UI-Demo / Show-Log / Dry-Run remain).
+4. **Winter Olympics (P1-4)** — toggle on, set a day code, run a real ingest; confirm competition-day folders + `--olympics-code` reaches the engine (support bundle reports it).
+5. **⌘⇧O + multi-dest readout (P1-5)** — with 2+ destinations and a non-default default, ⌘⇧O opens the *default* dest and each lane's "→ Drive" names its *own* routed dest.
+6. **Reduce Motion** — enable it in System Settings ▸ Accessibility; UI still reads reactive (glow/brightness) without motion travel.
 
-*(Optional/North-Star, not queued: the `UI-future.md` polish batch; a general Reduce-Motion pass.)*
+### Deferred (NOT queued — per UI-future.md restraint + Xavier's standing calls)
+- North-Star polish follow-ups: origin-aware blur-in module transitions; golden-box gradient sweep; edge-fade on History/Settings; expandable settings rail; **proximity scaling** (the one item that can regress core-burn).
+- **Monolith split Stage 1b + 2** (see §3) — ContentView ~14.2k lines; Xavier said "stop for now".
+- Orphaned `DMSans-Regular.ttf` bundled asset (has a pbxproj ref → remove via Xcode drag-to-trash, not CLI).
 
 ---
 
