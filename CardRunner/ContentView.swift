@@ -12172,79 +12172,7 @@ extension ContentView {
                 if dryRun { v3DryRunBanner.zIndex(1) }
                 // Developer tools (Run Demo / log / dry-run) — only when Debug Mode is on.
                 if debugMode { v3DebugStrip.zIndex(1) }
-                HStack(alignment: .top, spacing: 24) {
-                    v3Sources.frame(maxWidth: .infinity, alignment: .leading)
-                    v3Ring.frame(width: 360)
-                    v3Destinations.frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .frame(maxHeight: .infinity)
-                .coordinateSpace(name: "stage")
-                .backgroundPreferenceValue(V3AnchorKey.self) { anchors in
-                    GeometryReader { geo in
-                        let rects = anchors.mapValues { geo[$0] }
-                        // Animate the flowing connectors ONLY while there's real flow (copying or
-                        // a drag), and cap the rate at 20 fps — NOT display refresh — so the Canvas
-                        // can never peg a core. When idle, draw ONE static frame (no redraw loop).
-                        // The previous TimelineView(.animation) ran at 120 fps forever and burned
-                        // a whole core, starving the ingest pipe.
-                        // Gate on IN-FLIGHT phases only: a purely-`.failed` (or idle) lane residue
-                        // must NOT keep the Canvas redrawing — otherwise a lingering failed lane
-                        // (today only reachable via the DEV fake fixtures) pegs a core with nothing
-                        // flowing. Real + fake copying lanes still animate; failed/idle don't.
-                        let v3FunnelFlowing = v3ActiveLanes.contains {
-                            [.scanning, .building, .copying, .finalizing, .verifying].contains($0.ing.phase)
-                        }
-                        if runningCount > 0 || dragLine != nil || v3FunnelFlowing {
-                            TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
-                                Canvas { ctx, _ in
-                                    let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
-                                        .truncatingRemainder(dividingBy: 0.7)) / 0.7 * 14
-                                    v3DrawFunnel(&ctx, rects: rects, phase: phase)
-                                }
-                            }
-                        } else {
-                            Canvas { ctx, _ in v3DrawFunnel(&ctx, rects: rects, phase: 0) }
-                        }
-                    }
-                    // The funnel Canvas is the background of the central columns, so this catches taps
-                    // on the empty central stage too — click there to leave (and commit) a lane-name
-                    // edit. It sits BEHIND the lanes/tiles/ring/dots, so their taps + drags win.
-                    .contentShape(Rectangle())
-                    .onTapGesture { editingAwaitingID = nil; editingActiveID = nil }
-                }
-                // Completion celebration — a one-shot neon burst anchored to the ring, above the
-                // columns. Non-interactive; driven by v3CelebrationTrigger + the selected style.
-                .overlayPreferenceValue(V3AnchorKey.self) { anchors in
-                    GeometryReader { geo in
-                        if let r = anchors["ring"].map({ geo[$0] }) {
-                            V3CompletionOverlay(center: CGPoint(x: r.midX, y: r.midY),
-                                                radius: r.width / 2,
-                                                style: completionAnim,
-                                                trigger: v3CelebrationTrigger)
-                        }
-                    }
-                    .allowsHitTesting(false)
-                }
-                // Per-lane % riding at the START of each connector line, OUTSIDE the card — colored
-                // to match that lane's funnel line (state-driven text, not an animation → no core burn).
-                .overlayPreferenceValue(V3AnchorKey.self) { anchors in
-                    GeometryReader { geo in
-                        ForEach(Array(v3ActiveLanes.enumerated()), id: \.element.id) { i, item in
-                            if [.copying, .finalizing, .verifying].contains(item.ing.phase),
-                               let r = anchors["lane-\(item.id)"].map({ geo[$0] }) {
-                                // The guard above already excludes `.failed`, so this line is always
-                                // an in-flight lane — colour it to match its funnel connector.
-                                let col: Color = v3LineColor(i)
-                                Text("\(Int(v3LanePct(item.ing)))%")
-                                    .font(.system(size: 22, weight: .bold))
-                                    .foregroundStyle(col)
-                                    .shadow(color: col.opacity(0.5), radius: 6)
-                                    .position(x: r.maxX + 42, y: r.midY - 8)
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
-                }
+                v3Stage
                 v3BottomBar
             }
             .padding(26)
@@ -13187,8 +13115,94 @@ extension ContentView {
     }
 
     // MARK: Sources (real lanes + awaiting "drag to route" lanes)
+    /// The central stage: source lanes · ring · destinations, with the funnel-connector Canvas
+    /// background + the celebration and per-lane-% overlays. Extracted from `bodyV3` into its own
+    /// computed property so the parent view expression stays within the Swift type-checker's
+    /// inference budget (the columns' new center-alignment frames pushed the inline body over it).
+    private var v3Stage: some View {
+        HStack(alignment: .top, spacing: 24) {
+            // Each column fills the FULL stage height so its balanced top/bottom Spacers can
+            // center the content group on the ring's vertical center (was top-pinned → cards
+            // piled down from the top). The ring already had balanced spacers.
+            v3Sources.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            v3Ring.frame(width: 360)   // ring VStack already fills height via its balanced spacers
+            v3Destinations.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+        .frame(maxHeight: .infinity)
+        .coordinateSpace(name: "stage")
+        .backgroundPreferenceValue(V3AnchorKey.self) { anchors in
+            GeometryReader { geo in
+                let rects = anchors.mapValues { geo[$0] }
+                // Animate the flowing connectors ONLY while there's real flow (copying or
+                // a drag), and cap the rate at 20 fps — NOT display refresh — so the Canvas
+                // can never peg a core. When idle, draw ONE static frame (no redraw loop).
+                // The previous TimelineView(.animation) ran at 120 fps forever and burned
+                // a whole core, starving the ingest pipe.
+                // Gate on IN-FLIGHT phases only: a purely-`.failed` (or idle) lane residue
+                // must NOT keep the Canvas redrawing — otherwise a lingering failed lane
+                // (today only reachable via the DEV fake fixtures) pegs a core with nothing
+                // flowing. Real + fake copying lanes still animate; failed/idle don't.
+                let v3FunnelFlowing = v3ActiveLanes.contains {
+                    [.scanning, .building, .copying, .finalizing, .verifying].contains($0.ing.phase)
+                }
+                if runningCount > 0 || dragLine != nil || v3FunnelFlowing {
+                    TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
+                        Canvas { ctx, _ in
+                            let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
+                                .truncatingRemainder(dividingBy: 0.7)) / 0.7 * 14
+                            v3DrawFunnel(&ctx, rects: rects, phase: phase)
+                        }
+                    }
+                } else {
+                    Canvas { ctx, _ in v3DrawFunnel(&ctx, rects: rects, phase: 0) }
+                }
+            }
+            // The funnel Canvas is the background of the central columns, so this catches taps
+            // on the empty central stage too — click there to leave (and commit) a lane-name
+            // edit. It sits BEHIND the lanes/tiles/ring/dots, so their taps + drags win.
+            .contentShape(Rectangle())
+            .onTapGesture { editingAwaitingID = nil; editingActiveID = nil }
+        }
+        // Completion celebration — a one-shot neon burst anchored to the ring, above the
+        // columns. Non-interactive; driven by v3CelebrationTrigger + the selected style.
+        .overlayPreferenceValue(V3AnchorKey.self) { anchors in
+            GeometryReader { geo in
+                if let r = anchors["ring"].map({ geo[$0] }) {
+                    V3CompletionOverlay(center: CGPoint(x: r.midX, y: r.midY),
+                                        radius: r.width / 2,
+                                        style: completionAnim,
+                                        trigger: v3CelebrationTrigger)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        // Per-lane % riding at the START of each connector line, OUTSIDE the card — colored
+        // to match that lane's funnel line (state-driven text, not an animation → no core burn).
+        .overlayPreferenceValue(V3AnchorKey.self) { anchors in
+            GeometryReader { geo in
+                ForEach(Array(v3ActiveLanes.enumerated()), id: \.element.id) { i, item in
+                    if [.copying, .finalizing, .verifying].contains(item.ing.phase),
+                       let r = anchors["lane-\(item.id)"].map({ geo[$0] }) {
+                        // The guard above already excludes `.failed`, so this line is always
+                        // an in-flight lane — colour it to match its funnel connector.
+                        let col: Color = v3LineColor(i)
+                        Text("\(Int(v3LanePct(item.ing)))%")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(col)
+                            .shadow(color: col.opacity(0.5), radius: 6)
+                            .position(x: r.maxX + 42, y: r.midY - 8)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
     private var v3Sources: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Balanced with the trailing Spacer below → the whole group (header + cards) centers
+            // vertically on the ring; 1 card sits centered, N grow symmetrically up/down.
+            Spacer(minLength: 0)
             // Persistent failure warnings — survive lane cleanup AND app relaunch, so an operator
             // is never told a failed card is safe to format. Dismiss only when acknowledged.
             if !failedIngestRecords.isEmpty { v3FailureStrip }
@@ -13796,6 +13810,8 @@ extension ContentView {
     // MARK: Destinations — golden DEFAULT box + a tile per other destination (N-way routing)
     private var v3Destinations: some View {
         VStack(alignment: .trailing, spacing: 14) {
+            // Balanced with the trailing Spacer → centers the destinations group on the ring.
+            Spacer(minLength: 0)
             HStack {
                 Text("DESTINATIONS").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
                 Spacer()
