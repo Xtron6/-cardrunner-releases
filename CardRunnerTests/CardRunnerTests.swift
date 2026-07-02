@@ -313,7 +313,7 @@ struct CardRunnerTests {
             projectRoot: useCustomDest ? destRoot : "\(destRoot)/\(projectName)",
             projectName: projectName, selectedSubfolder: subfolder,
             useCustomCardName: false, customCardName: "", ignoreManifest: ignoreManifest,
-            latestCount: 0, dryRun: false,
+            dryRun: false,
             wrongClockDate: nil, reelFilter: [], reelMulti: false, dateOverride: nil,
             dateFilterMode: dateFilterMode, dateFilterFrom: "", dateFilterTo: "",
             dateFilterSubMode: "single", autoEject: false, fullVerifyEnabled: false,

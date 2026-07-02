@@ -48,10 +48,6 @@ func buildIngestArgs(_ c: IngestArgsConfig) -> [String] {
         args.append("--ignore-manifest")
     }
 
-    if c.latestCount > 0 {
-        args.append(contentsOf: ["--latest", String(c.latestCount)])
-    }
-
     if c.dryRun {
         args.append("--dry-run")
     }

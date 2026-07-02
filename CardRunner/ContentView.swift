@@ -1588,7 +1588,6 @@ struct ContentView: View {
     @State private var showIngestAlert: Bool = false
     @State private var ingestAlertTitle: String = ""
     @State private var ingestAlertMessage: String = ""
-    @AppStorage("pref_latestCount") private var latestCount: Int = 0
     @AppStorage("pref_dryRun") private var dryRun: Bool = false
     @State private var autoIngest: Bool = false
     @AppStorage("pref_useCustomCardName") private var useCustomCardName: Bool = false
@@ -6531,7 +6530,6 @@ struct ContentView: View {
             useCustomCardName: !effectiveCardLabel.isEmpty,
             customCardName: effectiveCardLabel,
             ignoreManifest: ignoreManifest,
-            latestCount: latestCount,
             dryRun: dryRun,
             wrongClockDate: wrongClockDate,
             reelFilter: reelFilter,

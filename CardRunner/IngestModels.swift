@@ -82,7 +82,6 @@ struct IngestArgsConfig {
     var useCustomCardName: Bool
     var customCardName: String
     var ignoreManifest: Bool = false   // --ignore-manifest: re-copy even if already in the card manifest
-    var latestCount: Int
     var dryRun: Bool
     var wrongClockDate: String?
     var reelFilter: [String]
