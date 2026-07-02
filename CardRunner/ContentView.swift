@@ -5795,7 +5795,7 @@ struct ContentView: View {
                             self.seenCardPaths.insert(card.path)
                             if let uuid = card.volumeUUID { self.seenCardUUIDs.insert(uuid) }
                         }
-                            self.routeCardsForIngest(finalCards)
+                            self.routeKeepingVisible(finalCards)
                         } else {
                             // Auto-Ingest OFF — park every detected card "waiting to route".
                             self.enqueueAwaiting(finalCards)
@@ -5841,10 +5841,11 @@ struct ContentView: View {
                 }
 
                 if self.autoIngest {
-                    // Auto Ingest on — route NEW (unseen) cards to the ingest flow.
+                    // Auto Ingest on — route NEW (unseen) cards to the ingest flow, kept visible the
+                    // whole time (parked as "Starting…" immediately, then handed off to the live lane).
                     if !newCards.isEmpty {
                         self.applyNicknameIfKnown(from: newCards, nicknames: capturedNicknames)
-                        self.routeCardsForIngest(newCards)
+                        self.routeKeepingVisible(newCards)
                     }
                 } else {
                     // Auto Ingest off — park EVERY currently-detected card "waiting to route",
@@ -6410,19 +6411,36 @@ struct ContentView: View {
 
     /// When Auto-Ingest flips ON, start every parked card on its chosen (or default) drive.
     @MainActor private func drainAwaiting() {
-        let parked = awaitingCards
-        awaitingCards.removeAll()
-        for item in parked {
+        // Keep each parked card VISIBLE ("Starting…") through its scan rather than removing it up-front
+        // (which made cards vanish for the scan duration when Auto-Ingest flipped on). startIngest
+        // removes each awaiting entry atomically at lane creation.
+        for item in awaitingCards {
             let dest = item.destinationID.flatMap { id in destinations.first(where: { $0.id == id }) }
             seenCardPaths.insert(item.card.path)
             if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
             pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+            withAnimation(v3Anim(.easeInOut(duration: 0.15))) { _ = v3StartingPaths.insert(item.card.path) }
             routeCardsForIngest([item.card], destination: dest)
         }
     }
 
     /// Called from every scan path (auto-ingest loop, 30-s fallback loop, force-rescan)
     /// so the behaviour is consistent regardless of how a card is detected.
+    /// Route detected cards through the ingest flow while keeping each one VISIBLE the entire time.
+    /// The auto-ingest path used to call routeCardsForIngest directly — so a card had NO representation
+    /// during the ~0.5–1s async analyze/scan and only "appeared" once startIngest built its lane. Here
+    /// we park the card immediately (dedups against existing awaiting/active) AND flag it "Starting…" in
+    /// the SAME synchronous block, so it shows up at once (no late-appear / pop-in), then startIngest
+    /// hands off to the live lane atomically (it removes the awaiting entry at lane creation).
+    @MainActor private func routeKeepingVisible(_ cards: [Volume], destination: Destination? = nil) {
+        guard !cards.isEmpty else { return }
+        withAnimation(v3Anim(.easeInOut(duration: 0.15))) {
+            enqueueAwaiting(cards)
+            for c in cards { _ = v3StartingPaths.insert(c.path) }
+        }
+        routeCardsForIngest(cards, destination: destination)
+    }
+
     @MainActor private func routeCardsForIngest(_ cards: [Volume], destination: Destination? = nil) {
         guard !cards.isEmpty else { return }
 
