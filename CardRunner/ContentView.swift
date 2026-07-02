@@ -1898,9 +1898,6 @@ struct ContentView: View {
     @FocusState private var v3ProjNameFocused: Bool  // New-project FOLDER NAME field focus (blue-glow field)
     @AppStorage("pref_newProjectSetsDefault") private var v3NewProjSetsDefault: Bool = true  // New project → also make it the default dest
 
-    // New project folder sheet
-    @State private var showNewProjectSheet: Bool = false
-    @State private var newProjectName: String = ""
 
     // Log & status
     @State private var logText: String = ""
@@ -2001,11 +1998,6 @@ struct ContentView: View {
     @State private var destTabHovered: Bool? = nil   // nil=none, false=SSD, true=Custom
     @State private var customDestBtnHovered: Bool  = false
 
-    // New project folder inside custom dest
-    @State private var showCustomDestNewFolder:  Bool   = false
-    @State private var customDestNewFolderName:  String = ""
-    @State private var newProjectFolderColor:    Int    = 0   // Finder label: 0=none,2=green,3=purple,4=blue,5=yellow,6=red,7=orange
-    @State private var customDestFolderColor:    Int    = 0
 
     // History
     @State private var historyEntries: [IngestHistoryEntry] = []
@@ -7560,70 +7552,9 @@ struct ContentView: View {
         }
     }
 
-    private func createNewProjectFolder() {
-        guard let primary = selectedPrimary else { return }
-        let trimmedName = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return }
-        let fm = FileManager.default
-        let newFolderURL = URL(fileURLWithPath: primary.path).appendingPathComponent(trimmedName, isDirectory: true)
-        do {
-            try fm.createDirectory(at: newFolderURL, withIntermediateDirectories: true, attributes: nil)
-            if newProjectFolderColor != 0 {
-                applyCustomFolderColor(to: newFolderURL, labelIndex: newProjectFolderColor)
-            }
-            applyScaffold(to: newFolderURL)
-            refreshProjectFolders()
-            projectName = trimmedName
-            refreshSubfolders()
-            showNewProjectSheet = false
-        } catch {
-            statusText = "Error creating folder"
-        }
-    }
-
-    /// Writes com.apple.metadata:_kMDItemUserTags in the exact binary-plist format
-    /// that macOS "Customize Folder" uses — "ColorName\nLabelIndex".
-    /// This changes the actual folder icon tint in Finder (Sonoma+), not just the dot label.
-    private func applyCustomFolderColor(to url: URL, labelIndex: Int) {
-        let nameForIndex: [Int: String] = [
-            1: "Gray", 2: "Green", 3: "Purple",
-            4: "Blue", 5: "Yellow", 6: "Red", 7: "Orange"
-        ]
-        guard let colorName = nameForIndex[labelIndex] else { return }
-        let tagString = "\(colorName)\n\(labelIndex)"
-        guard let plistData = try? PropertyListSerialization.data(
-            fromPropertyList: [tagString] as NSArray,
-            format: .binary,
-            options: 0
-        ) else { return }
-        // setxattr is a POSIX syscall — no dependency on Finder being open.
-        plistData.withUnsafeBytes { ptr in
-            _ = setxattr(url.path, "com.apple.metadata:_kMDItemUserTags",
-                         ptr.baseAddress!, plistData.count, 0, 0)
-        }
-    }
-
-    /// Creates a new subfolder inside the current custom destination, applies scaffold,
-    /// then sets that new subfolder as the active custom destination.
-    private func createCustomDestSubfolder() {
-        let trimmedName = customDestNewFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !customDestPath.isEmpty else { return }
-        let fm = FileManager.default
-        let parentURL = URL(fileURLWithPath: customDestPath, isDirectory: true)
-        let newFolderURL = parentURL.appendingPathComponent(trimmedName, isDirectory: true)
-        do {
-            try fm.createDirectory(at: newFolderURL, withIntermediateDirectories: true, attributes: nil)
-            if customDestFolderColor != 0 {
-                try? (newFolderURL as NSURL).setResourceValue(customDestFolderColor, forKey: .labelNumberKey)
-            }
-            applyScaffold(to: newFolderURL)
-            customDestPath = newFolderURL.path
-            revalidateCustomDest()
-            showCustomDestNewFolder = false
-        } catch {
-            statusText = "Error creating folder"
-        }
-    }
+    // (Dead legacy folder-creation paths createNewProjectFolder / applyCustomFolderColor /
+    // createCustomDestSubfolder were removed — superseded by the v3 New Project sheet
+    // (v3CommitNewProject) and the Add-destination custom-folder flow.)
 
     // Counter so we only run the O(n) truncation every 100 appends instead of
     // every single cardcopy progress line — prevents main thread lag on large ingests.
@@ -12304,10 +12235,28 @@ extension ContentView {
         let icon = failed ? "exclamationmark.triangle.fill" : (neutral ? "minus.circle" : "checkmark.circle.fill")
         return HStack(spacing: 12) {
             Image(systemName: icon).foregroundStyle(col)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(e.cardName.isEmpty ? "Card" : e.cardName).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                 Text("\(e.newFiles) \(e.mediaLabel) · \(e.avgMBps) MB/s · \(v3Duration(e.durationSec)) · \(v3RelDate(e.timestamp))")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                // Where it landed + jump straight to that folder (the drive must still be mounted).
+                if !e.destPath.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder").font(.system(size: 9)).foregroundStyle(v3Cyan.opacity(0.7))
+                        Text(v3HistoryDestLabel(e.destPath)).font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(v3Cyan.opacity(0.7)).lineLimit(1).truncationMode(.middle)
+                        if FileManager.default.fileExists(atPath: e.destPath) {
+                            Button { NSWorkspace.shared.open(URL(fileURLWithPath: e.destPath)) } label: {
+                                Text("Reveal").font(.system(size: 9, weight: .semibold)).foregroundStyle(v3Cyan)
+                            }.buttonStyle(.plain).help("Show this ingest's folder in Finder")
+                        }
+                    }
+                }
+                // Why files were skipped (already-copied vs date-filtered vs wrong-mode …).
+                if let breakdown = v3SkipBreakdown(e) {
+                    Text(breakdown).font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Text(e.status).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
@@ -12315,6 +12264,25 @@ extension ContentView {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
+    }
+
+    /// Last 2 path components of a history destination (e.g. "260702_BrooksPR / clips").
+    private func v3HistoryDestLabel(_ path: String) -> String {
+        let parts = path.split(separator: "/").map(String.init)
+        return parts.suffix(2).joined(separator: " / ")
+    }
+
+    /// Human skip-reason breakdown for a history entry, or nil if nothing was skipped.
+    private func v3SkipBreakdown(_ e: IngestHistoryEntry) -> String? {
+        var parts: [String] = []
+        if e.skipManifest    > 0 { parts.append("\(e.skipManifest) already copied") }
+        if e.skipDestExists  > 0 { parts.append("\(e.skipDestExists) already at dest") }
+        if e.skipTodayFilter > 0 { parts.append("\(e.skipTodayFilter) date-filtered") }
+        if e.skipWrongMode   > 0 { parts.append("\(e.skipWrongMode) wrong mode") }
+        if e.skipProxy       > 0 { parts.append("\(e.skipProxy) proxy") }
+        if e.skipMissing     > 0 { parts.append("\(e.skipMissing) missing at copy — NOT copied") }
+        guard !parts.isEmpty else { return nil }
+        return "Skipped: " + parts.joined(separator: ", ")
     }
 
     private func v3HumanMB(_ mb: Double) -> String {
@@ -12540,7 +12508,15 @@ extension ContentView {
     /// inside an animation transaction — so every OPEN goes through here (dismiss already animates).
     /// Reduce-Motion aware via v3Anim.
     private func v3PresentModal(_ b: Binding<Bool>, _ on: Bool = true) {
-        withAnimation(v3Anim(.spring(response: 0.32, dampingFraction: 0.84))) { b.wrappedValue = on }
+        withAnimation(v3Anim(.spring(response: 0.32, dampingFraction: 0.84))) {
+            // Only ONE modal open at a time — close any other before opening this one (History + Log
+            // could otherwise stack, giving two scrims + two Escape handlers).
+            if on {
+                showV3AddDest = false; showV3EditDest = false; showV3NewProject = false
+                showV3History = false; showV3Log = false; showV3DateRange = false
+            }
+            b.wrappedValue = on
+        }
     }
 
     /// Show a transient error/notice banner. The legacy status bar was deleted with the old UI, so
@@ -13908,8 +13884,8 @@ extension ContentView {
                             : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.6)) : AnyShapeStyle(v3Amber.opacity(0.5))),
                     style: StrokeStyle(lineWidth: (editing || hovered) ? 1.5 : 1, dash: (editing || hovered) ? [] : [4, 3])))
                 .shadow(color: editing ? v3Cyan.opacity(0.4) : (hovered ? v3Cyan.opacity(0.3) : .clear), radius: (editing || hovered) ? 6 : 0)
-                .animation(.easeInOut(duration: 0.14), value: editing)
-                .animation(.easeInOut(duration: 0.14), value: hovered)
+                .animation(v3Anim(.easeInOut(duration: 0.14)), value: editing)
+                .animation(v3Anim(.easeInOut(duration: 0.14)), value: hovered)
                 .onHover { v3HoveredNameID = $0 ? aw.id : (v3HoveredNameID == aw.id ? nil : v3HoveredNameID) }
                 Spacer()
                 Button { v3CycleAwaitingDest(aw.id) } label: {
