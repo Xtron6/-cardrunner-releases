@@ -1263,6 +1263,20 @@ extension View {
     func v3Hover(scale: CGFloat = 1.03, glow: Color? = nil, brighten: Bool = true, enabled: Bool = true) -> some View {
         modifier(V3HoverModifier(scale: scale, glow: glow, brighten: brighten, enabled: enabled))
     }
+
+    /// "Active card" surface: tinted fill + colored border + a soft STATIC outer glow, so a
+    /// waiting/done tile reads as hot/alive. Reusable across tiles (amber for waiting, green for
+    /// safe-to-pull, etc.). Static shadow ONLY — never animate it (see the no-always-on-
+    /// TimelineView core-burn rule). Do NOT `.clipShape` after this — clipping kills the glow.
+    func v3GlowCard(tint: Color, radius: CGFloat = 18,
+                    fill: Double = 0.04, border: Double = 0.5,
+                    glow: Double = 0.28, glowRadius: CGFloat = 22) -> some View {
+        self
+            .background(tint.opacity(fill), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(tint.opacity(border), lineWidth: 1.5))
+            .shadow(color: tint.opacity(glow), radius: glowRadius, y: 0)
+    }
 }
 
 /// One celebration particle — target offset from the ring center, look baked in at fire time.
@@ -1887,6 +1901,7 @@ struct ContentView: View {
     @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
+    @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
@@ -12909,7 +12924,14 @@ extension ContentView {
             // Awaiting cards first — they're what the user acts on (drag node → drive, or Start).
             ForEach(awaitingCards) { aw in v3AwaitingLane(aw) }
             ForEach(v3ActiveLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
-            if !v3DoneLanes.isEmpty { v3DonePile }
+            if !v3DoneLanes.isEmpty {
+                v3DonePile
+                // "Tap to review" reveals the individual done cards, each with its own Pull button
+                // (the existing v3Lane .done rows — reused, not duplicated).
+                if v3DoneExpanded {
+                    ForEach(v3DoneLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
+                }
+            }
             Spacer(minLength: 0)
         }
     }
@@ -13161,10 +13183,10 @@ extension ContentView {
     /// demo's awaiting lane: route label + CHOOSE-DEST cycle + "Drag node · or Start", with the
     /// amber draggable node on the trailing edge that links + starts on drop.
     private func v3AwaitingLane(_ aw: AwaitingCard) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(v3Amber)
-                    .frame(width: 32, height: 32).background(v3Amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                Image(systemName: "sdcard.fill").font(.system(size: 20)).foregroundStyle(.white.opacity(0.75))
+                    .frame(width: 44, height: 44).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     // Editable per-card FOLDER NAME (--cardlabel). Idle = dashed amber pill (reads as
                     // "editable"); focused = solid cyan + fill + glow (reads as "typing now") with a
@@ -13175,7 +13197,7 @@ extension ContentView {
                     HStack(spacing: 6) {
                         Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : v3Amber.opacity(0.85))
                         TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
-                            .textFieldStyle(.plain).font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                            .textFieldStyle(.plain).font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
                             .frame(minWidth: 70).fixedSize()
                             .focused($editingAwaitingID, equals: aw.id)
                             .onSubmit { commitAwaitingName(aw.id) }        // Enter LOCKS the name (never starts)
@@ -13220,14 +13242,14 @@ extension ContentView {
                 Button { v3CycleAwaitingDest(aw.id) } label: {
                     Text(aw.destinationID == nil ? "CHOOSE DEST" : "→ \(v3AwaitingDestName(aw))")
                         .font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(v3Amber)
-                        .padding(.horizontal, 9).padding(.vertical, 5)
-                        .overlay(Capsule().strokeBorder(v3Amber.opacity(0.5)))
+                        .padding(.horizontal, 11).padding(.vertical, 6)
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(v3Amber.opacity(0.55)))
                 }.buttonStyle(.plain)
                 .help("Tap to cycle drives, or drag the node onto a drive")
             }
             HStack(spacing: 7) {
-                Text("✓ locks the name · Start begins the copy")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
+                Text("Name the folder, then Start")
+                    .font(.system(size: 14, weight: .medium)).foregroundStyle(v3Amber.opacity(0.9))
                 Spacer()
                 Button {
                     // Remember the typed name for next time even without an explicit ✓/Enter —
@@ -13236,16 +13258,15 @@ extension ContentView {
                     editingAwaitingID = nil
                     startAwaiting(aw.id)
                 } label: {
-                    Text("Start").font(.system(size: 12, weight: .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 16).padding(.vertical, 6)
-                        .background(v3Green, in: Capsule()).contentShape(Capsule())
+                    Text("Start").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 20).padding(.vertical, 9)
+                        .background(v3Green, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }.buttonStyle(.plain).v3Hover(scale: 1.06, glow: v3Green).help("Start now using \(v3AwaitingDestName(aw))")
             }
         }
-        .padding(14).frame(width: 360)
-        .background(.white.opacity(0.04))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(v3Amber.opacity(0.5)))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(18).frame(width: 360)
+        .v3GlowCard(tint: v3Amber, radius: 18, fill: 0.04, border: 0.55, glow: 0.28, glowRadius: 22)
         .overlay(alignment: .trailing) { v3RouteDot(aw) }
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(aw.id)": $0] }
     }
@@ -13275,32 +13296,51 @@ extension ContentView {
             )
     }
 
-    /// Collapsed "N cards safe to pull" pile (matches the design's green ready strip).
+    /// "N cards safe to pull" panel — a tappable green review card (tap to reveal the done cards,
+    /// each with its own Pull button) + a separate footage-safe "eject All" square. The design's
+    /// confidence-builder: a finished card lands here instead of just vanishing.
     private var v3DonePile: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(v3Green.opacity(0.18)).frame(width: 30, height: 30)
-                Text("\(v3DoneLanes.count)").font(.system(size: 13, weight: .bold)).foregroundStyle(v3Green)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(v3DoneLanes.count) card\(v3DoneLanes.count == 1 ? "" : "s") safe to pull")
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                Text("Eject when ready").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-            }
-            Spacer()
-            Button { v3Post(.menuEjectCard) } label: {
-                VStack(spacing: 2) {
-                    Image(systemName: "eject").font(.system(size: 13)).foregroundStyle(v3Green)
-                    Text("All").font(.system(size: 9, weight: .semibold)).foregroundStyle(v3Green)
+        HStack(spacing: 10) {
+            // (A) The whole panel is ONE tappable button → toggle the review disclosure.
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { v3DoneExpanded.toggle() }
+            } label: {
+                HStack(spacing: 12) {
+                    Text("\(v3DoneLanes.count)")
+                        .font(.system(size: 18, weight: .bold)).foregroundStyle(.black)
+                        .frame(width: 46, height: 46)
+                        .background(v3Green.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(v3DoneLanes.count) card\(v3DoneLanes.count == 1 ? "" : "s") safe to pull")
+                            .font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
+                        Text("Tap to review · or Pull all")
+                            .font(.system(size: 13)).foregroundStyle(.white.opacity(0.55))
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: v3DoneExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(v3Green)
                 }
-                .frame(width: 44, height: 44)
-                .background(v3Green.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(v3Green.opacity(0.4)))
-            }.buttonStyle(.plain)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .v3GlowCard(tint: v3Green, radius: 16, fill: 0.09, border: 0.3, glow: 0.20, glowRadius: 18)
+
+            // (B) Separate footage-safe "eject ALL" (posts .menuEjectCard → guarded on !isBusy,
+            //     loops every mounted card). Outside the tappable review panel.
+            Button { v3Post(.menuEjectCard) } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: "eject.fill").font(.system(size: 16)).foregroundStyle(v3Green)
+                    Text("All").font(.system(size: 11, weight: .bold)).foregroundStyle(v3Green)
+                }
+                .frame(width: 64, height: 78)
+                .background(v3Green.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(v3Green.opacity(0.4)))
+            }.buttonStyle(.plain).v3Hover(scale: 1.05, glow: v3Green)
+            .help("Eject all cards that are safe to pull")
         }
-        .padding(12).frame(width: 360)
-        .background(v3Green.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(v3Green.opacity(0.25)))
+        .frame(width: 360)
     }
 
     @ViewBuilder private func v3LaneBottom(_ ing: ActiveIngest) -> some View {
