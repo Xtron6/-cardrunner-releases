@@ -1667,6 +1667,8 @@ struct ContentView: View {
     @State private var v3ProjName = ""
     @State private var v3ProjColorIndex = 4          // default green
     @State private var v3ProjScaffoldOn: [String: Bool] = [:]
+    @State private var v3ProjParent = ""             // parent dir the new project folder is created in (drive root by default)
+    @State private var v3ProjParentOverridden = false // true once the user picks a custom parent via "Change…"
 
     // New project folder sheet
     @State private var showNewProjectSheet: Bool = false
@@ -11315,6 +11317,10 @@ extension ContentView {
             ? "\(fmt.string(from: Date()))_" : projectName
         v3ProjColorIndex = v3TagColors.firstIndex { $0.name == finderTagColor && finderTagEnabled } ?? 4
         v3ProjScaffoldOn = Dictionary(uniqueKeysWithValues: scaffoldFolderList.map { ($0, true) })
+        // Default the new folder to the SSD/drive ROOT of the default destination (e.g. a "Brooks PR"
+        // project default → /Volumes/Gallo 8TB), NOT inside the project subfolder. "Change…" overrides.
+        v3ProjParent = v3ProjDefaultParent
+        v3ProjParentOverridden = false
         showV3NewProject = true
     }
 
@@ -11324,6 +11330,34 @@ extension ContentView {
         panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
         panel.prompt = "Use this folder"; panel.message = "Choose a folder on this Mac"
         if panel.runModal() == .OK, let url = panel.url { v3AddCustomPath = url.path }
+    }
+
+    /// The volume/drive root for a destination path — `/Volumes/Gallo 8TB/BrooksPR/clips` →
+    /// `/Volumes/Gallo 8TB`. A no-op when the path is already a volume root. For an internal-disk
+    /// path (not under /Volumes) there's no SSD root, so fall back to the path's own PARENT rather
+    /// than dumping a project at "/". Used to default a new project folder to the SSD root.
+    private func v3VolumeRoot(of path: String) -> String {
+        let parts = URL(fileURLWithPath: path).pathComponents
+        if parts.count >= 3, parts[1] == "Volumes" { return "/Volumes/\(parts[2])" }
+        let parent = (path as NSString).deletingLastPathComponent
+        return (parent.isEmpty || parent == "/") ? path : parent
+    }
+
+    /// The parent the new project folder will be created in, resolved from the default destination.
+    private var v3ProjDefaultParent: String { v3VolumeRoot(of: defaultDestination?.path ?? primarySSDPath) }
+
+    /// "Change…" override: pick a custom parent folder via the macOS Finder panel (pre-pointed at the
+    /// current parent). Sets v3ProjParent + marks it overridden so a "Reset to drive root" appears.
+    private func v3PickProjectParent() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = "Create here"; panel.message = "Choose where to create the new project folder"
+        if !v3ProjParent.isEmpty { panel.directoryURL = URL(fileURLWithPath: v3ProjParent) }
+        if panel.runModal() == .OK, let url = panel.url {
+            v3ProjParent = url.path
+            v3ProjParentOverridden = true
+        }
     }
 
     /// ALL mounted destination drives (not filtered by already-used — Xavier allows the same drive
@@ -11602,15 +11636,20 @@ extension ContentView {
 
     private func v3CommitNewProject() {
         let name = v3ProjName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
+        // Guard the folder NAME against path traversal (mirrors the Add-destination guard) — the
+        // name becomes a single folder component, never a nested/relative path.
+        guard !name.isEmpty, !name.contains("/"), !name.contains("..") else { return }
         projectName = name
         let enabled = scaffoldFolderList.filter { v3ProjScaffoldOn[$0] ?? true }
         scaffoldFoldersRaw = enabled.joined(separator: "\n")
         scaffoldEnabled = !enabled.isEmpty
         finderTagEnabled = v3ProjColorIndex != 0
         if v3ProjColorIndex != 0 { finderTagColor = v3TagColors[v3ProjColorIndex].name }
-        // Create the project folder + scaffold on the default drive now, so it shows in Finder.
-        if let base = defaultDestination?.path, !base.isEmpty {
+        // Create the project folder + scaffold at the resolved PARENT (the SSD/drive root by default,
+        // or a custom folder if the user hit "Change…") so it shows in Finder. Purely a mkdir — this
+        // does NOT create or switch a routing Destination.
+        let base = v3ProjParent.isEmpty ? v3ProjDefaultParent : v3ProjParent
+        if !base.isEmpty {
             let fm = FileManager.default
             let root = (base as NSString).appendingPathComponent(name)
             try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
@@ -11769,9 +11808,21 @@ extension ContentView {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("New Project Folder").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                    // Shows EXACTLY where the folder will land: the SSD/drive root by default, or a
+                    // custom parent once "Change…" is used. Fixes the old readout that only named the
+                    // destination and hid the fact the folder was nesting inside a project subfolder.
                     HStack(spacing: 6) {
                         Image(systemName: "externaldrive").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                        Text("\(defaultDestination?.name ?? "—")  /").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                        Text((v3ProjParent.isEmpty ? "—" : (v3ProjParent as NSString).lastPathComponent)
+                             + (v3ProjParentOverridden ? "" : "  (drive root)"))
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.55)).lineLimit(1).truncationMode(.middle)
+                        Button("Change…") { v3PickProjectParent() }
+                            .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan).v3Hover(scale: 1.04)
+                        if v3ProjParentOverridden {
+                            Button("Reset") { v3ProjParent = v3ProjDefaultParent; v3ProjParentOverridden = false }
+                                .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
+                                .help("Back to the drive root")
+                        }
                     }
                 }
                 Spacer(); v3SheetClose { showV3NewProject = false }
