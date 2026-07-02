@@ -25,7 +25,7 @@ CardRunner is a **camera-card offload tool** for video/photo shooters: plug an S
 
 ### What shipped
 - **P1-1** funnel core-burn: gate narrowed to `v3FunnelFlowing` (in-flight phases only) at ~`12186`. (Auditor note: real failures are always removed from `activeIngests`, so this was DEV-fixture-reachable-only — fix still correct.)
-- **P1-2/3** DEV fake-fixtures (spawners + 6 helpers + `v3DevSimulateIngest` + Start branch) now `#if DEBUG` (with `#else startAwaiting`); `v3DevClearFakeCards` resets `v3PendingCelebration`. **Release build is now a must-pass gate** and is green.
+- **P1-2/3** DEV fake-fixtures: Xavier WANTS the spawners in the shipped build, so they stay compiled into Release but are hidden behind a **secret unlock** — ⌥-click the version number in Settings ▸ About (`v3ToggleDevUnlock`) toggles `debugMode`; there is NO visible "Debug mode" toggle any more, so a normal user can't reach the DEV bar. (Superseded the initial `#if DEBUG` compile-out, commit `22941a7`.) `v3DevClearFakeCards` resets `v3PendingCelebration`. Fakes remain footage-safe (tagged `/dev/cardrunner-fake/`, never call the shell). **Release build is still a must-pass gate** and is green.
 - **P1-4** Winter Olympics RE-EXPOSED: "BROADCAST — WINTER OLYMPICS" section in `v3SettingsNaming` (toggle + uppercased/trimmed day-code field).
 - **P1-5** `menuOpenDestination` (⌘⇧O + the ring's "Open in Finder" — same notification, a 3rd site the old list missed) → `defaultDestination?.path`; new `v3LaneDestName(_:)` for per-lane "→ Drive" labels. `v3DestRoot`/`v3DestDrivePath` kept (they back the legacy no-dest golden box).
 - **P2:** `--latest` pruned (shell flag kept for back-compat); `SettingsTab` deep-link bug fixed (writers → `v3SettingsCat`) then enum deleted; dead `.failed` %-overlay branch removed. (`updateCurrentPreset` was already gone.)
@@ -34,7 +34,7 @@ CardRunner is a **camera-card offload tool** for video/photo shooters: plug an S
 ### ⚠️ Still Xavier's to validate (automated review + smoke can't cover these)
 1. **68/68 unit tests via Xcode ⌘U** — the CLI host was environmentally wedged this session (runner-hung ×7, never a named failure). Logic core barely touched (only the `--latest` field).
 2. **Funnel calm-after-failure (P1-1)** — trigger a real failed transfer; confirm via Activity Monitor the funnel Canvas stops redrawing (no pegged core), the red connector stays a static frame, and the failure strip surfaces.
-3. **Release build is what ships** — in a Release run with Debug Mode ON, confirm the DEV `+Card/Copy/Done/Fail/Clear` spawners are **absent** (Run-UI-Demo / Show-Log / Dry-Run remain).
+3. **Secret DEV unlock** — in Settings ▸ About, ⌥-click the version number; confirm the DEV bar (+Card/Copy/Done/Fail/Clear + Show-Log + Dry-Run) appears and ⌥-clicking again (or "Hide developer tools") hides it. Confirm a normal click does nothing and there's no visible Debug-mode toggle.
 4. **Winter Olympics (P1-4)** — toggle on, set a day code, run a real ingest; confirm competition-day folders + `--olympics-code` reaches the engine (support bundle reports it).
 5. **⌘⇧O + multi-dest readout (P1-5)** — with 2+ destinations and a non-default default, ⌘⇧O opens the *default* dest and each lane's "→ Drive" names its *own* routed dest.
 6. **Reduce Motion** — enable it in System Settings ▸ Accessibility; UI still reads reactive (glow/brightness) without motion travel.
