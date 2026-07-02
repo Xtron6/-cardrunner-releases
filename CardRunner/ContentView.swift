@@ -12288,11 +12288,21 @@ extension ContentView {
         // the app palette so overlapping/crossing lines are distinguishable (a failed lane stays RED —
         // safety status is never recolored).
         if v3ActiveLanes.count <= 6 {
-            let dash = StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 9], dashPhase: -phase)
+            // Neon glow WITHOUT a blur filter — layered strokes are cheap enough for the 20 fps
+            // active redraw, so the glow can never starve the copy pipe (unlike a per-frame blur):
+            // a wide translucent halo → a mid band → a bright solid core → a moving highlight for
+            // the live "flow" feel. Gives the crisscrossing lines a glowing neon read.
+            let flow = StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 12], dashPhase: -phase)
+            func glowLine(_ p: Path, _ col: Color) {
+                ctx.stroke(p, with: .color(col.opacity(0.16)), style: StrokeStyle(lineWidth: 9,   lineCap: .round))
+                ctx.stroke(p, with: .color(col.opacity(0.45)), style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                ctx.stroke(p, with: .color(col),               style: StrokeStyle(lineWidth: 2,   lineCap: .round))
+                ctx.stroke(p, with: .color(.white.opacity(0.5)), style: flow)
+            }
             for (i, item) in v3ActiveLanes.enumerated() {
                 guard let lr = rects["lane-\(item.id)"] else { continue }
                 let col: Color = item.ing.phase == .failed ? v3Red : v3LineColor(i)
-                ctx.stroke(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), with: .color(col.opacity(0.7)), style: dash)
+                glowLine(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), col)
             }
             if !v3ActiveLanes.isEmpty {
                 let destKeys: [String] = ["dest-default"] + destinations
@@ -12300,7 +12310,7 @@ extension ContentView {
                 let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
                 for key in destKeys {
                     guard let dr = rects[key] else { continue }
-                    ctx.stroke(curve(rightPort, CGPoint(x: dr.minX, y: dr.midY)), with: .color(col.opacity(0.6)), style: dash)
+                    glowLine(curve(rightPort, CGPoint(x: dr.minX, y: dr.midY)), col)
                 }
             }
         }
