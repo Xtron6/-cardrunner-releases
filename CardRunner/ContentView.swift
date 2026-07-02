@@ -1898,6 +1898,7 @@ struct ContentView: View {
     @State private var dragLine: DragLine? = nil
     @State private var dragOverDest: UUID? = nil
     @State private var v3HoveredDestID: UUID? = nil   // destination tile under the cursor (hover bounce)
+    @State private var v3HoveredDestNameID: UUID? = nil // destination NAME under the cursor (blue pill glow, like the card name)
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
@@ -13993,14 +13994,8 @@ extension ContentView {
         .shadow(color: v3Amber.opacity(v3DefaultPop ? 0.9 : 0), radius: v3DefaultPop ? 28 : 0)
         .scaleEffect(v3DefaultPop ? 1.05 : 1.0)
         .animation(.spring(response: 0.26, dampingFraction: 0.45), value: v3DefaultPop)
-        // Blue hover illumination — same "this is interactive" cue as the source card-name field.
-        // Suppressed while this tile is a drag-over drop target (already cyan) so cues don't stack.
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(
-            v3Cyan.opacity(v3HoveredDestID == d.id && dragOverDest != d.id ? 0.55 : 0), lineWidth: 1.5))
-        .shadow(color: v3Cyan.opacity(v3HoveredDestID == d.id && dragOverDest != d.id ? 0.28 : 0),
-                radius: v3HoveredDestID == d.id && dragOverDest != d.id ? 8 : 0)
-        .animation(v3Anim(.easeInOut(duration: 0.14)), value: v3HoveredDestID)
         // Hover bounce — applied after the anchor/destFrames reads so geometry stays un-scaled.
+        // (The blue hover glow lives on the NAME itself — see v3DestTileBody — matching the card name.)
         .scaleEffect(v3HoveredDestID == d.id ? 1.02 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3HoveredDestID)
         .onHover { hovering in v3HoveredDestID = hovering ? d.id : (v3HoveredDestID == d.id ? nil : v3HoveredDestID) }
@@ -14021,13 +14016,7 @@ extension ContentView {
                     .onAppear { destFrames[d.id] = g.frame(in: .named("stage")) }
                     .onChange(of: g.frame(in: .named("stage"))) { _, f in destFrames[d.id] = f }
             })
-            // Blue hover illumination — matches the source card-name field's hover cue. Suppressed
-            // while dragging or when this tile is a drag-over drop target (already cyan).
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
-                v3Cyan.opacity(v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 0.55 : 0), lineWidth: 1.5))
-            .shadow(color: v3Cyan.opacity(v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 0.28 : 0),
-                    radius: v3HoveredDestID == d.id && v3DraggingDestID == nil && dragOverDest != d.id ? 8 : 0)
-            .animation(v3Anim(.easeInOut(duration: 0.14)), value: v3HoveredDestID)
+            // (The blue hover glow lives on the NAME itself — see v3DestTileBody — matching the card name.)
             // Hover bounce (subtle) signals the tile is clickable — suppressed while ANY tile is being
             // dragged (so tiles sliding under the cursor during a reorder don't flicker their bounce).
             // Applied AFTER the anchor/destFrames reads above so routing-line geometry + drop hit-testing
@@ -14181,7 +14170,16 @@ extension ContentView {
                 .frame(width: 38, height: 38).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
+                    // Editable SSD-dest name gets the SAME blue hover pill as the source card-name field
+                    // (cyan fill + border + glow) to signal "click to edit". Custom/running dests: plain.
+                    let nameHot = v3HoveredDestNameID == d.id && runningCount == 0 && !d.isCustomFolder
                     Text(d.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(nameHot ? v3Cyan.opacity(0.06) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(v3Cyan.opacity(nameHot ? 0.6 : 0), lineWidth: 1.5))
+                        .shadow(color: v3Cyan.opacity(nameHot ? 0.3 : 0), radius: nameHot ? 6 : 0)
+                        .animation(v3Anim(.easeInOut(duration: 0.14)), value: nameHot)
+                        .onHover { h in v3HoveredDestNameID = h ? d.id : (v3HoveredDestNameID == d.id ? nil : v3HoveredDestNameID) }
                     if isDefault {
                         Text("DEFAULT").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
                             .padding(.horizontal, 7).padding(.vertical, 3).background(v3Amber.opacity(0.14), in: Capsule())
