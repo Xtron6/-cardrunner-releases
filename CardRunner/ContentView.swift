@@ -13856,7 +13856,7 @@ extension ContentView {
                     .background(col.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(col.opacity(0.5)))
             }
-            v3LaneBottom(ing)
+            v3LaneBottom(id, ing)
         }
         .padding(14).frame(width: 360)
         .background(.white.opacity(0.04))
@@ -14102,7 +14102,7 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(v3DoneLanes.count) card\(v3DoneLanes.count == 1 ? "" : "s") safe to pull")
                             .font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
-                        Text("Tap to review · or Pull all")
+                        Text(v3AnyDoneMounted ? "Tap to review · or Pull all" : "Tap to review · or Clear all")
                             .font(.system(size: 13)).foregroundStyle(.white.opacity(0.55))
                     }
                     Spacer(minLength: 8)
@@ -14116,24 +14116,26 @@ extension ContentView {
             .buttonStyle(.plain)
             .v3GlowCard(tint: v3Green, radius: 16, fill: 0.09, border: 0.3, glow: 0.20, glowRadius: 18)
 
-            // (B) Separate footage-safe "eject ALL" (posts .menuEjectCard → guarded on !isBusy,
-            //     loops every mounted card). Outside the tappable review panel.
-            Button { v3Post(.menuEjectCard) } label: {
+            // (B) Separate footage-safe "eject ALL" — ejects every still-mounted done card AND clears
+            //     tiles for any already gone (Auto-Eject). When nothing is left to eject it becomes a
+            //     plain "Clear" so the pile is never a dead end. Outside the tappable review panel.
+            let anyMounted = v3AnyDoneMounted
+            Button { v3PullAllDone() } label: {
                 VStack(spacing: 3) {
-                    Image(systemName: "eject.fill").font(.system(size: 16)).foregroundStyle(v3Green)
-                    Text("All").font(.system(size: 11, weight: .bold)).foregroundStyle(v3Green)
+                    Image(systemName: anyMounted ? "eject.fill" : "xmark").font(.system(size: 16)).foregroundStyle(v3Green)
+                    Text(anyMounted ? "All" : "Clear").font(.system(size: 11, weight: .bold)).foregroundStyle(v3Green)
                 }
                 .frame(width: 64, height: 78)
                 .background(v3Green.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(v3Green.opacity(0.4)))
             }.buttonStyle(.plain).v3Hover(scale: 1.05, glow: v3Green)
-            .help("Eject all cards that are safe to pull")
-            .accessibilityLabel("Eject all cards that are safe to pull")
+            .help(anyMounted ? "Eject all cards that are safe to pull" : "Clear the safe-to-pull list")
+            .accessibilityLabel(anyMounted ? "Eject all cards that are safe to pull" : "Clear the safe-to-pull list")
         }
         .frame(width: 360)
     }
 
-    @ViewBuilder private func v3LaneBottom(_ ing: ActiveIngest) -> some View {
+    @ViewBuilder private func v3LaneBottom(_ id: UUID, _ ing: ActiveIngest) -> some View {
         switch ing.phase {
         case .copying, .scanning, .building, .idle:
             VStack(alignment: .leading, spacing: 5) {
@@ -14177,11 +14179,23 @@ extension ContentView {
                             .background(v3Green.opacity(0.14), in: Capsule())
                     }
                     Spacer()
-                    Button { v3PullCard(ing) } label: {
-                        HStack(spacing: 4) { Image(systemName: "eject.fill").font(.system(size: 9)); Text("Pull").font(.system(size: 11, weight: .semibold)) }
-                            .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-                    }.buttonStyle(.plain).help("Eject this card")
+                    // If the card is still mounted → "Pull" (eject; the tile clears on didUnmount).
+                    // If it's already gone (e.g. Auto-Eject removed it before/around completion, so the
+                    // didUnmount clear raced past this tile) → "Pull" would no-op, so offer "Dismiss"
+                    // to clear the confirmation tile. The footage is already verified-copied either way.
+                    if ing.sourcePath.isEmpty || !FileManager.default.fileExists(atPath: ing.sourcePath) {
+                        Button { v3DismissDoneCard(id) } label: {
+                            HStack(spacing: 4) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)); Text("Dismiss").font(.system(size: 11, weight: .semibold)) }
+                                .foregroundStyle(.white.opacity(0.85)).padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                        }.buttonStyle(.plain).help("Remove this card from the safe-to-pull list (it was already ejected)")
+                    } else {
+                        Button { v3PullCard(ing) } label: {
+                            HStack(spacing: 4) { Image(systemName: "eject.fill").font(.system(size: 9)); Text("Pull").font(.system(size: 11, weight: .semibold)) }
+                                .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                        }.buttonStyle(.plain).help("Eject this card")
+                    }
                 }
                 // What actually landed — file count · duration · avg speed (a bare "safe to pull" is
                 // just an assertion; the reconciliation is what earns trust).
@@ -14216,6 +14230,31 @@ extension ContentView {
     private func v3PullCard(_ ing: ActiveIngest) {
         guard !isBusy, !ing.sourcePath.isEmpty, FileManager.default.fileExists(atPath: ing.sourcePath) else { return }
         try? NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: ing.sourcePath))
+    }
+
+    /// Clear a finished card's tile from the safe-to-pull pile WITHOUT ejecting — the card is already
+    /// gone (Auto-Eject removed it), so there's nothing to eject; this just dismisses the (already
+    /// footage-safe, verified-copied) confirmation tile.
+    private func v3DismissDoneCard(_ id: UUID) {
+        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { _ = activeIngests.removeValue(forKey: id) }
+    }
+
+    /// Whether ANY done card is still physically mounted — drives the "All" button between an
+    /// eject action (something to eject) and a plain clear (Auto-Eject already removed them all).
+    private var v3AnyDoneMounted: Bool {
+        activeIngests.values.contains { $0.phase == .done && !$0.sourcePath.isEmpty
+            && FileManager.default.fileExists(atPath: $0.sourcePath) }
+    }
+
+    /// "Pull all": eject every still-mounted done card (safe eject via the existing handler) AND
+    /// clear the tiles of any done cards already gone (Auto-Eject) — which .menuEjectCard can't do.
+    private func v3PullAllDone() {
+        v3Post(.menuEjectCard)   // ejects every still-mounted card (existing, !isBusy-guarded handler)
+        let goneIDs = activeIngests.filter { $0.value.phase == .done
+            && ($0.value.sourcePath.isEmpty || !FileManager.default.fileExists(atPath: $0.value.sourcePath)) }
+            .map { $0.key }
+        guard !goneIDs.isEmpty else { return }
+        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { for id in goneIDs { activeIngests.removeValue(forKey: id) } }
     }
 
     /// Mixed-card hint — shown only when the engine actually skipped wrong-mode files on a
