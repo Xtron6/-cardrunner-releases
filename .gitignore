@@ -2,6 +2,7 @@
 build/
 DerivedData/
 *.profraw
+*.dmg
 
 # Large archives / binaries not needed for source builds
 ARCHIVED/
