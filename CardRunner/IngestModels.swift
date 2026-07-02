@@ -397,6 +397,7 @@ struct ActiveIngest {
     var avgMBps: Int = 0
     var durationSec: Int = 0
     var destPath: String = ""
+    var verified: Bool = false       // true once a successful copy has been checksum-verified (verifyTransfer on)
 
     // Full-verify progress (populated by VERIFY_PROGRESS)
     var verifyTotal: Int = 0

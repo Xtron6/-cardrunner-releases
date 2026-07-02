@@ -2163,51 +2163,56 @@ struct ContentView: View {
     // ticks reliably every second regardless of how often the body re-renders.
     private let sparklineTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    // MARK: - Aggregated progress (across all active ingests)
+    // MARK: - Aggregated progress (across all IN-FLIGHT ingests)
+
+    /// In-flight ingests only — EXCLUDES `.done` cards that are parked in the "safe to pull" pile
+    /// awaiting eject. Live progress / speed / current-file / scheduler occupancy must ignore parked
+    /// cards (they're finished work), or the aggregate %, filename, and drive-busy checks would skew.
+    private var v3ActiveWork: [ActiveIngest] { activeIngests.values.filter { $0.phase != .done } }
 
     private var doneBytes: Int64 {
-        activeIngests.values.reduce(0) { $0 + $1.doneBytes }
+        v3ActiveWork.reduce(0) { $0 + $1.doneBytes }
     }
     private var totalBytesNew: Int64 {
-        activeIngests.values.reduce(0) { $0 + $1.totalBytesNew }
+        v3ActiveWork.reduce(0) { $0 + $1.totalBytesNew }
     }
     private var totalFiles: Int {
-        activeIngests.values.reduce(0) { $0 + $1.totalFiles }
+        v3ActiveWork.reduce(0) { $0 + $1.totalFiles }
     }
     private var completedFiles: Int {
-        activeIngests.values.reduce(0) { $0 + $1.completedFiles }
+        v3ActiveWork.reduce(0) { $0 + $1.completedFiles }
     }
     private var mediaTotal: Int {
-        activeIngests.values.reduce(0) { $0 + $1.mediaTotal }
+        v3ActiveWork.reduce(0) { $0 + $1.mediaTotal }
     }
     private var cardBytesTotal: Int64 {
-        activeIngests.values.reduce(0) { $0 + $1.cardBytesTotal }
+        v3ActiveWork.reduce(0) { $0 + $1.cardBytesTotal }
     }
     private var currentFileName: String {
-        activeIngests.values.first(where: { !$0.currentFileName.isEmpty })?.currentFileName ?? ""
+        v3ActiveWork.first(where: { !$0.currentFileName.isEmpty })?.currentFileName ?? ""
     }
     private var verifyProgressText: String? {
-        guard let ingest = activeIngests.values.first(where: { $0.isVerifying }) else { return nil }
+        guard let ingest = v3ActiveWork.first(where: { $0.isVerifying }) else { return nil }
         return "Verifying \(ingest.verifyChecked)/\(ingest.verifyTotal) files…"
     }
     private var currentCardName: String {
-        switch activeIngests.count {
+        switch v3ActiveWork.count {
         case 0: return ""
-        case 1: return activeIngests.values.first?.cardName ?? ""
-        default: return "\(activeIngests.count) cards"
+        case 1: return v3ActiveWork.first?.cardName ?? ""
+        default: return "\(v3ActiveWork.count) cards"
         }
     }
     private var currentCameraModel: String {
-        activeIngests.values.first?.cameraModel ?? "Camera"
+        v3ActiveWork.first?.cameraModel ?? "Camera"
     }
     private var ingestStartTime: Date? {
         // Use the earliest start time so ETA / MB/s cover the full multi-card session.
-        activeIngests.values.map { $0.ingestStartTime }.min()
+        v3ActiveWork.map { $0.ingestStartTime }.min()
     }
 
-    // Sum of live MB/s across all active ingests (usually just one card at a time)
+    // Sum of live MB/s across all in-flight ingests (usually just one card at a time)
     private var currentLiveMBps: Double {
-        activeIngests.values.reduce(0.0) { $0 + $1.liveMBps }
+        v3ActiveWork.reduce(0.0) { $0 + $1.liveMBps }
     }
 
     // MARK: - Session summary
@@ -4746,6 +4751,12 @@ struct ContentView: View {
                 volumeCardCache = [:]
                 if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
                     seenCardPaths.remove(url.path)
+                    // A safe-to-pull (.done) card just left (ejected or physically pulled) — clear its
+                    // tile from the green pile. The card was verified + retained until acted upon; this
+                    // is the "acted upon" event. Only .done lanes are cleared (real ingests can't unmount).
+                    for (k, ing) in activeIngests where ing.phase == .done && ing.sourcePath == url.path {
+                        activeIngests.removeValue(forKey: k)
+                    }
                 } else {
                     seenCardPaths = seenCardPaths.filter { FileManager.default.fileExists(atPath: $0) }
                 }
@@ -6518,7 +6529,7 @@ struct ContentView: View {
     /// Snapshot of live scheduler state for the pure admission decision.
     private func currentSchedulerSnapshot() -> SchedulerSnapshot {
         SchedulerSnapshot(
-            runningDestDevices: activeIngests.values.compactMap { $0.destDeviceID != 0 ? $0.destDeviceID : nil },
+            runningDestDevices: v3ActiveWork.compactMap { $0.destDeviceID != 0 ? $0.destDeviceID : nil },
             demoActive: demoTask != nil,
             maxConcurrent: maxConcurrentCards)
     }
@@ -7387,6 +7398,22 @@ struct ContentView: View {
                     } else {
                         self.notifyIfBackgrounded(title: "Transfer complete ✓", body: notifBody)
                     }
+                }
+
+                // Retain a SUCCESSFUL card in the green "safe to pull" pile (phase .done) instead of
+                // letting its lane vanish — it sits there, ready for eject, until the operator pulls it
+                // (removed on didUnmount when the card actually leaves). Failures are NOT retained here;
+                // the persistent "DO NOT FORMAT" failure strip owns those. runningCount was already
+                // decremented above, so this can't be mistaken for an in-flight lane.
+                if !didFail {
+                    ingest.phase       = .done
+                    ingest.avgMBps     = avgMBps
+                    ingest.durationSec = durationSec
+                    ingest.liveMBps    = 0                     // parked, not moving — never contribute live speed
+                    // "Verified" only when files were ACTUALLY copied + checksum-verified — an
+                    // up-to-date (newFiles==0) card verified nothing, so it must not claim the badge.
+                    ingest.verified    = self.verifyTransfer && newFiles > 0
+                    self.activeIngests[processID] = ingest
                 }
 
                 // A slot just freed — admit any queued cards the scheduler now allows
@@ -12362,7 +12389,7 @@ extension ContentView {
         activeIngests.sorted { $0.value.ingestStartTime < $1.value.ingestStartTime }
             .map { (id: $0.key, ing: $0.value) }
     }
-    private var v3AnyActive: Bool { runningCount > 0 || !activeIngests.isEmpty }
+    private var v3AnyActive: Bool { runningCount > 0 || !v3ActiveWork.isEmpty }
     private var v3AggregatePct: Double {
         totalBytesNew > 0 ? min(100, Double(doneBytes) / Double(totalBytesNew) * 100) : 0
     }
@@ -12378,7 +12405,8 @@ extension ContentView {
     // OR a persistent failure record), and a .failed lane must never satisfy "done".
     private var v3AllDone: Bool {
         failedIngestRecords.isEmpty && v3FailedCount == 0 && !activeIngests.isEmpty
-            && runningCount == 0 && activeIngests.values.allSatisfy { $0.phase == .done }
+            && runningCount == 0 && awaitingCards.isEmpty   // a card still waiting to route isn't "all done"
+            && activeIngests.values.allSatisfy { $0.phase == .done }
     }
 
     /// Fire the completion celebration exactly once per successful batch, when the ring goes green.
@@ -12415,7 +12443,7 @@ extension ContentView {
         return ""
     }
 
-    private var v3CombinedMBps: Double { activeIngests.values.reduce(0) { $0 + $1.liveMBps } }
+    private var v3CombinedMBps: Double { v3ActiveWork.reduce(0) { $0 + $1.liveMBps } }
     private var v3ActiveLanes: [(id: UUID, ing: ActiveIngest)] { v3Lanes.filter { $0.ing.phase != .done } }
     private var v3DoneLanes: [(id: UUID, ing: ActiveIngest)] { v3Lanes.filter { $0.ing.phase == .done } }
 
@@ -13969,12 +13997,27 @@ extension ContentView {
                 HStack(spacing: 7) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(v3Green)
                     Text("SAFE TO PULL").font(.system(size: 12, weight: .bold)).foregroundStyle(v3Green)
+                    // Verified badge — the whole value proposition, made visible. Shown when a checksum
+                    // verify actually ran (verifyTransfer on); a clean PHASE-done means it PASSED.
+                    if ing.verified {
+                        Text("✓ VERIFIED").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Green)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(v3Green.opacity(0.14), in: Capsule())
+                    }
                     Spacer()
-                    Button { v3Post(.menuEjectCard) } label: {
+                    Button { v3PullCard(ing) } label: {
                         HStack(spacing: 4) { Image(systemName: "eject.fill").font(.system(size: 9)); Text("Pull").font(.system(size: 11, weight: .semibold)) }
                             .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 6)
                             .background(.white.opacity(0.06), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).help("Eject this card")
+                }
+                // What actually landed — file count · duration · avg speed (a bare "safe to pull" is
+                // just an assertion; the reconciliation is what earns trust).
+                Text(v3DoneSummary(ing))
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.55))
+                if !ing.collisionRenames.isEmpty {
+                    Text("\(ing.collisionRenames.count) file\(ing.collisionRenames.count == 1 ? "" : "s") auto-renamed to avoid overwriting a same-name clip")
+                        .font(.system(size: 10)).foregroundStyle(v3Amber.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
                 }
                 if ing.skipWrongMode > 0 { v3MixedModeHint(ing.skipWrongMode, runMode: ing.runMode) }
             }
@@ -13982,6 +14025,19 @@ extension ContentView {
             Text("Transfer failed — card kept mounted, re-insert to retry")
                 .font(.system(size: 11)).foregroundStyle(v3Red)
         }
+    }
+
+    /// One-line "what landed" reconciliation for a finished card.
+    private func v3DoneSummary(_ ing: ActiveIngest) -> String {
+        guard ing.newFiles > 0 else { return "Already up to date — nothing new to copy" }
+        return "\(ing.newFiles) file\(ing.newFiles == 1 ? "" : "s")  ·  \(v3Duration(ing.durationSec))  ·  \(ing.avgMBps) MB/s avg"
+    }
+
+    /// Eject THIS specific card (the per-card "Pull"). The .done tile clears via the didUnmount handler
+    /// once the volume actually leaves. Guarded on !isBusy so it can't fire mid-transfer.
+    private func v3PullCard(_ ing: ActiveIngest) {
+        guard !isBusy, !ing.sourcePath.isEmpty, FileManager.default.fileExists(atPath: ing.sourcePath) else { return }
+        try? NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: ing.sourcePath))
     }
 
     /// Mixed-card hint — shown only when the engine actually skipped wrong-mode files on a
@@ -14091,7 +14147,7 @@ extension ContentView {
         } else {
             VStack(spacing: 6) {
                 Text("\(Int(v3AggregatePct))%").font(.system(size: 56, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                Text("\(activeIngests.count) card\(activeIngests.count == 1 ? "" : "s") · engine running")
+                Text("\(v3ActiveWork.count) card\(v3ActiveWork.count == 1 ? "" : "s") · engine running")
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.75))
                 Text("\(v3SpeedText(v3CombinedMBps)) combined")
                     .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
