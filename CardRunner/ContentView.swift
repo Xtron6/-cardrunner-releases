@@ -12119,7 +12119,7 @@ extension ContentView {
                         // can never peg a core. When idle, draw ONE static frame (no redraw loop).
                         // The previous TimelineView(.animation) ran at 120 fps forever and burned
                         // a whole core, starving the ingest pipe.
-                        if runningCount > 0 || dragLine != nil {
+                        if runningCount > 0 || dragLine != nil || !v3ActiveLanes.isEmpty {
                             TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
                                 Canvas { ctx, _ in
                                     let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
@@ -12899,6 +12899,44 @@ extension ContentView {
         }
         v3FakeCardSeq = 5
     }
+    /// DEV preview: a fake card's Start runs a SIMULATED transfer — copying (ramps ~5s) →
+    /// flushing → done (safe to pull) — so the full lifecycle can be previewed with no hardware.
+    /// Never runs the shell / touches real ingest state; the lane is tagged fake so Clear wipes it.
+    private func v3DevSimulateIngest(_ aw: AwaitingCard) {
+        let name = aw.customName.isEmpty ? aw.card.name : aw.customName
+        let procID = UUID()
+        var ing = ActiveIngest()
+        ing.cardName = name; ing.friendlyName = name; ing.cameraModel = aw.card.cameraModel
+        ing.sourcePath = aw.card.path          // keeps the /dev/cardrunner-fake/ marker → Clear removes it
+        ing.runMode = importMode
+        ing.destPath = defaultDestination?.path ?? "/Volumes/Gallo 8TB"
+        ing.newFiles = 50; ing.totalFiles = 50
+        ing.totalBytesNew = 1_000_000_000      // 1 GB fake payload
+        ing.liveMBps = 200
+        ing.phase = .copying
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            awaitingCards.removeAll { $0.id == aw.id }
+            activeIngests[procID] = ing
+        }
+        Task { @MainActor in
+            let steps = 50
+            for s in 1...steps {                                  // ~5s copy ramp (100ms × 50)
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard activeIngests[procID] != nil else { return } // Clear/cancel stops the sim
+                activeIngests[procID]?.completedFilesBytes = Int64(Double(ing.totalBytesNew) * Double(s) / Double(steps))
+                activeIngests[procID]?.completedFiles = Int(Double(ing.newFiles) * Double(s) / Double(steps))
+            }
+            guard activeIngests[procID] != nil else { return }
+            activeIngests[procID]?.phase = .finalizing            // brief flush beat
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard activeIngests[procID] != nil else { return }
+            if !dryRun { v3PendingCelebration = true }            // preview the completion burst (mirrors real)
+            withAnimation(.easeInOut(duration: 0.3)) {
+                activeIngests[procID]?.phase = .done
+                activeIngests[procID]?.liveMBps = 0
+            }
+        }
+    }
 
     /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
     /// stage over ~7 s, opacity easing in/out so it never pops. Fired occasionally by v3SheenTimer
@@ -13370,7 +13408,10 @@ extension ContentView {
                     // must run while the card is still in awaitingCards (startAwaiting removes it).
                     persistAwaitingName(aw.id)
                     editingAwaitingID = nil
-                    startAwaiting(aw.id)
+                    // DEV: a fake card has no real footage, so run a SIMULATED transfer end-to-end
+                    // instead of the shell (which would just report "no footage on this card").
+                    if aw.card.path.hasPrefix(Self.v3FakePrefix) { v3DevSimulateIngest(aw) }
+                    else { startAwaiting(aw.id) }
                 } label: {
                     Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 18).padding(.vertical, 6)
