@@ -214,27 +214,6 @@ struct CardRunnerTheme {
 
 // MARK: - Models
 
-enum SettingsTab: String, CaseIterable {
-    case general   = "General"
-    case presets   = "Presets"
-    case shortcuts = "Shortcuts"
-    case advanced  = "Advanced"
-    case proTools  = "Pro Tools"
-    case about     = "About"
-
-    /// SF Symbol for the sidebar navigation row
-    var sidebarIcon: String {
-        switch self {
-        case .general:   return "gearshape"
-        case .presets:   return "slider.horizontal.3"
-        case .shortcuts: return "keyboard"
-        case .advanced:  return "wrench.and.screwdriver"
-        case .proTools:  return "hammer"
-        case .about:     return "info.circle"
-        }
-    }
-}
-
 // MARK: - Glass visual-effect host view
 
 /// Wraps NSVisualEffectView so SwiftUI can use system-native blur/frosted-glass materials.
@@ -1570,7 +1549,6 @@ struct ContentView: View {
 
     // Volumes & project
     @State private var isShowingSettings = false
-    @State private var settingsTab: SettingsTab = .general
     @State private var isShowingSupportBundle = false
     @State private var supportBundleText = ""
     @State private var lastIngestSummary: IngestHistoryEntry? = nil
@@ -4398,7 +4376,7 @@ struct ContentView: View {
         return Color.clear
             // File → Settings…  (⌘,)
             .onReceive(NotificationCenter.default.publisher(for: .menuOpenSettings)) { _ in
-                settingsTab = .general
+                v3SettingsCat = .general
                 isShowingSettings = true
             }
             // File → Start Ingest  (⌘↩)
@@ -4413,10 +4391,14 @@ struct ContentView: View {
                 withAnimation(spring) { autoIngest = false }
                 cancelAllIngests()
             }
-            // File → Open Destination in Finder  (⌘⇧O)
+            // File → Open Destination in Finder  (⌘⇧O). Also fired by the ring's "Open in Finder"
+            // button once a batch is done. Opens the RESOLVED v3 default destination — per-card
+            // copies land under whichever destination they're routed to, and the "Open Destination"
+            // intent is the default root. Falls back to the legacy primary only for a user with no
+            // Destination list (P1-5: was reading the legacy `selectedPrimary`, wrong for multi-dest).
             .onReceive(NotificationCenter.default.publisher(for: .menuOpenDestination)) { _ in
-                if let primary = selectedPrimary {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: primary.path))
+                if let p = defaultDestination?.path ?? selectedPrimary?.path, !p.isEmpty {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: p))
                 }
             }
             // File → Open Last Ingested Folder  (⌘⇧L)
@@ -4693,7 +4675,7 @@ struct ContentView: View {
                 teardownShortcutMonitor()
             }
             .onReceive(NotificationCenter.default.publisher(for: .showShortcutsHelp)) { _ in
-                settingsTab = .shortcuts
+                v3SettingsCat = .shortcuts
                 isShowingSettings = true
             }
             // Post-activation routing: a brand-new user gets the full onboarding
@@ -12051,6 +12033,24 @@ extension ContentView {
         if p == "/" || p.isEmpty { return "Macintosh HD" }
         return URL(fileURLWithPath: p).lastPathComponent
     }
+    /// Per-lane "→ destination" name for the in-flight status label. Resolves each lane's OWN
+    /// routed destination — `ing.destinationID` → its friendly name, else the drive parsed from
+    /// `ing.destPath` — so a multi-destination user sees where THAT card is actually going, not a
+    /// single global legacy readout (P1-5). Pure lookup, never mutates, never crashes on a stale ID.
+    private func v3LaneDestName(_ ing: ActiveIngest) -> String {
+        if let id = ing.destinationID,
+           let d = destinations.first(where: { $0.id == id }), !d.name.isEmpty {
+            return d.name
+        }
+        let p = ing.destPath
+        if !p.isEmpty {
+            let parts = URL(fileURLWithPath: p).pathComponents
+            if parts.count >= 3, parts[1] == "Volumes" { return parts[2] }
+            let last = URL(fileURLWithPath: p).lastPathComponent
+            if !last.isEmpty, last != "/" { return last }
+        }
+        return defaultDestination?.name ?? v3DestDriveName
+    }
     /// Render-safe free-space label: a PURE read of the off-main cache (never touches the
     /// filesystem on the main thread). Shows "…" until the first background probe lands.
     private func v3FreeSpace(_ path: String) -> String {
@@ -12119,7 +12119,14 @@ extension ContentView {
                         // can never peg a core. When idle, draw ONE static frame (no redraw loop).
                         // The previous TimelineView(.animation) ran at 120 fps forever and burned
                         // a whole core, starving the ingest pipe.
-                        if runningCount > 0 || dragLine != nil || !v3ActiveLanes.isEmpty {
+                        // Gate on IN-FLIGHT phases only: a purely-`.failed` (or idle) lane residue
+                        // must NOT keep the Canvas redrawing — otherwise a lingering failed lane
+                        // (today only reachable via the DEV fake fixtures) pegs a core with nothing
+                        // flowing. Real + fake copying lanes still animate; failed/idle don't.
+                        let v3FunnelFlowing = v3ActiveLanes.contains {
+                            [.scanning, .building, .copying, .finalizing, .verifying].contains($0.ing.phase)
+                        }
+                        if runningCount > 0 || dragLine != nil || v3FunnelFlowing {
                             TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
                                 Canvas { ctx, _ in
                                     let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
@@ -12157,7 +12164,9 @@ extension ContentView {
                         ForEach(Array(v3ActiveLanes.enumerated()), id: \.element.id) { i, item in
                             if [.copying, .finalizing, .verifying].contains(item.ing.phase),
                                let r = anchors["lane-\(item.id)"].map({ geo[$0] }) {
-                                let col: Color = item.ing.phase == .failed ? v3Red : v3LineColor(i)
+                                // The guard above already excludes `.failed`, so this line is always
+                                // an in-flight lane — colour it to match its funnel connector.
+                                let col: Color = v3LineColor(i)
                                 Text("\(Int(v3LanePct(item.ing)))%")
                                     .font(.system(size: 22, weight: .bold))
                                     .foregroundStyle(col)
@@ -12659,6 +12668,33 @@ extension ContentView {
                     v3ScaffoldEditor.padding(.horizontal, 18).padding(.vertical, 12)
                 }
             }
+            // Broadcast day-folder structure (competition-day roots keyed by a short code, e.g.
+            // TUWE / CURL). The engine feature is complete end-to-end; this restores the only
+            // missing piece — the toggle that died with the deleted legacy Pro Tools tab (P1-4).
+            v3SettingsSection("BROADCAST — WINTER OLYMPICS") {
+                v3ToggleRow("Olympics day-folder structure",
+                            "Organize footage into competition-day folders instead of plain dates. For broadcast day workflows.",
+                            $winterOlympicsMode)
+                if winterOlympicsMode {
+                    v3SettingDivider()
+                    HStack(spacing: 10) {
+                        Text("Day code").font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
+                        TextField("TUWE", text: Binding(
+                            get: { olympicsCode },
+                            // Uppercase + strip spaces so the folder segment is clean; the arg
+                            // emitter (IngestLogic) trims and skips an empty code, so a blank field
+                            // simply omits --olympics-code rather than emitting a bare flag.
+                            set: { olympicsCode = $0.uppercased().filter { !$0.isWhitespace } }))
+                            .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
+                            .frame(maxWidth: 120)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                        Button("Reset") { olympicsCode = "TUWE" }
+                            .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
+                        Spacer()
+                    }.padding(.horizontal, 18).padding(.vertical, 12)
+                }
+            }
         }
     }
 
@@ -12805,6 +12841,11 @@ extension ContentView {
                 Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
+            // Fake-fixture spawners are DEBUG-ONLY. They inject phantom cards/lanes that mutate
+            // v3FailedCount / v3AllDone / the ring, so they must NOT be reachable in a shipped
+            // build — even behind the user-flippable Debug Mode. (P1-2) The legitimate debug
+            // features above/below — Run UI Demo, Show Log, Log Files, Dry Run — stay available.
+            #if DEBUG
             Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 18)
 
             // Spawn fake fixtures to exercise the UI with no hardware: +Card = a waiting gold
@@ -12835,6 +12876,7 @@ extension ContentView {
                 }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.55)).v3Hover(scale: 1.05)
                     .help("Remove the fake test fixtures")
             }
+            #endif
 
             Spacer()
 
@@ -12852,6 +12894,8 @@ extension ContentView {
 
     // DEV-only fake fixtures (see v3DebugStrip). Exercise the UI states with no hardware.
     // All are tagged with the /dev/cardrunner-fake/ marker so Clear removes ONLY them.
+    // DEBUG-ONLY (P1-2): compiled out of release so phantom cards can never reach a shipped build.
+    #if DEBUG
     private static let v3FakePrefix = "/dev/cardrunner-fake/"
 
     /// A "waiting to route" card → the gold waiting tile.
@@ -12897,6 +12941,9 @@ extension ContentView {
                 activeIngests.removeValue(forKey: key)
             }
         }
+        // P1-3: a fake sim arms v3PendingCelebration; clearing the fakes before it's consumed
+        // must NOT leave a primed burst that later fires on a real batch. Disarm it here.
+        v3PendingCelebration = false
         v3FakeCardSeq = 5
     }
     /// DEV preview: a fake card's Start runs a SIMULATED transfer — copying (ramps ~5s) →
@@ -12937,6 +12984,7 @@ extension ContentView {
             }
         }
     }
+    #endif  // DEBUG — end DEV-only fake-fixture block (P1-2)
 
     /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
     /// stage over ~7 s, opacity easing in/out so it never pops. Fired occasionally by v3SheenTimer
@@ -13028,7 +13076,7 @@ extension ContentView {
                     }
                     Divider()
                     Button("Edit presets…") {
-                        settingsTab = .presets
+                        v3SettingsCat = .presets
                         withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true }
                     }
                 } label: {
@@ -13211,7 +13259,7 @@ extension ContentView {
                     .help("Edit the folder name — applied when this card finishes copying")
                     HStack(spacing: 5) {
                         Text(ing.cameraModel.isEmpty ? "Camera" : ing.cameraModel)
-                        Text("·  → \(v3DestDriveName)").foregroundStyle(.white.opacity(0.35))
+                        Text("·  → \(v3LaneDestName(ing))").foregroundStyle(.white.opacity(0.35))
                     }
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1).truncationMode(.tail)
                 }
@@ -13410,8 +13458,13 @@ extension ContentView {
                     editingAwaitingID = nil
                     // DEV: a fake card has no real footage, so run a SIMULATED transfer end-to-end
                     // instead of the shell (which would just report "no footage on this card").
+                    // The fake path + simulator are DEBUG-only (P1-2); RELEASE always starts for real.
+                    #if DEBUG
                     if aw.card.path.hasPrefix(Self.v3FakePrefix) { v3DevSimulateIngest(aw) }
                     else { startAwaiting(aw.id) }
+                    #else
+                    startAwaiting(aw.id)
+                    #endif
                 } label: {
                     Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 18).padding(.vertical, 6)
