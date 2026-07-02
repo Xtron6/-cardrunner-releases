@@ -1902,6 +1902,7 @@ struct ContentView: View {
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
+    @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…)
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
@@ -12774,6 +12775,33 @@ extension ContentView {
                 Label("Log Files", systemImage: "folder").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.8)).v3Hover(scale: 1.05)
 
+            Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 18)
+
+            // Spawn fake fixtures to exercise the UI with no hardware: +Card = a waiting gold
+            // tile, +Done = a "safe to pull" card, +Fail = a failed lane. Clear removes ONLY
+            // the fakes (never a real detected card or real ingest).
+            Button { v3DevAddFakeCard() } label: {
+                Label("Card", systemImage: "plus.rectangle.on.rectangle")
+                    .font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(v3Amber).v3Hover(scale: 1.05)
+                .help("Add a fake waiting card (gold tile)")
+            Button { v3DevAddFakeLane(failed: false) } label: {
+                Label("Done", systemImage: "checkmark.circle").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(v3Green).v3Hover(scale: 1.05)
+                .help("Add a fake finished card (safe-to-pull panel)")
+            Button { v3DevAddFakeLane(failed: true) } label: {
+                Label("Fail", systemImage: "xmark.octagon").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(v3Red).v3Hover(scale: 1.05)
+                .help("Add a fake failed lane (failure UI)")
+
+            if v3HasFakeFixtures {
+                Button { v3DevClearFakeCards() } label: {
+                    Label("Clear", systemImage: "xmark.circle")
+                        .font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.55)).v3Hover(scale: 1.05)
+                    .help("Remove the fake test fixtures")
+            }
+
             Spacer()
 
             HStack(spacing: 7) {
@@ -12786,6 +12814,50 @@ extension ContentView {
         .background(v3Purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(v3Purple.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [5, 3])))
         .padding(.horizontal, 2)
+    }
+
+    // DEV-only fake fixtures (see v3DebugStrip). Exercise the UI states with no hardware.
+    // All are tagged with the /dev/cardrunner-fake/ marker so Clear removes ONLY them.
+    private static let v3FakePrefix = "/dev/cardrunner-fake/"
+
+    /// A "waiting to route" card → the gold waiting tile.
+    private func v3DevAddFakeCard() {
+        v3FakeCardSeq += 1
+        let name = String(format: "A%03d", v3FakeCardSeq)
+        let vol = Volume(name: name, path: Self.v3FakePrefix + name, cameraModel: "Sony")
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            awaitingCards.append(AwaitingCard(card: vol, customName: name))
+        }
+    }
+    /// A finished (.done) or failed (.failed) lane → the safe-to-pull panel / failed-lane UI.
+    private func v3DevAddFakeLane(failed: Bool) {
+        v3FakeCardSeq += 1
+        let name = String(format: "A%03d", v3FakeCardSeq)
+        var ing = ActiveIngest()
+        ing.cardName = name; ing.friendlyName = name; ing.cameraModel = "Sony"
+        ing.sourcePath = Self.v3FakePrefix + name; ing.runMode = importMode
+        ing.newFiles = 26; ing.totalFiles = 26; ing.completedFiles = 26
+        ing.avgMBps = 227; ing.durationSec = 78
+        ing.destPath = defaultDestination?.path ?? "/Volumes/Gallo 8TB"
+        ing.phase = failed ? .failed : .done
+        ing.hasCopyError = failed
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            activeIngests[UUID()] = ing
+        }
+    }
+    private var v3HasFakeFixtures: Bool {
+        awaitingCards.contains { $0.card.path.hasPrefix(Self.v3FakePrefix) }
+            || activeIngests.values.contains { $0.sourcePath.hasPrefix(Self.v3FakePrefix) }
+    }
+    /// Removes ONLY the fake test fixtures (never a real detected card or real ingest).
+    private func v3DevClearFakeCards() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            awaitingCards.removeAll { $0.card.path.hasPrefix(Self.v3FakePrefix) }
+            for key in activeIngests.filter({ $0.value.sourcePath.hasPrefix(Self.v3FakePrefix) }).map(\.key) {
+                activeIngests.removeValue(forKey: key)
+            }
+        }
+        v3FakeCardSeq = 5
     }
 
     /// Subtle iridescent gloss sweep. A wide, feathered, -13°-skewed band drifts across the
@@ -13183,61 +13255,52 @@ extension ContentView {
     /// demo's awaiting lane: route label + CHOOSE-DEST cycle + "Drag node · or Start", with the
     /// amber draggable node on the trailing edge that links + starts on drop.
     private func v3AwaitingLane(_ aw: AwaitingCard) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let editing = (editingAwaitingID == aw.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            // TOP ROW — icon · editable name pill · CHOOSE DEST, all inline. This row never
+            // shifts (the edit-time path preview lives BELOW it, in the gap).
             HStack(spacing: 10) {
-                Image(systemName: "sdcard.fill").font(.system(size: 20)).foregroundStyle(.white.opacity(0.75))
-                    .frame(width: 44, height: 44).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                VStack(alignment: .leading, spacing: 4) {
-                    // Editable per-card FOLDER NAME (--cardlabel). Idle = dashed amber pill (reads as
-                    // "editable"); focused = solid cyan + fill + glow (reads as "typing now") with a
-                    // green ✓ to lock it in. Enter/✓/click-away COMMIT the name (persist, no copy);
-                    // Start is the only thing that begins the transfer.
-                    let editing = (editingAwaitingID == aw.id)
-                    let hovered = (v3HoveredNameID == aw.id)
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : v3Amber.opacity(0.85))
-                        TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
-                            .textFieldStyle(.plain).font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
-                            .frame(minWidth: 70).fixedSize()
-                            .focused($editingAwaitingID, equals: aw.id)
-                            .onSubmit { commitAwaitingName(aw.id) }        // Enter LOCKS the name (never starts)
-                            .onExitCommand {                               // Esc reverts to the pre-edit value
-                                if let idx = awaitingCards.firstIndex(where: { $0.id == aw.id }) {
-                                    awaitingCards[idx].customName = v3PreEditName
-                                    awaitingCards[idx].userEdited = false
-                                }
-                                editingAwaitingID = nil
+                Image(systemName: "sdcard").font(.system(size: 17)).foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                // Editable per-card FOLDER NAME (--cardlabel). Idle = dashed amber pill (reads as
+                // "editable"); focused = solid cyan + fill + glow (reads as "typing now") with a
+                // green ✓ to lock it in. Enter/✓/click-away COMMIT the name (persist, no copy);
+                // Start is the only thing that begins the transfer.
+                let hovered = (v3HoveredNameID == aw.id)
+                HStack(spacing: 6) {
+                    Image(systemName: "folder").font(.system(size: 12)).foregroundStyle(editing ? v3Cyan : v3Amber.opacity(0.85))
+                    TextField("Folder name", text: v3AwaitingNameBinding(aw.id))
+                        .textFieldStyle(.plain).font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+                        .frame(minWidth: 70).fixedSize()
+                        .focused($editingAwaitingID, equals: aw.id)
+                        .onSubmit { commitAwaitingName(aw.id) }        // Enter LOCKS the name (never starts)
+                        .onExitCommand {                               // Esc reverts to the pre-edit value
+                            if let idx = awaitingCards.firstIndex(where: { $0.id == aw.id }) {
+                                awaitingCards[idx].customName = v3PreEditName
+                                awaitingCards[idx].userEdited = false
                             }
-                        if editing {
-                            Button { commitAwaitingName(aw.id) } label: {
-                                Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(v3Green)
-                            }.buttonStyle(.plain).help("Lock in this folder name")
-                        } else {
-                            Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                            editingAwaitingID = nil
                         }
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(editing ? v3Cyan.opacity(0.10) : (hovered ? v3Cyan.opacity(0.05) : Color.clear), in: RoundedRectangle(cornerRadius: 9))
-                    // editing = solid cyan glow; hover = a softer cyan glow signalling "click to edit";
-                    // idle = the dashed amber outline.
-                    .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
-                        editing ? AnyShapeStyle(v3Cyan)
-                                : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.6)) : AnyShapeStyle(v3Amber.opacity(0.5))),
-                        style: StrokeStyle(lineWidth: (editing || hovered) ? 1.5 : 1, dash: (editing || hovered) ? [] : [4, 3])))
-                    .shadow(color: editing ? v3Cyan.opacity(0.4) : (hovered ? v3Cyan.opacity(0.3) : .clear), radius: (editing || hovered) ? 6 : 0)
-                    .animation(.easeInOut(duration: 0.14), value: editing)
-                    .animation(.easeInOut(duration: 0.14), value: hovered)
-                    .onHover { v3HoveredNameID = $0 ? aw.id : (v3HoveredNameID == aw.id ? nil : v3HoveredNameID) }
                     if editing {
-                        // Live path preview — shows exactly where the footage will land before commit.
-                        Text(v3FolderPreview(aw)).font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.head)
+                        Button { commitAwaitingName(aw.id) } label: {
+                            Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(v3Green)
+                        }.buttonStyle(.plain).help("Lock in this folder name")
                     } else {
-                        Text("\(aw.card.cameraModel)  ·  → \(v3AwaitingDestName(aw))")
-                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(1).truncationMode(.tail)
+                        Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
                     }
                 }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(editing ? v3Cyan.opacity(0.10) : (hovered ? v3Cyan.opacity(0.05) : Color.clear), in: RoundedRectangle(cornerRadius: 9))
+                // editing = solid cyan glow; hover = a softer cyan glow signalling "click to edit";
+                // idle = the dashed amber outline.
+                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
+                    editing ? AnyShapeStyle(v3Cyan)
+                            : (hovered ? AnyShapeStyle(v3Cyan.opacity(0.6)) : AnyShapeStyle(v3Amber.opacity(0.5))),
+                    style: StrokeStyle(lineWidth: (editing || hovered) ? 1.5 : 1, dash: (editing || hovered) ? [] : [4, 3])))
+                .shadow(color: editing ? v3Cyan.opacity(0.4) : (hovered ? v3Cyan.opacity(0.3) : .clear), radius: (editing || hovered) ? 6 : 0)
+                .animation(.easeInOut(duration: 0.14), value: editing)
+                .animation(.easeInOut(duration: 0.14), value: hovered)
+                .onHover { v3HoveredNameID = $0 ? aw.id : (v3HoveredNameID == aw.id ? nil : v3HoveredNameID) }
                 Spacer()
                 Button { v3CycleAwaitingDest(aw.id) } label: {
                     Text(aw.destinationID == nil ? "CHOOSE DEST" : "→ \(v3AwaitingDestName(aw))")
@@ -13246,6 +13309,12 @@ extension ContentView {
                         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(v3Amber.opacity(0.55)))
                 }.buttonStyle(.plain)
                 .help("Tap to cycle drives, or drag the node onto a drive")
+            }
+            // Live path preview — sits in the gap UNDER the top row WHILE editing, so the
+            // icon/name/CHOOSE-DEST row never moves. Shows exactly where footage will land.
+            if editing {
+                Text(v3FolderPreview(aw)).font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(v3Cyan.opacity(0.85)).lineLimit(1).truncationMode(.head)
             }
             HStack(spacing: 7) {
                 Text("Name the folder, then Start")
@@ -13258,14 +13327,14 @@ extension ContentView {
                     editingAwaitingID = nil
                     startAwaiting(aw.id)
                 } label: {
-                    Text("Start").font(.system(size: 14, weight: .bold)).foregroundStyle(.black)
-                        .padding(.horizontal, 20).padding(.vertical, 9)
-                        .background(v3Green, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Text("Start").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 18).padding(.vertical, 6)
+                        .background(v3Green, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }.buttonStyle(.plain).v3Hover(scale: 1.06, glow: v3Green).help("Start now using \(v3AwaitingDestName(aw))")
             }
         }
-        .padding(18).frame(width: 360)
+        .padding(.horizontal, 16).padding(.vertical, 12).frame(width: 360)
         .v3GlowCard(tint: v3Amber, radius: 18, fill: 0.04, border: 0.55, glow: 0.28, glowRadius: 22)
         .overlay(alignment: .trailing) { v3RouteDot(aw) }
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(aw.id)": $0] }
