@@ -1292,6 +1292,160 @@ extension View {
     }
 }
 
+/// Shared project-scaffold editor. A clean, INDENTED list where each row is a folder; nesting is a
+/// "/"-joined path in one list entry (e.g. "Footage/A-Camera") and depth drives the indent. Supports:
+/// inline rename (tap the name → blue-glow field, cascades to descendants), add-subfolder per row,
+/// delete (cascades to descendants), and add-root. In `included` (New-Project) mode each row shows a
+/// checkmark to include/exclude that folder for this project. PURE string ops on the bound raw list —
+/// never touches the footage/copy path; the actual mkdir happens elsewhere. Guards reject `..`/leading-`/`
+/// and turn a typed `/` into `-`, so nesting only ever comes from the explicit +subfolder action.
+struct V3ScaffoldFolderEditor: View {
+    @Binding var raw: String
+    var included: Binding<[String: Bool]>? = nil
+    var accent: Color
+    var childAccent: Color
+
+    @State private var editingIndex: Int? = nil
+    @State private var editingText = ""
+    @FocusState private var editFocused: Bool
+    @State private var hoverIndex: Int? = nil
+    @State private var addingUnder: Int? = nil        // row index whose +subfolder draft is open
+    @State private var addRootOpen = false
+    @State private var draftName = ""
+    @FocusState private var draftFocused: Bool
+
+    private func list() -> [String] {
+        raw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+    private func write(_ l: [String]) { raw = l.joined(separator: "\n") }
+    private func valid(_ p: String) -> Bool { !p.isEmpty && !p.contains("..") && !p.hasPrefix("/") }
+    private func sanitize(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-") }
+    private func depth(_ p: String) -> Int { p.filter { $0 == "/" }.count }
+    private func leaf(_ p: String) -> String { p.split(separator: "/").last.map(String.init) ?? p }
+
+    private func addRoot() {
+        let name = sanitize(draftName)
+        var l = list()
+        if valid(name), !l.contains(name) { l.append(name); write(l) }
+        draftName = ""; addRootOpen = false
+    }
+    private func addSub(_ i: Int) {
+        var l = list(); guard i < l.count else { addingUnder = nil; return }
+        let path = "\(l[i])/\(sanitize(draftName))"
+        if valid(path), !l.contains(path) {
+            var at = i + 1; let prefix = l[i] + "/"
+            while at < l.count && l[at].hasPrefix(prefix) { at += 1 }   // group after existing descendants
+            l.insert(path, at: at); write(l)
+        }
+        draftName = ""; addingUnder = nil
+    }
+    private func commitRename(_ i: Int) {
+        var l = list(); guard i < l.count else { editingIndex = nil; return }
+        let old = l[i]
+        let parent = old.split(separator: "/").dropLast().joined(separator: "/")
+        let newLeaf = sanitize(editingText)
+        let path = parent.isEmpty ? newLeaf : "\(parent)/\(newLeaf)"
+        if valid(path) {
+            let oldPrefix = old + "/"
+            l = l.enumerated().map { (j, p) in
+                if j == i { return path }
+                if p.hasPrefix(oldPrefix) { return path + "/" + String(p.dropFirst(oldPrefix.count)) }   // re-prefix children
+                return p
+            }
+            write(l)
+        }
+        editingIndex = nil
+    }
+    private func delete(_ i: Int) {
+        var l = list(); guard i < l.count else { return }
+        let target = l[i]; let prefix = target + "/"
+        l.removeAll { $0 == target || $0.hasPrefix(prefix) }; write(l)   // cascade descendants
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(list().enumerated()), id: \.offset) { idx, path in row(idx, path) }
+            if addRootOpen {
+                draftField(placeholder: "New folder…", commit: addRoot, cancel: { draftName = ""; addRootOpen = false })
+                    .padding(.top, 2)
+            } else {
+                Button {
+                    addingUnder = nil; addRootOpen = true; draftName = ""
+                    DispatchQueue.main.async { draftFocused = true }
+                } label: {
+                    HStack(spacing: 6) { Image(systemName: "plus.circle.fill"); Text("Add folder") }
+                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(accent)
+                }.buttonStyle(.plain).v3Hover(scale: 1.03).padding(.top, 2)
+            }
+        }
+    }
+
+    @ViewBuilder private func row(_ idx: Int, _ path: String) -> some View {
+        let d = depth(path)
+        let editing = editingIndex == idx
+        let hot = hoverIndex == idx
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let inc = included {
+                    let on = inc.wrappedValue[path] ?? true
+                    Button { inc.wrappedValue[path] = !on } label: {
+                        Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 14)).foregroundStyle(on ? accent : .white.opacity(0.3))
+                    }.buttonStyle(.plain).help(on ? "Included in this project" : "Excluded")
+                }
+                Image(systemName: d > 0 ? "folder" : "folder.fill")
+                    .font(.system(size: 11)).foregroundStyle(d > 0 ? childAccent : .white.opacity(0.55))
+                if editing {
+                    TextField("Name", text: $editingText)
+                        .textFieldStyle(.plain).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+                        .focused($editFocused).frame(minWidth: 80).fixedSize()
+                        .onSubmit { commitRename(idx) }.onExitCommand { editingIndex = nil }
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .v3EditableField(focused: editFocused, accent: accent, cornerRadius: 6)
+                } else {
+                    Text(leaf(path)).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background((hot ? accent.opacity(0.06) : .clear), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(accent.opacity(hot ? 0.55 : 0), lineWidth: 1.2))
+                        .shadow(color: accent.opacity(hot ? 0.25 : 0), radius: hot ? 5 : 0)
+                        .contentShape(Rectangle())
+                        .onTapGesture { editingText = leaf(path); editingIndex = idx; DispatchQueue.main.async { editFocused = true } }
+                }
+                Spacer()
+                if hot && !editing {
+                    Button { addingUnder = idx; draftName = ""; DispatchQueue.main.async { draftFocused = true } } label: {
+                        Image(systemName: "plus.rectangle.on.folder").font(.system(size: 12)).foregroundStyle(accent)
+                    }.buttonStyle(.plain).v3Hover(scale: 1.1).help("Add a subfolder")
+                    Button { delete(idx) } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
+                    }.buttonStyle(.plain).v3Hover(scale: 1.1).help("Delete this folder and its subfolders")
+                }
+            }
+            .padding(.leading, CGFloat(d) * 18)
+            .onHover { hoverIndex = $0 ? idx : (hoverIndex == idx ? nil : hoverIndex) }
+            if addingUnder == idx {
+                draftField(placeholder: "New subfolder…", commit: { addSub(idx) }, cancel: { draftName = ""; addingUnder = nil })
+                    .padding(.leading, CGFloat(d + 1) * 18)
+            }
+        }
+    }
+
+    @ViewBuilder private func draftField(placeholder: String, commit: @escaping () -> Void, cancel: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder.badge.plus").font(.system(size: 11)).foregroundStyle(accent)
+            TextField(placeholder, text: $draftName)
+                .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                .focused($draftFocused).onSubmit(commit).onExitCommand(perform: cancel)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .v3EditableField(focused: draftFocused, accent: accent, cornerRadius: 7)
+            Button(action: commit) { Image(systemName: "return").font(.system(size: 11, weight: .bold)).foregroundStyle(accent) }
+                .buttonStyle(.plain).help("Add")
+            Button(action: cancel) { Image(systemName: "xmark").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)) }
+                .buttonStyle(.plain)
+        }
+    }
+}
+
 /// One celebration particle — target offset from the ring center, look baked in at fire time.
 private struct V3Particle: Identifiable {
     let id = UUID()
@@ -1678,7 +1832,6 @@ struct ContentView: View {
     @State private var v3EditNameEdited = true  // an existing dest already has a chosen name — don't auto-stomp it
     @State private var v3EditError = ""
     @State private var v3SettingsCat: V3SettingsCat = .general   // selected icon-rail category
-    @State private var v3NewScaffold: String = ""                // add-folder field in the v3 scaffold editor
     @FocusState private var editingAwaitingID: UUID?             // which awaiting lane's name field is live
     @FocusState private var editingActiveID: UUID?              // which active lane's name field is live
     @FocusState private var v3NameFocused: Bool                 // Add/Edit destination-name field focus
@@ -1731,8 +1884,6 @@ struct ContentView: View {
     @AppStorage("pref_scaffoldEnabled")    private var scaffoldEnabled:    Bool   = false
     @AppStorage("pref_scaffoldFoldersRaw") private var scaffoldFoldersRaw: String = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments"
     @AppStorage("pref_scaffoldHintShown")  private var scaffoldHintShown:  Bool   = false
-    @State private var newScaffoldFolder:            String = ""
-    @State private var newScaffoldSubfolder:         String = ""   // optional subfolder for the "Add" row
     @State private var presetNewScaffoldFolder:      String = ""
     @State private var presetNewScaffoldSubfolder:   String = ""   // optional subfolder for the preset "Add" row
     @State private var editingScaffoldIndex:         Int?   = nil
@@ -5060,31 +5211,6 @@ struct ContentView: View {
             .filter { !$0.isEmpty }
     }
 
-    private func addScaffoldFolder() {
-        var t = newScaffoldFolder.trimmingCharacters(in: .whitespaces)
-        let sub = newScaffoldSubfolder.trimmingCharacters(in: .whitespaces)
-        if !sub.isEmpty { t = "\(t)/\(sub)" }
-        guard !t.isEmpty, !scaffoldFolderList.contains(t) else { return }
-        scaffoldFoldersRaw = (scaffoldFolderList + [t]).joined(separator: "\n")
-        newScaffoldFolder    = ""
-        newScaffoldSubfolder = ""
-    }
-
-    private func removeScaffoldFolder(at index: Int) {
-        var list = scaffoldFolderList
-        guard index < list.count else { return }
-        list.remove(at: index)
-        scaffoldFoldersRaw = list.joined(separator: "\n")
-    }
-
-    private func renameScaffoldFolder(at index: Int, to newName: String) {
-        let trimmed = newName.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        var list = scaffoldFolderList
-        guard index < list.count else { return }
-        list[index] = trimmed
-        scaffoldFoldersRaw = list.joined(separator: "\n")
-    }
 
     /// Create scaffold folders at `projectURL`. Uses global settings unless `overrideRaw` is given.
     private func applyScaffold(to projectURL: URL, overrideRaw: String? = nil) {
@@ -7446,6 +7572,24 @@ struct ContentView: View {
         shortcutsRef.value  = dict
     }
 
+    /// The folder footage is landing in for the CURRENT transfer (for F / Open-in-Finder). NOTE:
+    /// `ActiveIngest.destPath` is only populated at COMPLETION (the shell emits PROGRESS_DEST at the
+    /// very end), so mid-transfer we resolve the in-flight lane's routed destination ourselves: the
+    /// destination's project root (SSD → <drive>/<project>; custom folder → the folder itself).
+    /// Returns nil when nothing is actively copying (caller falls back to the last/default dest).
+    private func v3LiveTransferFolder() -> String? {
+        guard let ing = activeIngests.values.first(where: {
+            [.scanning, .building, .copying, .finalizing, .verifying].contains($0.phase)
+        }) else { return nil }
+        if !ing.destPath.isEmpty { return ing.destPath }   // engine already reported it (late in the run)
+        let dest = ing.destinationID.flatMap { id in destinations.first { $0.id == id } } ?? defaultDestination
+        guard let d = dest else { return nil }
+        if d.isCustomFolder { return d.path.isEmpty ? nil : d.path }
+        let proj = resolveProjectFolder(destProject: d.projectFolder, globalProject: projectName)
+        return proj.isEmpty ? (d.path.isEmpty ? nil : d.path)
+                            : (d.path as NSString).appendingPathComponent(proj)
+    }
+
     private func handleShortcutAction(_ action: ShortcutAction) {
         switch action {
         case .toggleAutoIngest:
@@ -7467,12 +7611,9 @@ struct ContentView: View {
             // Route to the v3 history sheet, mirroring the menu handler (menuToggleHistory).
             if !isShowingSettings { v3PresentModal($showV3History, !showV3History) }
         case .openInFinder:
-            // During a transfer, jump to the folder footage is landing in RIGHT NOW (the first
-            // in-flight lane's destination); otherwise the last-ingested / default destination.
-            let live = activeIngests.values.first {
-                [.scanning, .building, .copying, .finalizing, .verifying].contains($0.phase)
-            }?.destPath
-            let dest = (live?.isEmpty == false) ? live! : finderDestPath
+            // During a transfer, jump to the folder footage is landing in RIGHT NOW; otherwise the
+            // last-ingested / default destination.
+            let dest = v3LiveTransferFolder() ?? finderDestPath
             if !dest.isEmpty {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dest))
             }
@@ -11687,8 +11828,10 @@ extension ContentView {
         // name becomes a single folder component, never a nested/relative path.
         guard !name.isEmpty, !name.contains("/"), !name.contains("..") else { return }
         projectName = name
+        // Per-project INCLUDE filter — used only to pick which folders to mkdir for THIS project.
+        // Do NOT rewrite the global scaffold list with the filtered subset (that used to delete
+        // excluded folders from the app-wide default); structural edits already persist via the editor.
         let enabled = scaffoldFolderList.filter { v3ProjScaffoldOn[$0] ?? true }
-        scaffoldFoldersRaw = enabled.joined(separator: "\n")
         scaffoldEnabled = !enabled.isEmpty
         finderTagEnabled = v3ProjColorIndex != 0
         if v3ProjColorIndex != 0 { finderTagColor = v3TagColors[v3ProjColorIndex].name }
@@ -11936,22 +12079,14 @@ extension ContentView {
                 Image(systemName: "square.grid.2x2").font(.system(size: 11)).foregroundStyle(v3Purple)
                 Text("Scaffold folders created inside").font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Purple)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], alignment: .leading, spacing: 8) {
-                ForEach(scaffoldFolderList, id: \.self) { f in
-                    let on = v3ProjScaffoldOn[f] ?? true
-                    Button { v3ProjScaffoldOn[f] = !on } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: on ? "checkmark" : "plus").font(.system(size: 10, weight: .bold))
-                            Text(f).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                        }
-                        .foregroundStyle(on ? .white : .white.opacity(0.4))
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background((on ? v3Purple.opacity(0.18) : Color.white.opacity(0.03)), in: RoundedRectangle(cornerRadius: 9))
-                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(on ? v3Purple.opacity(0.5) : .white.opacity(0.08)))
-                    }.buttonStyle(.plain)
-                }
+            // Full editor: tick which folders to include for THIS project, rename any (tap the name),
+            // add a folder or a subfolder (hover a row → + subfolder), delete (cascades). Structural
+            // edits update your global default scaffold; the checkmarks are per-project only.
+            ScrollView {
+                V3ScaffoldFolderEditor(raw: $scaffoldFoldersRaw, included: $v3ProjScaffoldOn,
+                                       accent: v3Cyan, childAccent: Color(hex: "#60a5fa"))
             }
+            .frame(maxHeight: 190)
             // Whether creating the project also makes it the default routing destination. On =
             // the next card routes straight in; off = it's added as a tile without stealing default.
             HStack(spacing: 10) {
@@ -12950,32 +13085,12 @@ extension ContentView {
         }
     }
 
-    // Simple scaffold folder-list editor (add / delete) for the new look.
+    // Full scaffold editor (rename / add / subfolder / delete, with nesting) — shared component.
     private var v3ScaffoldEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(scaffoldFolderList.enumerated()), id: \.offset) { idx, folder in
-                HStack(spacing: 8) {
-                    Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                    Text(folder).font(.system(size: 13)).foregroundStyle(.white)
-                    Spacer()
-                    Button {
-                        var list = scaffoldFolderList; list.remove(at: idx); scaffoldFoldersRaw = list.joined(separator: "\n")
-                    } label: { Image(systemName: "xmark").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4)) }
-                        .buttonStyle(.plain)
-                }
-            }
-            HStack(spacing: 8) {
-                Image(systemName: "plus").font(.system(size: 11)).foregroundStyle(v3Cyan)
-                TextField("Add folder…", text: $v3NewScaffold)
-                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
-                    .onSubmit {
-                        let n = v3NewScaffold.trimmingCharacters(in: .whitespaces)
-                        guard !n.isEmpty else { return }
-                        var list = scaffoldFolderList; list.append(n); scaffoldFoldersRaw = list.joined(separator: "\n"); v3NewScaffold = ""
-                    }
-                Button("Reset") { scaffoldFoldersRaw = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments" }
-                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            V3ScaffoldFolderEditor(raw: $scaffoldFoldersRaw, accent: v3Cyan, childAccent: Color(hex: "#60a5fa"))
+            Button("Reset to defaults") { scaffoldFoldersRaw = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments" }
+                .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
         }
     }
 
