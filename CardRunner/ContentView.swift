@@ -1898,7 +1898,9 @@ struct ContentView: View {
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
     @State private var v3LogAtBottom: Bool = true     // Activity-log: is the live tail on-screen? (drives follow + jump-to-tail)
-    @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…)
+    #if DEBUG
+    @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…) — DEBUG-only
+    #endif
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
