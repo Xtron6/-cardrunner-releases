@@ -12013,14 +12013,16 @@ extension ContentView {
     private func v3LanePct(_ ing: ActiveIngest) -> Double {
         ing.totalBytesNew > 0 ? min(100, Double(ing.doneBytes) / Double(ing.totalBytesNew) * 100) : 0
     }
+    // The live per-card status shown in the lane's top-right capsule (the % moved onto the
+    // funnel line). Word matches the design (COPYING / FLUSHING / VERIFYING).
     private func v3Status(_ ing: ActiveIngest) -> (String, Color) {
         switch ing.phase {
-        case .copying:                   return ("\(Int(v3LanePct(ing)))%", v3Cyan)
+        case .copying:                    return ("COPYING", v3Cyan)
         case .scanning, .building, .idle: return ("STARTING", v3Cyan)
-        case .finalizing:                return ("FINALIZING", v3Amber)
-        case .verifying:                 return ("VERIFYING", v3Green)
-        case .done:                      return ("SAFE", v3Green)
-        case .failed:                    return ("FAILED", v3Red)
+        case .finalizing:                 return ("FLUSHING", v3Amber)
+        case .verifying:                  return ("VERIFYING", v3Green)
+        case .done:                       return ("SAFE", v3Green)
+        case .failed:                     return ("FAILED", v3Red)
         }
     }
 
@@ -12144,6 +12146,24 @@ extension ContentView {
                                                 radius: r.width / 2,
                                                 style: completionAnim,
                                                 trigger: v3CelebrationTrigger)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+                // Per-lane % riding at the START of each connector line, OUTSIDE the card — colored
+                // to match that lane's funnel line (state-driven text, not an animation → no core burn).
+                .overlayPreferenceValue(V3AnchorKey.self) { anchors in
+                    GeometryReader { geo in
+                        ForEach(Array(v3ActiveLanes.enumerated()), id: \.element.id) { i, item in
+                            if [.copying, .finalizing, .verifying].contains(item.ing.phase),
+                               let r = anchors["lane-\(item.id)"].map({ geo[$0] }) {
+                                let col: Color = item.ing.phase == .failed ? v3Red : v3LineColor(i)
+                                Text("\(Int(v3LanePct(item.ing)))%")
+                                    .font(.system(size: 22, weight: .bold))
+                                    .foregroundStyle(col)
+                                    .shadow(color: col.opacity(0.5), radius: 6)
+                                    .position(x: r.maxX + 42, y: r.midY - 8)
+                            }
                         }
                     }
                     .allowsHitTesting(false)
@@ -12785,11 +12805,15 @@ extension ContentView {
                     .font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(v3Amber).v3Hover(scale: 1.05)
                 .help("Add a fake waiting card (gold tile)")
-            Button { v3DevAddFakeLane(failed: false) } label: {
+            Button { v3DevAddFakeLane([.copying, .copying, .finalizing, .verifying][v3FakeCardSeq % 4]) } label: {
+                Label("Copy", systemImage: "arrow.down.circle").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(v3Cyan).v3Hover(scale: 1.05)
+                .help("Add a fake in-progress lane (%-on-line + COPYING/FLUSHING/VERIFYING)")
+            Button { v3DevAddFakeLane(.done) } label: {
                 Label("Done", systemImage: "checkmark.circle").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(v3Green).v3Hover(scale: 1.05)
                 .help("Add a fake finished card (safe-to-pull panel)")
-            Button { v3DevAddFakeLane(failed: true) } label: {
+            Button { v3DevAddFakeLane(.failed) } label: {
                 Label("Fail", systemImage: "xmark.octagon").font(.system(size: 12, weight: .semibold)).contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(v3Red).v3Hover(scale: 1.05)
                 .help("Add a fake failed lane (failure UI)")
@@ -12829,18 +12853,24 @@ extension ContentView {
             awaitingCards.append(AwaitingCard(card: vol, customName: name))
         }
     }
-    /// A finished (.done) or failed (.failed) lane → the safe-to-pull panel / failed-lane UI.
-    private func v3DevAddFakeLane(failed: Bool) {
+    /// A lane in an arbitrary phase → exercises the copying %-on-line + status capsule, the
+    /// safe-to-pull panel (.done), or the failed-lane UI (.failed).
+    private func v3DevAddFakeLane(_ phase: IngestPhase) {
         v3FakeCardSeq += 1
         let name = String(format: "A%03d", v3FakeCardSeq)
         var ing = ActiveIngest()
         ing.cardName = name; ing.friendlyName = name; ing.cameraModel = "Sony"
         ing.sourcePath = Self.v3FakePrefix + name; ing.runMode = importMode
-        ing.newFiles = 26; ing.totalFiles = 26; ing.completedFiles = 26
-        ing.avgMBps = 227; ing.durationSec = 78
         ing.destPath = defaultDestination?.path ?? "/Volumes/Gallo 8TB"
-        ing.phase = failed ? .failed : .done
-        ing.hasCopyError = failed
+        ing.newFiles = 50; ing.totalFiles = 50; ing.avgMBps = 227; ing.durationSec = 78
+        ing.totalBytesNew = 1000
+        // Vary the progress so stacked in-progress lanes show DIFFERENT % on their lines.
+        let pct = phase == .copying ? [97, 27, 55, 42, 88, 73][v3FakeCardSeq % 6] : 100
+        ing.completedFilesBytes = Int64(1000 * pct / 100)
+        ing.completedFiles = 50 * pct / 100
+        ing.liveMBps = phase == .copying ? 333 : 0
+        ing.phase = phase
+        ing.hasCopyError = (phase == .failed)
         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
             activeIngests[UUID()] = ing
         }
@@ -13099,8 +13129,8 @@ extension ContentView {
         let (badge, col) = v3Status(ing)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Image(systemName: "sdcard.fill").font(.system(size: 18)).foregroundStyle(col)
-                    .frame(width: 32, height: 32).background(col.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                Image(systemName: "sdcard").font(.system(size: 17)).foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 40, height: 40).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     // Editable FOLDER NAME — same pill as the awaiting lane. Editing DURING the
                     // copy is a safety valve: the rename is applied when the card finishes (the
@@ -13138,7 +13168,12 @@ extension ContentView {
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
-                Text(badge).font(.system(size: 11, weight: .bold)).foregroundStyle(col)
+                // Live per-card status capsule (COPYING / FLUSHING / VERIFYING) — the same
+                // top-right slot the awaiting card uses for CHOOSE DEST. The % lives on the line.
+                Text(badge).font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(col)
+                    .padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(col.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(col.opacity(0.5)))
             }
             v3LaneBottom(ing)
         }
@@ -13422,7 +13457,10 @@ extension ContentView {
                         Capsule().fill(v3Brand).frame(width: g.size.width * CGFloat(v3LanePct(ing) / 100), height: 4)
                     }
                 }.frame(height: 4)
-                Text(String(format: "%.0f MB/s", max(0, ing.liveMBps)))
+                // Granular per-card progress: which file of how many + live speed.
+                Text(ing.newFiles > 0
+                     ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
+                     : String(format: "%.0f MB/s", max(0, ing.liveMBps)))
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
             }
         case .finalizing:
