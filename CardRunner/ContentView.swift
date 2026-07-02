@@ -1670,6 +1670,7 @@ struct ContentView: View {
     @State private var v3ProjParent = ""             // parent dir the new project folder is created in (drive root by default)
     @State private var v3ProjParentOverridden = false // true once the user picks a custom parent via "Change…"
     @State private var v3ProjColorHover: Int? = nil  // color swatch under the cursor in the New-project sheet
+    @AppStorage("pref_newProjectSetsDefault") private var v3NewProjSetsDefault: Bool = true  // New project → also make it the default dest
 
     // New project folder sheet
     @State private var showNewProjectSheet: Bool = false
@@ -11681,13 +11682,15 @@ extension ContentView {
                 ? Destination(path: base, name: deriveDestName(fromProject: name), isCustomFolder: false,
                               projectFolder: name, subfolder: "Default")
                 : Destination(path: root, name: deriveDestName(fromProject: name), isCustomFolder: true)
+            // Whether the new project also becomes the DEFAULT destination is user-controlled
+            // (v3NewProjSetsDefault). Off = still added as a routing tile, just doesn't steal default.
             if let existing = destinations.first(where: { d in
                 isDriveRoot ? (!d.isCustomFolder && d.path == base && d.projectFolder == name)
                             : (d.isCustomFolder && d.path == root) }) {
-                v3MakeDefault(existing.id)
+                if v3NewProjSetsDefault { v3MakeDefault(existing.id) }
             } else {
                 destinations.append(newDest)
-                v3MakeDefault(newDest.id)
+                if v3NewProjSetsDefault { v3MakeDefault(newDest.id) }
             }
             saveDestinations()
             refreshFreeSpaceCache()
@@ -11912,6 +11915,17 @@ extension ContentView {
                     }.buttonStyle(.plain)
                 }
             }
+            // Whether creating the project also makes it the default routing destination. On =
+            // the next card routes straight in; off = it's added as a tile without stealing default.
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Set as default destination").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    Text("Route the next card straight into this project.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                }
+                Spacer()
+                MiniPillToggle(isOn: $v3NewProjSetsDefault)
+            }
+            .padding(.vertical, 2)
             HStack(spacing: 12) {
                 v3SheetCancel { showV3NewProject = false }
                 v3SheetPrimary("Create Folder", icon: "folder.badge.plus",
