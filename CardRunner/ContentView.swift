@@ -13131,11 +13131,14 @@ extension ContentView {
 
     // Full scaffold editor (rename / add / subfolder / delete, with nesting) — shared component.
     private var v3ScaffoldEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // Settings is a wide panel, so center the chip flow (New Project is narrow → fills, no wrap).
+        VStack(alignment: .center, spacing: 10) {
             V3ScaffoldFolderEditor(raw: $scaffoldFoldersRaw, accent: v3Cyan, childAccent: Color(hex: "#60a5fa"))
+                .frame(maxWidth: .infinity, alignment: .center)
             Button("Reset to defaults") { scaffoldFoldersRaw = "Footage\nAudio\nGraphics\nExports\nAssets\nDocuments" }
                 .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
         }
+        .frame(maxWidth: .infinity)
     }
 
     /// Developer tools strip — visible only when Debug Mode is on (Settings ▸ About ▸ Developer).
