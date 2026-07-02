@@ -8496,6 +8496,7 @@ private struct OnboardingView: View {
     @AppStorage("pref_useCustomDest")   private var ob2UseCustomDest: Bool   = false
     @AppStorage("pref_customDestPath")  private var ob2CustomDestPath: String = ""
     @AppStorage("pref_dateFolderFormat") private var ob2DateFormat:  String = "%y%m%d"
+    @Namespace private var obDestSegNS   // liquid swoosh: SSD ↔ Custom Folder segment
     @State private var availableVolumes: [OnboardingVolume] = []
     @State private var selectedVolume:   OnboardingVolume?  = nil
     @State private var projectInput:     String             = ""
@@ -8721,10 +8722,10 @@ private struct OnboardingView: View {
                 // ── SSD / Custom Folder toggle ─────────────────────────────
                 HStack(spacing: 0) {
                     ob2PillTab(label: "SSD", isActive: !ob2UseCustomDest) {
-                        withAnimation(.easeInOut(duration: 0.22)) { ob2UseCustomDest = false }
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { ob2UseCustomDest = false }
                     }
                     ob2PillTab(label: "Custom Folder", isActive: ob2UseCustomDest) {
-                        withAnimation(.easeInOut(duration: 0.22)) { ob2UseCustomDest = true }
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) { ob2UseCustomDest = true }
                     }
                 }
                 .padding(3)
@@ -8936,10 +8937,10 @@ private struct OnboardingView: View {
                 .font(.system(size: 12).weight(isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? .white : Color.white.opacity(0.42))
                 .padding(.horizontal, 20).padding(.vertical, 9)
-                .background(
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(isActive ? purple.opacity(0.85) : Color.clear)
-                )
+                // Liquid swoosh: the purple pill flows (and morphs width) left↔right between tabs.
+                .swooshSelection(isActive, in: obDestSegNS, groupID: "obDestSeg",
+                                 fill: AnyShapeStyle(purple.opacity(0.85)), cornerRadius: 9,
+                                 glow: purple.opacity(0.5), axis: .horizontal)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
