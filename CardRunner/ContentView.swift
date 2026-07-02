@@ -7514,12 +7514,16 @@ struct ContentView: View {
                     }
                 }
 
-                // Retain a SUCCESSFUL card in the green "safe to pull" pile (phase .done) instead of
-                // letting its lane vanish — it sits there, ready for eject, until the operator pulls it
-                // (removed on didUnmount when the card actually leaves). Failures are NOT retained here;
-                // the persistent "DO NOT FORMAT" failure strip owns those. runningCount was already
+                // Retain a card in the green "safe to pull" pile (phase .done) ONLY when it actually
+                // COPIED footage this run (newFiles > 0) — that's what "safe to pull" attests to. A
+                // 0-new run (already up to date / manifest-skip / wrong-mode / already-at-destination)
+                // shows its "Already up to date" alert but must NOT create a completion tile: otherwise
+                // every re-scan of the SAME physical card (e.g. the wrong-mode mode-switch pass, then an
+                // already-at-destination pass) stacks another "card safe to pull", inflating the count
+                // with cards that transferred nothing. Failures are NOT retained here either — the
+                // persistent "DO NOT FORMAT" failure strip owns those. runningCount was already
                 // decremented above, so this can't be mistaken for an in-flight lane.
-                if !didFail {
+                if !didFail && newFiles > 0 {
                     ingest.phase       = .done
                     ingest.avgMBps     = avgMBps
                     ingest.durationSec = durationSec
