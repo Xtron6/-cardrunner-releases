@@ -1360,11 +1360,12 @@ struct V3ScaffoldFolderEditor: View {
         var l = list(); guard i < l.count else { return }
         let target = l[i]; let prefix = target + "/"
         l.removeAll { $0 == target || $0.hasPrefix(prefix) }; write(l)   // cascade descendants
+        editingIndex = nil; addingUnder = nil; hoverIndex = nil          // indices shifted → clear transient row state
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(list().enumerated()), id: \.offset) { idx, path in row(idx, path) }
+            ForEach(Array(list().enumerated()), id: \.element) { idx, path in row(idx, path) }
             if addRootOpen {
                 draftField(placeholder: "New folder…", commit: addRoot, cancel: { draftName = ""; addRootOpen = false })
                     .padding(.top, 2)
@@ -11935,7 +11936,8 @@ extension ContentView {
             HStack(spacing: 12) {
                 v3SheetCancel { showV3AddDest = false }
                 v3SheetPrimary("Add destination", icon: "plus",
-                               enabled: v3AddIsSSD ? !v3AddDrivePath.isEmpty : !v3AddCustomPath.isEmpty) {
+                               enabled: v3AddIsSSD ? !v3AddDrivePath.isEmpty : !v3AddCustomPath.isEmpty,
+                               defaultAction: true) {
                     if v3AddIsSSD && v3AddIsDuplicate() {
                         v3AddError = "That drive + project + subfolder is already a destination."
                     } else { v3CommitAddDest() }
@@ -11996,7 +11998,7 @@ extension ContentView {
                 }
                 HStack(spacing: 12) {
                     v3SheetCancel { showV3EditDest = false }
-                    v3SheetPrimary("Save changes", icon: "checkmark", enabled: runningCount == 0) {
+                    v3SheetPrimary("Save changes", icon: "checkmark", enabled: runningCount == 0, defaultAction: true) {
                         if v3DestLeafConflicts(drivePath: dest.path, project: v3EditProject,
                                                subfolder: v3EditSubfolder, excluding: v3EditDestID) {
                             v3EditError = "Another destination already uses that project + subfolder on this drive."
@@ -12149,7 +12151,8 @@ extension ContentView {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).v3Hover()
     }
-    private func v3SheetPrimary(_ title: String, icon: String, enabled: Bool, _ act: @escaping () -> Void) -> some View {
+    private func v3SheetPrimary(_ title: String, icon: String, enabled: Bool,
+                                defaultAction: Bool = false, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
             HStack(spacing: 8) { Image(systemName: icon); Text(title).font(.system(size: 14, weight: .bold)) }
                 .foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 12)
@@ -12157,9 +12160,11 @@ extension ContentView {
                 .opacity(enabled ? 1 : 0.4)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(!enabled).v3Hover(glow: v3Purple, enabled: enabled)
-            // Enter/Return commits the sheet (Add destination, Create folder, …). Only the open
-            // modal's primary button exists (modals are conditionally rendered), so no conflict.
-            .keyboardShortcut(.defaultAction)
+            // Enter/Return commits the sheet — OPT-IN. NOT on the New Project sheet: it embeds the
+            // scaffold editor's inline TextFields, and a global default-action button would grab
+            // Return even while renaming a folder, prematurely creating the project. Only single-
+            // purpose sheets (Add/Edit destination, Date range) enable it.
+            .keyboardShortcut(defaultAction ? .defaultAction : nil)
     }
 
     // MARK: Ingest-history sheet
@@ -14596,7 +14601,7 @@ extension ContentView {
                 }.buttonStyle(.plain).foregroundStyle(v3Amber).v3Hover(scale: 1.04, brighten: true)
                 Spacer()
                 v3SheetCancel { showV3DateRange = false }
-                v3SheetPrimary("Apply", icon: "checkmark", enabled: true) { v3ApplyDateRange() }
+                v3SheetPrimary("Apply", icon: "checkmark", enabled: true, defaultAction: true) { v3ApplyDateRange() }
                     .fixedSize()
             }
             .padding(.top, 4)
