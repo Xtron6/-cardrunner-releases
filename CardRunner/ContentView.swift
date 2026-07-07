@@ -7749,16 +7749,16 @@ struct ContentView: View {
         shortcutsRef.value  = dict
     }
 
-    /// The folder footage is landing in for the CURRENT transfer (for F / Open-in-Finder). NOTE:
-    /// `ActiveIngest.destPath` is only populated at COMPLETION (the shell emits PROGRESS_DEST at the
-    /// very end), so mid-transfer we resolve the in-flight lane's routed destination ourselves: the
-    /// destination's project root (SSD → <drive>/<project>; custom folder → the folder itself).
+    /// The folder footage is landing in for the CURRENT transfer (for F / Open-in-Finder).
+    /// `ActiveIngest.destPath` is populated as soon as the shell emits `FOLDERSYNC_START` (early in
+    /// the copy phase), giving the exact date+card-label subfolder. Falls back to reconstructing the
+    /// project root from routing state during the scan/build phase before copying begins.
     /// Returns nil when nothing is actively copying (caller falls back to the last/default dest).
     private func v3LiveTransferFolder() -> String? {
         guard let ing = activeIngests.values.first(where: {
             [.scanning, .building, .copying, .finalizing, .verifying].contains($0.phase)
         }) else { return nil }
-        if !ing.destPath.isEmpty { return ing.destPath }   // engine already reported it (late in the run)
+        if !ing.destPath.isEmpty { return ing.destPath }   // FOLDERSYNC_START already gave us the exact path
         let dest = ing.destinationID.flatMap { id in destinations.first { $0.id == id } } ?? defaultDestination
         guard let d = dest else { return nil }
         if d.isCustomFolder { return d.path.isEmpty ? nil : d.path }
@@ -12392,9 +12392,17 @@ extension ContentView {
         // verify/cancel variants). A failed transfer must NEVER read as a green success here.
         let s = e.status.lowercased()
         let failed = s.contains("error") || s.contains("fail") || s.contains("cancel")
-        let neutral = !failed && e.newFiles == 0          // nothing new — already up to date
-        let col: Color = failed ? v3Red : (neutral ? .white.opacity(0.5) : v3Green)
-        let icon = failed ? "exclamationmark.triangle.fill" : (neutral ? "minus.circle" : "checkmark.circle.fill")
+        // Wrong-mode: nothing copied because mode was wrong (e.g. photo card ingested in video mode).
+        // Visually distinct from a plain "already up to date" — amber, not gray, so it reads as
+        // "action needed" (switch the mode toggle) rather than "all good, nothing to do."
+        let wrongMode = !failed && e.newFiles == 0 && e.skipWrongMode > 0
+        let neutral = !failed && !wrongMode && e.newFiles == 0
+        let col: Color = failed ? v3Red : (wrongMode ? v3Amber : (neutral ? .white.opacity(0.5) : v3Green))
+        let icon = failed   ? "exclamationmark.triangle.fill"
+                 : wrongMode ? "exclamationmark.circle"
+                 : neutral   ? "minus.circle"
+                             : "checkmark.circle.fill"
+        let badgeLabel = wrongMode ? "Wrong mode" : e.status
         return HStack(spacing: 12) {
             Image(systemName: icon).foregroundStyle(col)
             VStack(alignment: .leading, spacing: 3) {
@@ -12416,16 +12424,16 @@ extension ContentView {
                 }
                 // Why files were skipped (already-copied vs date-filtered vs wrong-mode …).
                 if let breakdown = v3SkipBreakdown(e) {
-                    Text(breakdown).font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                    Text(breakdown).font(.system(size: 10)).foregroundStyle(wrongMode ? v3Amber.opacity(0.7) : .white.opacity(0.4))
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()
-            Text(e.status).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
+            Text(badgeLabel).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
                 .padding(.horizontal, 8).padding(.vertical, 3).background(col.opacity(0.12), in: Capsule())
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
+        .background(wrongMode ? v3Amber.opacity(0.04) : .white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
     }
 
     /// Last 2 path components of a history destination (e.g. "260702_BrooksPR / clips").
@@ -13900,6 +13908,17 @@ extension ContentView {
                         Text("·  → \(v3LaneDestName(ing))").foregroundStyle(.white.opacity(0.35))
                     }
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1).truncationMode(.tail)
+                    // Rename queued while copy is in flight — show an amber chip so the user knows
+                    // the new name will take effect as soon as the current transfer finishes.
+                    if let pending = ing.pendingRename, !pending.isEmpty,
+                       [IngestPhase.copying, .finalizing, .verifying].contains(ing.phase) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.circlepath").font(.system(size: 9))
+                            Text("Renaming to \"\(pending)\" after copy")
+                                .font(.system(size: 10)).lineLimit(1).truncationMode(.middle)
+                        }
+                        .foregroundStyle(v3Amber.opacity(0.85))
+                    }
                 }
                 Spacer()
                 // Live per-card status capsule (COPYING / FLUSHING / VERIFYING) — the same
@@ -14414,12 +14433,6 @@ extension ContentView {
                     .font(.system(size: 15, weight: .medium)).foregroundStyle(.white)
                 Text("Drag each to a destination to start").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
             }.frame(width: 220)
-        } else if !v3AnyActive {
-            VStack(spacing: 6) {
-                Text("Ready for cards").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
-                // Auto-ingest state is shown by the toggle right below the ring — no echo here.
-                Text("Plug a card to begin").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-            }
         } else if v3AllDone {
             VStack(spacing: 8) {
                 Image(systemName: "checkmark.circle").font(.system(size: 34)).foregroundStyle(v3Green)
@@ -14433,6 +14446,12 @@ extension ContentView {
                         .background(v3Green.opacity(0.10), in: Capsule())
                         .overlay(Capsule().strokeBorder(v3Green.opacity(0.35)))
                 }.buttonStyle(.plain).padding(.top, 4)
+            }
+        } else if !v3AnyActive {
+            VStack(spacing: 6) {
+                Text("Ready for cards").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                // Auto-ingest state is shown by the toggle right below the ring — no echo here.
+                Text("Plug a card to begin").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
             }
         } else {
             VStack(spacing: 6) {

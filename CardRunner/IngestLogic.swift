@@ -279,8 +279,21 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
         if let r = line.range(of: "proxy=")        { ingest.skipProxy       = crExtractInt(from: line, after: r) }
         if let r = line.range(of: "missing=")      { ingest.skipMissing     = crExtractInt(from: line, after: r) }
 
+    } else if line.hasPrefix("FOLDERSYNC_START ") {
+        // Shell emits "FOLDERSYNC_START dest=<full/path> mode=<mode>" at the start of each copy
+        // group. This path includes the date + card-label subfolder — much more specific than the
+        // PROGRESS_DEST clips root. Use it so F / Reveal land in the exact folder being populated.
+        if let destRange = line.range(of: "dest=") {
+            let afterDest = String(line[destRange.upperBound...])
+            let path = afterDest.components(separatedBy: " mode=").first ?? afterDest
+            if !path.isEmpty { ingest.destPath = path }
+        }
+
     } else if line.hasPrefix("PROGRESS_DEST ") {
-        ingest.destPath = line.replacingOccurrences(of: "PROGRESS_DEST ", with: "")
+        // Fallback: clips-root path emitted at end. Only use when FOLDERSYNC_START never fired
+        // (e.g. 0-new-file runs). Don't overwrite the more specific FOLDERSYNC_START path.
+        let p = line.replacingOccurrences(of: "PROGRESS_DEST ", with: "")
+        if ingest.destPath.isEmpty { ingest.destPath = p }
 
     } else if line.hasPrefix("VERIFY_PROGRESS") {
         if let rc = line.range(of: "current="), let rt = line.range(of: "total=") {
