@@ -6889,6 +6889,9 @@ struct ContentView: View {
         // Record the destination volume so the scheduler keeps the next card off this drive.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
         activeIngests[processID]?.mirrorCount = mirrorPaths.count   // N-way mirror targets, for the done-tile confirmation
+        // Snapshot verify setting at launch so the ✓VERIFIED badge reflects what was
+        // actually in effect for this transfer, not what the toggle says at completion.
+        activeIngests[processID]?.verifyEnabled = verifyTransfer || fullVerifyEnabled
 
         // Clear stale summary card
         lastNewFiles        = 0
@@ -7570,7 +7573,9 @@ struct ContentView: View {
                     ingest.liveMBps    = 0                     // parked, not moving — never contribute live speed
                     // "Verified" only when files were ACTUALLY copied + checksum-verified — an
                     // up-to-date (newFiles==0) card verified nothing, so it must not claim the badge.
-                    ingest.verified    = self.verifyTransfer && newFiles > 0
+                    // Use the launch-time snapshot (ingest.verifyEnabled) not the live toggle,
+                    // so the badge truthfully reflects what ran for THIS transfer.
+                    ingest.verified    = ingest.verifyEnabled && newFiles > 0
                     self.activeIngests[processID] = ingest
                 } else if !didFail, FileManager.default.fileExists(atPath: card.path) {
                     // 0-new run (up-to-date / manifest-skip / wrong-mode): its lane was just removed
@@ -8025,10 +8030,8 @@ struct ContentView: View {
             } else if newPhase == .copying && ingest.totalFiles > 0 {
                 phaseDisplay = "Copying \(ingest.totalFiles) file\(ingest.totalFiles == 1 ? "" : "s") — \(cardLabel)"
             } else if newPhase == .done {
-                if fullVerifyEnabled {
+                if ingest.verifyEnabled {
                     phaseDisplay = "Verified & safe to eject \(cardLabel) ✓"
-                } else if verifyTransfer {
-                    phaseDisplay = "Copied & spot-checked — safe to eject \(cardLabel) ✓"
                 } else {
                     phaseDisplay = "Safe to eject \(cardLabel) ✓"
                 }
@@ -13748,35 +13751,44 @@ extension ContentView {
     }
 
     private var v3Sources: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Balanced with the trailing Spacer below → the whole group (header + cards) centers
-            // vertically on the ring; 1 card sits centered, N grow symmetrically up/down.
-            Spacer(minLength: 0)
-            // Persistent failure warnings — survive lane cleanup AND app relaunch, so an operator
-            // is never told a failed card is safe to format. Dismiss only when acknowledged.
-            if !failedIngestRecords.isEmpty { v3FailureStrip }
-            Text("SOURCES").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
-            if v3Lanes.isEmpty && awaitingCards.isEmpty {
-                Text(autoIngest ? "Waiting for a card…" : "Auto-ingest is off — plug a card to route it")
-                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 360, alignment: .leading).padding(.vertical, 8)
-            }
-            // Awaiting cards first — they're what the user acts on (drag node → drive, or Start).
-            ForEach(awaitingCards) { aw in v3AwaitingLane(aw) }
-            ForEach(v3ActiveLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
-            if !v3DoneLanes.isEmpty {
-                v3DonePile
-                // "Tap to review" reveals the individual done cards, each with its own Pull button
-                // (the existing v3Lane .done rows — reused, not duplicated).
-                if v3DoneExpanded {
-                    ForEach(v3DoneLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
+        // GeometryReader gives us the column's available height so the content VStack's
+        // minHeight keeps the centering Spacers working for short lists (1-4 cards), while
+        // allowing the ScrollView to scroll when many cards are present.
+        GeometryReader { geo in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Balanced with the trailing Spacer below → the whole group (header + cards)
+                    // centers vertically on the ring; 1 card sits centered, N grow and scroll.
+                    Spacer(minLength: 0)
+                    // Persistent failure warnings — survive lane cleanup AND app relaunch, so an
+                    // operator is never told a failed card is safe to format.
+                    if !failedIngestRecords.isEmpty { v3FailureStrip }
+                    Text("SOURCES").font(.system(size: 11, weight: .bold)).tracking(1.5).foregroundStyle(.white.opacity(0.4))
+                    if v3Lanes.isEmpty && awaitingCards.isEmpty {
+                        Text(autoIngest ? "Waiting for a card…" : "Auto-ingest is off — plug a card to route it")
+                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+                            .frame(width: 360, alignment: .leading).padding(.vertical, 8)
+                    }
+                    // Awaiting cards first — they're what the user acts on (drag node → drive, or Start).
+                    ForEach(awaitingCards) { aw in v3AwaitingLane(aw) }
+                    ForEach(v3ActiveLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
+                    if !v3DoneLanes.isEmpty {
+                        v3DonePile
+                        // "Tap to review" reveals the individual done cards, each with its own Pull button
+                        // (the existing v3Lane .done rows — reused, not duplicated).
+                        if v3DoneExpanded {
+                            ForEach(v3DoneLanes, id: \.id) { item in v3Lane(item.id, item.ing) }
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+                // minHeight = (column height − 170) reproduces the top-bias that previously used
+                // a Color.clear.frame(height: 170) trick: the centering Spacers are given 170 pt
+                // less room, so content sits 85 pt above true center — aligning it with the ring.
+                // When cards overflow this height the VStack grows to content size only (no dead
+                // blank space at the bottom of the scroll area).
+                .frame(minHeight: max(0, geo.size.height - 170))
             }
-            Spacer(minLength: 0)
-            // Top-bias: lift the centered group so the cards align with the RING, which itself sits
-            // a little above stage-center because the auto-ingest pill hangs below it in the middle
-            // column. Fixed nudge (≈half of this) toward the top. One number — tune to taste.
-            Color.clear.frame(height: 170)
         }
     }
 

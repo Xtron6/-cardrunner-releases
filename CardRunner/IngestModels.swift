@@ -397,7 +397,8 @@ nonisolated struct ActiveIngest {
     var avgMBps: Int = 0
     var durationSec: Int = 0
     var destPath: String = ""
-    var verified: Bool = false       // true once a successful copy has been checksum-verified (verifyTransfer on)
+    var verifyEnabled: Bool = false  // snapshot of verifyTransfer at launch — immune to mid-transfer toggle changes
+    var verified: Bool = false       // true once a successful copy has been checksum-verified (verifyEnabled on)
     var mirrorCount: Int = 0         // # of --secondary mirror targets; a .done card means ALL of them landed (a mirror fail → PHASE failed)
 
     // Full-verify progress (populated by VERIFY_PROGRESS)
