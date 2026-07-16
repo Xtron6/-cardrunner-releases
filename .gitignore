@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+DerivedData/
+*.profraw
+*.dmg
+
+# Large archives / binaries not needed for source builds
+ARCHIVED/
+releases/
+*.psd
+
+# macOS / Xcode cruft
+.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Agent worktrees / local state
+.claude/worktrees/
