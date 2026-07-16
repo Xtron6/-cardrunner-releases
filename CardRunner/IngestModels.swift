@@ -3,6 +3,16 @@
 //  Stage 1a). Value types only — no ContentView coupling, no UI.
 import Foundation
 
+/// Physical-drive speed tier used by the parallel-ingest scheduler.
+/// Probed once per `dev_t` via `diskutil info` and cached in ContentView.
+nonisolated enum DriveTier {
+    case fast    // NVMe, PCIe, Apple Fabric — parallel writes are fine
+    case medium  // USB 3.x SSD — parallel writes are fine
+    case slow    // HDD or USB 2 — sequential avoids thrashing
+
+    var allowsSameDriveParallel: Bool { self != .slow }
+}
+
 nonisolated struct Volume: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -61,6 +71,10 @@ nonisolated struct AwaitingCard: Identifiable, Hashable {
     var destinationID: UUID? = nil
     var customName: String = ""   // per-card folder name (--cardlabel). Empty = no per-card subfolder.
     var userEdited: Bool = false  // the operator typed here — protects the edit from re-scan/prefill
+    /// Auto-detected media type for this card. Set by a background detectCardMode call shortly after
+    /// parking. Default "video" is conservative (same as pre-detection behaviour). Used for the
+    /// per-card mode badge in the awaiting lane and passed through to startIngest when drained.
+    var detectedMode: String = "video"
 }
 
 /// Everything the shell-arg builder needs, captured as plain values so the builder is a
@@ -180,10 +194,15 @@ nonisolated struct QueuedIngest {
     /// "Ingest all N clips" choice). Carried through the queue so the bypass survives a
     /// wait for a free drive instead of re-applying the filter and re-prompting.
     let ignoreDateFilter: Bool
+    /// Per-card auto-detected media mode ("video" or "photo"). Detected inside the card loop
+    /// in routeCardsForIngest and carried through the queue so the mode is never lost when a
+    /// card has to wait for a free destination drive. Default "video" for backward compat.
+    let detectedMode: String
 
     init(card: Volume, dateOverride: String?,
          wrongClockDate: String? = nil, reelFilter: [String] = [], reelMulti: Bool = false,
-         destinationID: UUID? = nil, ignoreDateFilter: Bool = false) {
+         destinationID: UUID? = nil, ignoreDateFilter: Bool = false,
+         detectedMode: String = "video") {
         self.card = card
         self.dateOverride = dateOverride
         self.wrongClockDate = wrongClockDate
@@ -191,6 +210,7 @@ nonisolated struct QueuedIngest {
         self.reelMulti = reelMulti
         self.destinationID = destinationID
         self.ignoreDateFilter = ignoreDateFilter
+        self.detectedMode = detectedMode
     }
 }
 
@@ -461,4 +481,15 @@ nonisolated struct SchedulerSnapshot {
     let demoActive: Bool
     /// pref_maxConcurrentCards — hard ceiling on simultaneous ingests.
     let maxConcurrent: Int
+    /// Drive tier per known device — allows same-drive parallel for fast SSDs.
+    /// Defaults to empty (caller omits it) so existing unit-test call sites compile unchanged.
+    let destDriveTiers: [dev_t: DriveTier]
+
+    init(runningDestDevices: [dev_t], demoActive: Bool, maxConcurrent: Int,
+         destDriveTiers: [dev_t: DriveTier] = [:]) {
+        self.runningDestDevices = runningDestDevices
+        self.demoActive         = demoActive
+        self.maxConcurrent      = maxConcurrent
+        self.destDriveTiers     = destDriveTiers
+    }
 }

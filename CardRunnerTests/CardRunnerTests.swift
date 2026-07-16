@@ -262,8 +262,10 @@ struct CardRunnerTests {
 
     // MARK: - canAdmitIngest (destination-aware concurrent scheduler, Phase 2)
 
-    private func snap(_ running: [dev_t], demo: Bool = false, cap: Int = 3) -> SchedulerSnapshot {
-        SchedulerSnapshot(runningDestDevices: running, demoActive: demo, maxConcurrent: cap)
+    private func snap(_ running: [dev_t], demo: Bool = false, cap: Int = 3,
+                      tiers: [dev_t: DriveTier] = [:]) -> SchedulerSnapshot {
+        SchedulerSnapshot(runningDestDevices: running, demoActive: demo, maxConcurrent: cap,
+                          destDriveTiers: tiers)
     }
 
     @Test func schedulerAdmitsWhenIdle() {
@@ -274,12 +276,23 @@ struct CardRunnerTests {
         #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([], demo: true)) == false)
     }
 
-    /// The safety invariant: never two cards onto the SAME physical drive at once.
-    @Test func schedulerBlocksSecondCardToSameDrive() {
-        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10])) == false)
+    /// Slow drives (HDD / USB 2) stay sequential — parallel writes split seek bandwidth.
+    @Test func schedulerBlocksSecondCardToSlowDrive() {
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10], tiers: [10: .slow])) == false)
     }
 
-    /// The new capability: cards to DIFFERENT drives run in parallel.
+    /// Fast SSDs allow same-drive parallel — write bandwidth handles two streams fine.
+    @Test func schedulerAllowsSecondCardToFastDrive() {
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10], tiers: [10: .fast])) == true)
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10], tiers: [10: .medium])) == true)
+    }
+
+    /// Unknown drive tier defaults to .fast (pro audience uses fast SSDs; HDD user can set cap=1).
+    @Test func schedulerAllowsSecondCardToUnknownDrive() {
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10])) == true)
+    }
+
+    /// Cards to DIFFERENT drives always run in parallel regardless of tier.
     @Test func schedulerAllowsParallelAcrossDifferentDrives() {
         #expect(canAdmitIngest(candidateDestDevice: 20, snapshot: snap([10])) == true)
     }
@@ -287,6 +300,13 @@ struct CardRunnerTests {
     @Test func schedulerRespectsConcurrencyCap() {
         #expect(canAdmitIngest(candidateDestDevice: 30, snapshot: snap([10, 20], cap: 2)) == false)
         #expect(canAdmitIngest(candidateDestDevice: 30, snapshot: snap([10, 20], cap: 3)) == true)
+    }
+
+    /// Same-drive parallel counts toward the cap: 3 cards to 1 fast SSD, cap=3 → 3rd admitted, 4th blocked.
+    @Test func schedulerSameDriveParallelRespectsCapFastDrive() {
+        let tiers: [dev_t: DriveTier] = [10: .fast]
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10, 10], cap: 3, tiers: tiers)) == true)
+        #expect(canAdmitIngest(candidateDestDevice: 10, snapshot: snap([10, 10, 10], cap: 3, tiers: tiers)) == false)
     }
 
     /// stat() failed (nil device) — can't dedupe by drive, but still admit under cap.
@@ -574,6 +594,72 @@ struct CardRunnerTests {
 
     @Test func buildArgsOmitsSubfolderForDefault() {
         #expect(!buildIngestArgs(cfg(subfolder: "Default")).contains("--subfolder"))
+    }
+
+    // MARK: - detectCardMode (per-card content sniff)
+
+    @Test func detectCardModeVideoOnly() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("clip.mov").path, contents: nil)
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("clip2.mp4").path, contents: nil)
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "video")
+        try! FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModePhotoOnly() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("IMG_001.JPG").path, contents: nil)
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("IMG_002.CR3").path, contents: nil)
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "photo")
+        try! FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModeMixedVideoWins() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        for i in 0..<6 { FileManager.default.createFile(atPath: tmp.appendingPathComponent("clip\(i).mov").path, contents: nil) }
+        for i in 0..<4 { FileManager.default.createFile(atPath: tmp.appendingPathComponent("img\(i).jpg").path, contents: nil) }
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "video")
+        try! FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModeEmptyCardUsesGlobalFallback() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        #expect(detectCardMode(at: tmp.path, globalFallback: "photo") == "photo")
+        try! FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModePhotoWinsWhenMajority() {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("a.mov").path, contents: nil)
+        for i in 0..<9 { FileManager.default.createFile(atPath: tmp.appendingPathComponent("p\(i).arw").path, contents: nil) }
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "photo")
+        try! FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModeM4ROOTStructure() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let m4root = tmp.appendingPathComponent("M4ROOT/CLIP", isDirectory: true)
+        try FileManager.default.createDirectory(at: m4root, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: m4root.appendingPathComponent("clip001.mxf").path, contents: nil)
+        FileManager.default.createFile(atPath: m4root.appendingPathComponent("clip002.mxf").path, contents: nil)
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "video")
+        try FileManager.default.removeItem(at: tmp)
+    }
+
+    @Test func detectCardModeTHMBNLFilesExcluded() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let thmbnl = tmp.appendingPathComponent("THMBNL", isDirectory: true)
+        try FileManager.default.createDirectory(at: thmbnl, withIntermediateDirectories: true)
+        // Only "photos" are thumbnails — real content is video. THMBNL must be skipped.
+        for i in 0..<10 { FileManager.default.createFile(atPath: thmbnl.appendingPathComponent("thumb\(i).jpg").path, contents: nil) }
+        FileManager.default.createFile(atPath: tmp.appendingPathComponent("clip.mxf").path, contents: nil)
+        #expect(detectCardMode(at: tmp.path, globalFallback: "video") == "video")
+        try FileManager.default.removeItem(at: tmp)
     }
 
     // MARK: - deriveDestName (auto destination naming — date-strip + camelCase/acronym/connector spacing)

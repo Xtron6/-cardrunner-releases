@@ -361,16 +361,84 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
 
 /// Decide whether a card whose destination lives on `candidateDestDevice` may START NOW
 /// (true) or must QUEUE (false). The scheduler is DESTINATION-AWARE: it parallelizes across
-/// SEPARATE physical drives but never runs two cards onto the SAME volume at once — two
-/// streams to one drive only split its bandwidth (no speedup) and add controller contention.
-/// Net effect: the everyday "several cards → one SSD" case stays sequential and safe exactly
-/// as it is today, while cards bound for different drives run truly in parallel.
+/// separate physical drives and — when the drive tier is `.fast` or `.medium` (any SSD) —
+/// also allows same-drive parallel up to `maxConcurrent`. Slow drives (HDD / USB 2) stay
+/// sequential because their seek/bandwidth ceiling makes parallel writes slower, not faster.
+/// Default tier is `.fast` (unknown drives treated as fast) because the target audience uses
+/// professional SSDs; a HDD user who hits contention can drop maxConcurrentCards to 1.
 func canAdmitIngest(candidateDestDevice: dev_t?, snapshot: SchedulerSnapshot) -> Bool {
     if snapshot.demoActive { return false }
     if snapshot.runningDestDevices.count >= max(1, snapshot.maxConcurrent) { return false }
-    // Never two ingests writing to the same physical volume simultaneously.
-    if let dev = candidateDestDevice, snapshot.runningDestDevices.contains(dev) { return false }
+    if let dev = candidateDestDevice, snapshot.runningDestDevices.contains(dev) {
+        // Same physical drive — allow parallel unless the drive is slow (HDD / USB 2).
+        let tier = snapshot.destDriveTiers[dev] ?? .fast
+        if !tier.allowsSameDriveParallel { return false }
+    }
     return true
+}
+
+/// Probe the physical drive tier for a volume path by running `diskutil info`.
+/// Returns `.fast` (NVMe/PCIe/Apple Fabric SSD), `.medium` (USB 3 SSD), or `.slow` (HDD / USB 2).
+/// Runs on a background thread; a 3-second serial-gate timeout terminates the process and returns
+/// `.fast` so a hung NAS mount never blocks the GCD thread indefinitely.
+/// Defaults to `.fast` on any error — the pro audience overwhelmingly uses fast SSDs.
+func probeDriveTier(at volumePath: String) async -> DriveTier {
+    await withCheckedContinuation { continuation in
+        let gate = DispatchQueue(label: "dev.cardrunner.drivetier", qos: .utility)
+        var resumed = false
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        proc.arguments = ["info", volumePath]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError  = Pipe()
+
+        // Serialised finish — only the first caller (normal path or timeout) wins.
+        func finish(_ tier: DriveTier) {
+            gate.async {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: tier)
+            }
+        }
+
+        // 3-second safety net: kill the process and unblock if diskutil hangs (e.g. slow NAS).
+        gate.asyncAfter(deadline: .now() + 3) {
+            guard !resumed else { return }
+            proc.terminate()
+            resumed = true
+            continuation.resume(returning: .fast)
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                let data   = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                finish(parseDriveTier(from: output))
+            } catch {
+                finish(.fast)
+            }
+        }
+    }
+}
+
+private func parseDriveTier(from diskutilOutput: String) -> DriveTier {
+    var isSolidState = false
+    var protocol_    = ""
+    for line in diskutilOutput.components(separatedBy: "\n") {
+        let t = line.trimmingCharacters(in: .whitespaces).lowercased()
+        if t.hasPrefix("solid state:") {
+            isSolidState = t.hasSuffix("yes")
+        } else if t.hasPrefix("protocol:") {
+            protocol_ = t.components(separatedBy: ":").dropFirst()
+                .joined(separator: ":").trimmingCharacters(in: .whitespaces)
+        }
+    }
+    guard isSolidState else { return .slow }                             // spinning disk
+    if protocol_.contains("pci") || protocol_.contains("apple fabric") { return .fast }  // NVMe / internal
+    return .medium                                                        // USB 3.x SSD
 }
 
 /// Pure decision: is a detected card ALREADY tracked on screen — either parked as a
@@ -412,6 +480,107 @@ func resolveCardLabel(perCard: String?, globalEnabled: Bool, globalName: String)
 func resolveProjectFolder(destProject: String, globalProject: String) -> String {
     let d = destProject.trimmingCharacters(in: .whitespacesAndNewlines)
     return d.isEmpty ? globalProject.trimmingCharacters(in: .whitespacesAndNewlines) : d
+}
+
+/// Lightweight per-card media-type detector. Reuses the same scan-root logic as
+/// `scanCardDatesSync` (M4ROOT/XDROOT/DCIM detection), then does a top-2-level walk from the
+/// effective media directory, stopping at 500 files total. Returns "video" if video-extension
+/// files match or outnumber photo-extension files, "photo" if photos are the clear majority,
+/// or `globalFallback` when the card is empty or genuinely ambiguous. Extension sets are
+/// identical to scanCardDatesSync.
+///
+/// For Sony cards M4ROOT is used as the effective scan root so that a 2-level walk reaches the
+/// clip files (M4ROOT/CLIP/*.MXF), rather than starting from the card root where files are 3+
+/// levels deep. This keeps the scan fast without a full recursive walk.
+///
+/// Majority wins: whichever type has more matching files; ties go to video (equal-count mixed
+/// cards are more likely video shoots).
+nonisolated func detectCardMode(at cardPath: String, globalFallback: String) -> String {
+    let fm      = FileManager.default
+    let cardURL = URL(fileURLWithPath: cardPath)
+
+    // ── Same findDir helper used in scanCardDatesSync / analyzeCardSync ───────
+    func findDir(_ name: String, under root: URL, maxDepth: Int) -> URL? {
+        guard let contents = try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for item in contents {
+            guard (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { continue }
+            if item.lastPathComponent.uppercased() == name { return item }
+            if maxDepth > 1, let found = findDir(name, under: item, maxDepth: maxDepth - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    // ── Resolve effective media root — drill into M4ROOT/XDROOT/DCIM so that
+    // the top-2-level walk reaches files (M4ROOT/CLIP/*.MXF = 2 levels). ──────
+    let scanRoot: URL
+    if let m4 = findDir("M4ROOT", under: cardURL, maxDepth: 5) {
+        scanRoot = m4
+    } else if let xd = findDir("XDROOT", under: cardURL, maxDepth: 5) {
+        scanRoot = xd
+    } else if let dcim = findDir("DCIM", under: cardURL, maxDepth: 4) {
+        scanRoot = dcim
+    } else {
+        scanRoot = cardURL
+    }
+
+    // ── Extension sets — identical to scanCardDatesSync ───────────────────────
+    let photoExts: Set<String> = [
+        "jpg","jpeg","png","tif","tiff","heic","heif",
+        "dng","cr2","cr3","nef","arw","raf","rw2","orf","sr2"
+    ]
+    let videoExts: Set<String> = [
+        "mp4","mov","mxf","crm","r3d","braw","ari","arx","mts","m2ts"
+    ]
+
+    // ── Top-2-level walk from effective scan root, stop at 500 files ─────────
+    var videoCount = 0
+    var photoCount = 0
+    var filesSeen  = 0
+
+    guard let level1Items = try? fm.contentsOfDirectory(
+        at: scanRoot, includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+    ) else { return globalFallback }
+
+    outer: for item1 in level1Items {
+        if item1.path.contains("/THMBNL/") { continue }
+        let isDir1 = (try? item1.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        if isDir1 {
+            guard let level2Items = try? fm.contentsOfDirectory(
+                at: item1, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { continue }
+            for item2 in level2Items {
+                guard filesSeen < 500 else { break outer }
+                if item2.path.contains("/THMBNL/") { continue }
+                let isDir2 = (try? item2.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                if isDir2 { continue }
+                let ext = item2.pathExtension.lowercased()
+                if videoExts.contains(ext) { videoCount += 1 }
+                else if photoExts.contains(ext) { photoCount += 1 }
+                filesSeen += 1
+            }
+        } else {
+            guard filesSeen < 500 else { break }
+            let ext = item1.pathExtension.lowercased()
+            if videoExts.contains(ext) { videoCount += 1 }
+            else if photoExts.contains(ext) { photoCount += 1 }
+            filesSeen += 1
+        }
+    }
+
+    // Majority wins: whichever type has more matching files determines the mode.
+    // Ties go to video (equal counts on a mixed card — treat as video).
+    // Empty card (no recognised extensions) → defer to caller's globalFallback.
+    if videoCount >= photoCount && videoCount > 0 { return "video" }
+    if photoCount > 0 { return "photo" }
+    return globalFallback
 }
 
 /// Common short connector words kept lowercase in a derived title (except when first). Only members

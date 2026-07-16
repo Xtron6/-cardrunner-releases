@@ -1921,6 +1921,7 @@ struct ContentView: View {
     @State private var cancelledProcessIDs: Set<UUID> = []
     // Cards waiting to be processed — sequential queue
     @State private var cardQueue: [QueuedIngest] = []
+    @State private var driveTierCache: [dev_t: DriveTier] = [:]  // probed once per physical device
     @AppStorage("showDryRunToggle") private var showDryRunToggle: Bool = false
     @AppStorage("pref_debugMode")   private var debugMode: Bool = false
 
@@ -2010,6 +2011,9 @@ struct ContentView: View {
     @State private var datePickerDates: [CardDateInfo] = [] // distinct dates found on card, newest-first
     @State private var datePickerSelected: Set<String> = [] // YYYYMMDD strings the user has checked
     @State private var datePickerScanning: Bool = false     // true while background retry scan is running
+    /// Per-card detected mode stored alongside datePickerCards so retryDateScan scans the right
+    /// extension set (not the global importMode toggle, which may differ from this card's content).
+    @State private var datePickerCardMode: String = "video"
 
     // Reel picker sheet state (Tier-1 wrong-clock detection)
     @State private var showReelPickerSheet: Bool = false
@@ -2017,16 +2021,21 @@ struct ContentView: View {
     @State private var reelPickerReels: [ReelInfo] = []
     @State private var reelPickerSelected: Set<String> = []
     @State private var reelPickerDateOverride: String = ""  // YYYYMMDD of real ingest date (today)
+    /// Per-card detected mode stored alongside reelPickerCard so the reel-picker's Ingest
+    /// button uses the card's actual content type rather than the global toggle.
+    @State private var reelPickerCardMode: String = "video"
 
     // Tier-0 prompt: date filter excluded all un-ingested clips — offer "Ingest all"
     @State private var showTier0Prompt: Bool = false
     @State private var tier0Card: Volume? = nil
     @State private var tier0SkippedCount: Int = 0
+    @State private var tier0CardMode: String = "video"   // runMode from the ingest that triggered the prompt
     // "Already up to date" → offer Re-ingest when the MANIFEST is what blocked the copy.
     @State private var showManifestReingest: Bool = false
     @State private var manifestReingestCard: Volume? = nil
     @State private var manifestReingestDestID: UUID? = nil
     @State private var manifestReingestCount: Int = 0
+    @State private var manifestReingestCardMode: String = "video"   // runMode frozen at alert-trigger time
     // Nothing copied because EVERY file was the wrong media type for the current mode (e.g. video
     // clips while in Photo mode). "Already up to date" would be dangerously misleading — the footage
     // is NOT backed up — so this offers a one-tap mode switch + re-copy of the still-mounted card.
@@ -3022,18 +3031,19 @@ struct ContentView: View {
                     datePickerScanning = false
                     datePickerCards = []; datePickerDates = []; datePickerSelected = []
 
+                    let pickerMode = datePickerCardMode
                     for card in cards {
                         if isEmpty {
                             // Scan failed — ingest everything with no date filter
-                            startIngest(for: card)
+                            startIngest(for: card, detectedMode: pickerMode)
                         } else if selected.count == 1 {
                             // Single date — use --date-from (existing behaviour)
-                            startIngest(for: card, dateOverride: selected.first)
+                            startIngest(for: card, dateOverride: selected.first, detectedMode: pickerMode)
                         } else {
                             // Multiple dates — pass as one comma-joined --dates arg
                             // so the shell produces a single combined file list and
                             // one continuous copy pass instead of N separate transfers.
-                            startIngest(for: card, dateOverride: selected.joined(separator: ","))
+                            startIngest(for: card, dateOverride: selected.joined(separator: ","), detectedMode: pickerMode)
                         }
                     }
                 } label: {
@@ -3185,10 +3195,12 @@ struct ContentView: View {
                     let selected = Array(reelPickerSelected)
                     let dateOverride = reelPickerDateOverride
                     let multi = selected.count > 1
+                    let pickerMode = reelPickerCardMode
                     showReelPickerSheet = false
                     reelPickerCard = nil; reelPickerReels = []; reelPickerSelected = []
                     startIngest(for: card, wrongClockDate: dateOverride,
-                                reelFilter: selected, reelMulti: multi)
+                                reelFilter: selected, reelMulti: multi,
+                                detectedMode: pickerMode)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")
@@ -5061,10 +5073,11 @@ struct ContentView: View {
                 Button("Cancel", role: .cancel) { tier0Card = nil }
                 Button("Ingest all \(tier0SkippedCount) clip\(tier0SkippedCount == 1 ? "" : "s")") {
                     if let card = tier0Card {
+                        let capturedMode = tier0CardMode
                         tier0Card = nil
                         // Ingest everything on the card regardless of the date filter — otherwise
                         // the same filter re-excludes all clips and this prompt loops.
-                        startIngest(for: card, ignoreDateFilter: true)
+                        startIngest(for: card, ignoreDateFilter: true, detectedMode: capturedMode)
                     }
                 }
             } message: {
@@ -5075,43 +5088,42 @@ struct ContentView: View {
                 Button("Re-ingest all \(manifestReingestCount)") {
                     if let card = manifestReingestCard {
                         let dest = manifestReingestDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
+                        let capturedMode = manifestReingestCardMode
                         manifestReingestCard = nil
                         // Auto-eject may have removed the card after the 0-copied run — don't dead-click.
                         guard FileManager.default.fileExists(atPath: card.path) else {
                             v3ShowToast("Re-insert \(card.name) to re-ingest its footage.")
                             return
                         }
-                        startIngest(for: card, destination: dest, ignoreManifest: true)
+                        startIngest(for: card, destination: dest, ignoreManifest: true, detectedMode: capturedMode)
                     }
                 }
             } message: {
                 Text("No new files — all \(manifestReingestCount) clip\(manifestReingestCount == 1 ? "" : "s") were already copied from this card on a previous transfer. Re-ingest copies them again to the chosen destination (your earlier copy is untouched).")
             }
-            // Wrong-mode: every file was the OTHER media type. `importMode` is still the current mode
-            // here (the switch happens in the action), so targetMode is the mode we need to switch TO.
+            // Wrong-mode: every file was the OTHER media type. We ingest using the opposite mode
+            // via detectedMode so the global toggle is NOT changed — the operator's preference stays.
             .alert("Nothing copied — wrong mode", isPresented: $showWrongModeSwitch) {
-                let targetMode = importMode == "video" ? "Photo" : "Video"
+                let oppositeMode = importMode == "video" ? "photo" : "video"
+                let targetMode   = importMode == "video" ? "Photo" : "Video"
                 Button("OK", role: .cancel) { wrongModeCard = nil }
-                Button("Switch to \(targetMode) & copy") {
+                Button("Copy as \(targetMode)") {
                     if let card = wrongModeCard {
                         let dest = wrongModeDestID.flatMap { id in destinations.first(where: { $0.id == id }) }
                         wrongModeCard = nil
-                        importMode = importMode == "video" ? "photo" : "video"
-                        // With auto-eject ON a 0-copied run may have already ejected the card. Switch the
-                        // mode regardless (so the next insert is correct) and ask for a re-insert rather
-                        // than silently no-op'ing startIngest against a gone source.
+                        // With auto-eject ON a 0-copied run may have already ejected the card.
+                        // Bail early if the source is gone; the user will need to re-insert.
                         guard FileManager.default.fileExists(atPath: card.path) else {
-                            v3ShowToast("Switched to \(targetMode) mode — re-insert \(card.name) to copy its footage.")
+                            v3ShowToast("Re-insert \(card.name) to copy its footage as \(targetMode).")
                             return
                         }
-                        startIngest(for: card, destination: dest)
+                        startIngest(for: card, destination: dest, detectedMode: oppositeMode)
                     }
                 }
             } message: {
                 let fileType   = importMode == "video" ? "photo" : "video"
-                let currentM   = importMode == "video" ? "Video" : "Photo"
                 let targetMode = importMode == "video" ? "Photo" : "Video"
-                Text("These \(wrongModeCount) file\(wrongModeCount == 1 ? " is a" : "s are") \(fileType) file\(wrongModeCount == 1 ? "" : "s"), but CardRunner is in \(currentM) mode — so nothing was copied and this footage is NOT backed up yet. Switch to \(targetMode) mode to copy \(wrongModeCount == 1 ? "it" : "them"). Your card is untouched.")
+                Text("This card appears to be \(fileType) — \(wrongModeCount) \(fileType) file\(wrongModeCount == 1 ? "" : "s") found, but nothing was copied. Use \u{201C}Copy as \(targetMode)\u{201D} to ingest it without changing your mode setting.")
             }
             .sheet(isPresented: $showDatePickerSheet) {
                 datePickerSheet
@@ -5792,10 +5804,15 @@ struct ContentView: View {
                         self.applyNicknameIfKnown(from: finalCards, nicknames: capturedNicknames)
                         if self.autoIngest {
                             for card in finalCards {
-                            self.seenCardPaths.insert(card.path)
-                            if let uuid = card.volumeUUID { self.seenCardUUIDs.insert(uuid) }
-                        }
-                            self.routeKeepingVisible(finalCards)
+                                self.seenCardPaths.insert(card.path)
+                                if let uuid = card.volumeUUID { self.seenCardUUIDs.insert(uuid) }
+                            }
+                            // Force-rescan: same 2nd-card rule — park as awaiting if an ingest is active.
+                            if self.runningCount > 0 {
+                                self.enqueueAwaiting(finalCards)
+                            } else {
+                                self.routeKeepingVisible(finalCards)
+                            }
                         } else {
                             // Auto-Ingest OFF — park every detected card "waiting to route".
                             self.enqueueAwaiting(finalCards)
@@ -5843,9 +5860,16 @@ struct ContentView: View {
                 if self.autoIngest {
                     // Auto Ingest on — route NEW (unseen) cards to the ingest flow, kept visible the
                     // whole time (parked as "Starting…" immediately, then handed off to the live lane).
+                    // Exception: 2nd card and beyond (runningCount > 0) park as "awaiting" so the
+                    // operator can confirm destination and card label before the copy starts.
+                    // Only the first card (nothing running yet) auto-starts.
                     if !newCards.isEmpty {
                         self.applyNicknameIfKnown(from: newCards, nicknames: capturedNicknames)
-                        self.routeKeepingVisible(newCards)
+                        if self.runningCount > 0 {
+                            self.enqueueAwaiting(newCards)
+                        } else {
+                            self.routeKeepingVisible(newCards)
+                        }
                     }
                 } else {
                     // Auto Ingest off — park EVERY currently-detected card "waiting to route",
@@ -6013,6 +6037,16 @@ struct ContentView: View {
             return isPhotoPath(path)
         } else {
             return isVideoPath(path)
+        }
+    }
+
+    /// Async wrapper for the pure `detectCardMode` free function so it can be called from within
+    /// the MainActor-isolated Task in `routeCardsForIngest` without blocking the main thread.
+    nonisolated private func detectCardModeAsync(at cardPath: String, globalFallback: String) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: detectCardMode(at: cardPath, globalFallback: globalFallback))
+            }
         }
     }
 
@@ -6345,6 +6379,18 @@ struct ContentView: View {
             awaitingCards.append(AwaitingCard(card: card, customName: prefill))
             awaitingPaths.insert(card.path)
             if let u = card.volumeUUID { awaitingUUIDs.insert(u) }
+            // Kick off lightweight background detection so the awaiting lane badge reflects
+            // the actual card content. Default "video" stays until the probe resolves.
+            let cardPathForDetect = card.path
+            let fallbackForDetect = importMode
+            Task.detached {
+                let mode = detectCardMode(at: cardPathForDetect, globalFallback: fallbackForDetect)
+                await MainActor.run {
+                    if let idx = self.awaitingCards.firstIndex(where: { $0.card.path == cardPathForDetect }) {
+                        self.awaitingCards[idx].detectedMode = mode
+                    }
+                }
+            }
         }
     }
 
@@ -6395,7 +6441,7 @@ struct ContentView: View {
         // it here — it's handed off to the live lane atomically when startIngest creates it, so the
         // card is never in neither list. Removing it up-front is exactly what made it vanish.
         withAnimation(v3Anim(.easeInOut(duration: 0.15))) { _ = v3StartingPaths.insert(item.card.path) }
-        routeCardsForIngest([item.card], destination: dest)
+        routeCardsForIngest([item.card], destination: dest, detectedMode: item.detectedMode)
     }
 
     /// Drag-drop a waiting card's node onto a destination: bind it to that drive AND
@@ -6420,7 +6466,7 @@ struct ContentView: View {
             if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
             pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
             withAnimation(v3Anim(.easeInOut(duration: 0.15))) { _ = v3StartingPaths.insert(item.card.path) }
-            routeCardsForIngest([item.card], destination: dest)
+            routeCardsForIngest([item.card], destination: dest, detectedMode: item.detectedMode)
         }
     }
 
@@ -6441,11 +6487,13 @@ struct ContentView: View {
         routeCardsForIngest(cards, destination: destination)
     }
 
-    @MainActor private func routeCardsForIngest(_ cards: [Volume], destination: Destination? = nil) {
+    @MainActor private func routeCardsForIngest(_ cards: [Volume], destination: Destination? = nil,
+                                               detectedMode: String? = nil) {
         guard !cards.isEmpty else { return }
 
-        // Capture mode on the main actor before entering the unstructured task
-        let currentMode = importMode
+        // Capture mode on the main actor before entering the unstructured task.
+        // detectedMode (per-card content sniff) wins over the global importMode toggle.
+        let currentMode = detectedMode ?? importMode
         let currentDateMode = dateFilterMode
 
         // Always scan first — even for today-only — so we can detect wrong-clock cameras
@@ -6464,7 +6512,7 @@ struct ContentView: View {
                 if anySheetOpen {
                     await MainActor.run {
                         if !self.cardQueue.contains(where: { $0.card.path == card.path && $0.dateOverride == nil }) {
-                            self.cardQueue.append(QueuedIngest(card: card, dateOverride: nil))
+                            self.cardQueue.append(QueuedIngest(card: card, dateOverride: nil, detectedMode: currentMode))
                         }
                     }
                     continue
@@ -6496,6 +6544,7 @@ struct ContentView: View {
                         self.reelPickerReels        = analysis.reels
                         self.reelPickerSelected    = bestReel.map { [$0.folderName] } ?? []
                         self.reelPickerDateOverride = todayStr
+                        self.reelPickerCardMode     = currentMode
                         self.showReelPickerSheet    = true
                     }
                     continue  // reel picker handles the rest
@@ -6503,7 +6552,7 @@ struct ContentView: View {
 
                 // ── Today-only mode: ingest immediately; shell handles date filter ─
                 if currentDateMode == "today" {
-                    await MainActor.run { self.startIngest(for: card, destination: destination) }
+                    await MainActor.run { self.startIngest(for: card, destination: destination, detectedMode: currentMode) }
                     continue
                 }
 
@@ -6513,7 +6562,7 @@ struct ContentView: View {
                     // Dates found — handle without loading state
                     await MainActor.run {
                         if dates.count == 1 {
-                            self.startIngest(for: card, dateOverride: dates[0].yyyymmdd, destination: destination)
+                            self.startIngest(for: card, dateOverride: dates[0].yyyymmdd, destination: destination, detectedMode: currentMode)
                         } else {
                             let todayMatches = dates.filter { $0.isToday }.map { $0.yyyymmdd }
                             self.datePickerCards    = [card]
@@ -6521,6 +6570,7 @@ struct ContentView: View {
                             self.datePickerSelected = todayMatches.isEmpty
                                 ? Set(dates.map { $0.yyyymmdd })
                                 : Set(todayMatches)
+                            self.datePickerCardMode  = currentMode
                             self.showDatePickerSheet = true
                         }
                     }
@@ -6533,6 +6583,7 @@ struct ContentView: View {
                     self.datePickerDates    = []
                     self.datePickerSelected = []
                     self.datePickerScanning = true
+                    self.datePickerCardMode  = currentMode
                     self.showDatePickerSheet = true
                 }
 
@@ -6554,7 +6605,7 @@ struct ContentView: View {
                     if retryDates.count == 1 {
                         self.showDatePickerSheet = false
                         self.datePickerCards = []; self.datePickerDates = []; self.datePickerSelected = []
-                        self.startIngest(for: card, dateOverride: retryDates[0].yyyymmdd)
+                        self.startIngest(for: card, dateOverride: retryDates[0].yyyymmdd, detectedMode: currentMode)
                     } else {
                         let todayMatches = retryDates.filter { $0.isToday }.map { $0.yyyymmdd }
                         self.datePickerDates    = retryDates
@@ -6573,7 +6624,7 @@ struct ContentView: View {
     /// Puts the sheet back into scanning state and tries for another 30 seconds.
     @MainActor private func retryDateScan() {
         guard let card = datePickerCards.first else { return }
-        let mode = importMode
+        let mode = datePickerCardMode
         datePickerScanning = true
         datePickerDates    = []
         datePickerSelected = []
@@ -6603,7 +6654,7 @@ struct ContentView: View {
                 if dates.count == 1 {
                     self.showDatePickerSheet = false
                     self.datePickerCards = []; self.datePickerDates = []; self.datePickerSelected = []
-                    self.startIngest(for: card, dateOverride: dates[0].yyyymmdd)
+                    self.startIngest(for: card, dateOverride: dates[0].yyyymmdd, detectedMode: mode)
                 } else {
                     let todayMatches = dates.filter { $0.isToday }.map { $0.yyyymmdd }
                     self.datePickerDates    = dates
@@ -6632,7 +6683,8 @@ struct ContentView: View {
     /// Append a card to the queue unless an equivalent entry is already waiting.
     private func enqueueIfNew(card: Volume, dateOverride: String?,
                              wrongClockDate: String?, reelFilter: [String], reelMulti: Bool,
-                             destinationID: UUID? = nil, ignoreDateFilter: Bool = false) {
+                             destinationID: UUID? = nil, ignoreDateFilter: Bool = false,
+                             detectedMode: String = "video") {
         if !cardQueue.contains(where: {
             cardIdentifier(for: $0.card) == cardIdentifier(for: card)
                 && $0.dateOverride == dateOverride
@@ -6641,7 +6693,8 @@ struct ContentView: View {
                                           wrongClockDate: wrongClockDate,
                                           reelFilter: reelFilter, reelMulti: reelMulti,
                                           destinationID: destinationID,
-                                          ignoreDateFilter: ignoreDateFilter))
+                                          ignoreDateFilter: ignoreDateFilter,
+                                          detectedMode: detectedMode))
         }
     }
 
@@ -6662,7 +6715,8 @@ struct ContentView: View {
         SchedulerSnapshot(
             runningDestDevices: v3ActiveWork.compactMap { $0.destDeviceID != 0 ? $0.destDeviceID : nil },
             demoActive: demoTask != nil,
-            maxConcurrent: maxConcurrentCards)
+            maxConcurrent: maxConcurrentCards,
+            destDriveTiers: driveTierCache)
     }
 
     /// Admit as many queued cards as the destination-aware scheduler currently allows.
@@ -6688,7 +6742,8 @@ struct ContentView: View {
                         wrongClockDate: item.wrongClockDate,
                         reelFilter: item.reelFilter, reelMulti: item.reelMulti,
                         destination: dest,
-                        ignoreDateFilter: item.ignoreDateFilter)
+                        ignoreDateFilter: item.ignoreDateFilter,
+                        detectedMode: item.detectedMode)
         }
     }
 
@@ -6698,7 +6753,11 @@ struct ContentView: View {
                               destination: Destination? = nil,
                               mirrorTargets: [Destination] = [],
                               ignoreManifest: Bool = false,
-                              ignoreDateFilter: Bool = false) {
+                              ignoreDateFilter: Bool = false,
+                              detectedMode: String? = nil) {
+        // Resolve the effective per-card import mode: explicit detectedMode wins; otherwise the
+        // global importMode AppStorage (now a fallback/default, not the per-card authority).
+        let effectiveMode = detectedMode ?? importMode
         // Per-card folder name set on the lane (awaiting field), keyed by source path so it
         // survives the async analysis/picker detours without threading through every call site.
         // Resolve once: a per-card label overrides the global custom-card-name pref.
@@ -6709,7 +6768,8 @@ struct ContentView: View {
         if demoTask != nil {
             enqueueIfNew(card: card, dateOverride: dateOverride,
                          wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
-                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter)
+                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter,
+                         detectedMode: effectiveMode)
             return
         }
 
@@ -6828,7 +6888,8 @@ struct ContentView: View {
         if !canAdmitIngest(candidateDestDevice: candidateDestDevice, snapshot: currentSchedulerSnapshot()) {
             enqueueIfNew(card: card, dateOverride: dateOverride,
                          wrongClockDate: wrongClockDate, reelFilter: reelFilter, reelMulti: reelMulti,
-                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter)
+                         destinationID: destination?.id, ignoreDateFilter: ignoreDateFilter,
+                         detectedMode: effectiveMode)
             return
         }
 
@@ -6884,10 +6945,19 @@ struct ContentView: View {
         pendingCardLabels.removeValue(forKey: card.path)
         activeIngests[processID]?.volumeUUID = card.volumeUUID
         activeIngests[processID]?.sourcePath = card.path
-        activeIngests[processID]?.runMode = importMode
+        activeIngests[processID]?.runMode = effectiveMode   // per-card detected mode, not global toggle
         activeIngests[processID]?.destinationID = (destination ?? defaultDestination)?.id
-        // Record the destination volume so the scheduler keeps the next card off this drive.
+        // Record the destination volume for the scheduler.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
+        // Probe drive tier once per physical device so the scheduler can allow same-drive
+        // parallel for fast SSDs and block it for HDDs. Fire-and-forget — result is cached.
+        if let dev = candidateDestDevice, dev != 0, driveTierCache[dev] == nil {
+            let probeRoot = resolvedDestRoot
+            Task {
+                let tier = await probeDriveTier(at: probeRoot)
+                driveTierCache[dev] = tier
+            }
+        }
         activeIngests[processID]?.mirrorCount = mirrorPaths.count   // N-way mirror targets, for the done-tile confirmation
         // Snapshot verify setting at launch so the ✓VERIFIED badge reflects what was
         // actually in effect for this transfer, not what the toggle says at completion.
@@ -6942,7 +7012,7 @@ struct ContentView: View {
             scaffoldEnabled: scaffoldEnabled,
             scaffoldFolderList: scaffoldFolderList,
             copyXML: copyXML,
-            importMode: importMode,
+            importMode: effectiveMode,   // per-card detected mode, not global AppStorage
             includeProxies: includeProxies,
             ingestOrder: ingestOrder,
             dateFolderFormat: dateFolderFormat,
@@ -7009,7 +7079,7 @@ struct ContentView: View {
             cardLabel:        effectiveCardLabel,   // the per-card label this ingest actually ran with
             dateFormat:       dateFolderFormat,
             finderTagColor:   finderTagEnabled ? finderTagColor : "",
-            mode:             importMode,
+            mode:             effectiveMode,
             // First mirror target (if any) — the crash-recovery cleanup keys off this path.
             secondaryPath:    mirrorPaths.first ?? "",
             verifyEnabled:    verifyTransfer || fullVerifyEnabled,
@@ -7501,14 +7571,16 @@ struct ContentView: View {
                     if allFilteredByDate && NSApplication.shared.isActive {
                         self.tier0Card          = card
                         self.tier0SkippedCount  = ingest.skipTodayFilter
+                        self.tier0CardMode      = ingest.runMode
                         self.showTier0Prompt    = true
                     } else if ingest.skipManifest > 0 && NSApplication.shared.isActive {
                         // The MANIFEST blocked the copy (this card's files were already offloaded
                         // on a previous run). Offer a deliberate re-ingest to THIS destination.
-                        self.manifestReingestCard   = card
-                        self.manifestReingestDestID = ingest.destinationID
-                        self.manifestReingestCount  = ingest.skipManifest
-                        self.showManifestReingest   = true
+                        self.manifestReingestCard     = card
+                        self.manifestReingestDestID   = ingest.destinationID
+                        self.manifestReingestCount    = ingest.skipManifest
+                        self.manifestReingestCardMode = ingest.runMode
+                        self.showManifestReingest     = true
                     } else if ingest.skipWrongMode > 0 && ingest.skipManifest == 0
                                 && ingest.skipDestExists == 0 && NSApplication.shared.isActive {
                         // EVERY file was the wrong media type for the current mode (e.g. video clips
@@ -8146,7 +8218,7 @@ struct ContentView: View {
 
         // Block if another transfer is already running (use isBusy — covers demo too)
         if isBusy {
-            cardQueue.append(QueuedIngest(card: cardVolume, dateOverride: nil))
+            cardQueue.append(QueuedIngest(card: cardVolume, dateOverride: nil, detectedMode: cp.mode))
             return
         }
 
@@ -14102,6 +14174,16 @@ extension ContentView {
                 .animation(v3Anim(.easeInOut(duration: 0.14)), value: hovered)
                 .onHover { v3HoveredNameID = $0 ? aw.id : (v3HoveredNameID == aw.id ? nil : v3HoveredNameID) }
                 Spacer()
+                // Mode badge: dim for the default "video" detection, amber accent for "photo"
+                // so operators can immediately spot a mixed-media card situation.
+                let isPhoto = aw.detectedMode == "photo"
+                Text(isPhoto ? "PHOTO" : "VIDEO")
+                    .font(.system(size: 10, weight: .semibold)).tracking(0.4)
+                    .foregroundStyle(isPhoto ? v3Amber : .white.opacity(0.35))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background((isPhoto ? v3Amber : Color.white).opacity(isPhoto ? 0.12 : 0.06),
+                                in: Capsule())
+                    .overlay(Capsule().strokeBorder((isPhoto ? v3Amber : Color.white).opacity(isPhoto ? 0.45 : 0.2), lineWidth: 0.5))
                 Button { v3CycleAwaitingDest(aw.id) } label: {
                     Text(aw.destinationID == nil ? "CHOOSE DEST" : "→ \(v3AwaitingDestName(aw))")
                         .font(.system(size: 10, weight: .bold)).tracking(0.5).foregroundStyle(v3Amber)
