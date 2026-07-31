@@ -323,6 +323,19 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
             ingest.verifyTotal   = crExtractInt(from: line, after: rt)
         }
 
+    } else if line.hasPrefix("VERIFY_RECOVERED") {
+        // A file mismatched but was re-copied and now matches — treat as a pass.
+        // Must NOT trip hasCopyError; footage is intact.
+        if parseVerifyRecovered(line) != nil { ingest.recoveredFiles += 1 }
+
+    } else if line.hasPrefix("VERIFY_QUARANTINE") {
+        // A file still mismatched after re-copy — unrecoverable, real footage-safety
+        // failure. Trips hasCopyError so eject is blocked and the run reads as failed.
+        if parseVerifyQuarantine(line) != nil {
+            ingest.quarantinedFiles += 1
+            ingest.hasCopyError = true
+        }
+
     } else if line.hasPrefix("VERIFY_PASS") {
         ingest.verifyChecked = ingest.verifyTotal
 
@@ -452,6 +465,30 @@ func parseVerifyFail(_ line: String) -> VerifyFailInfo? {
             .components(separatedBy: " ").first ?? "unknown")
         return .named(failName)
     }
+}
+
+/// Parse a `VERIFY_RECOVERED file=<name>` line → the recovered file's name.
+/// A recovered file mismatched on first checksum but was re-copied and now matches;
+/// it is a pass, not a failure. Returns nil for non-matching lines.
+func parseVerifyRecovered(_ line: String) -> String? {
+    guard line.hasPrefix("VERIFY_RECOVERED") else { return nil }
+    if line.contains("file=") {
+        return line.components(separatedBy: "file=").last?
+            .components(separatedBy: " ").first ?? "unknown"
+    }
+    return "unknown"
+}
+
+/// Parse a `VERIFY_QUARANTINE file=<name>` line → the quarantined file's name.
+/// A quarantined file still mismatched after a re-copy attempt — an unrecoverable
+/// failure. Returns nil for non-matching lines.
+func parseVerifyQuarantine(_ line: String) -> String? {
+    guard line.hasPrefix("VERIFY_QUARANTINE") else { return nil }
+    if line.contains("file=") {
+        return line.components(separatedBy: "file=").last?
+            .components(separatedBy: " ").first ?? "unknown"
+    }
+    return "unknown"
 }
 
 /// Parse `COLLISION_RENAMED <original> <renamed>` into its two filenames.

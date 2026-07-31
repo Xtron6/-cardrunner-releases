@@ -1294,6 +1294,74 @@ struct CardRunnerTests {
         #expect(parseVerifyFail("VERIFY_PASS checked=3") == nil)
     }
 
+    // --- parseVerifyRecovered / parseVerifyQuarantine (file-scoped recovery) ---
+
+    @Test func verifyRecoveredParsesFileName() {
+        #expect(parseVerifyRecovered("VERIFY_RECOVERED file=A001.mov") == "A001.mov")
+    }
+
+    @Test func verifyRecoveredRejectsWrongPrefix() {
+        #expect(parseVerifyRecovered("VERIFY_QUARANTINE file=A001.mov") == nil)
+        #expect(parseVerifyRecovered("VERIFY_FAIL file=A001.mov") == nil)
+    }
+
+    @Test func verifyQuarantineParsesFileName() {
+        #expect(parseVerifyQuarantine("VERIFY_QUARANTINE file=B002.mxf") == "B002.mxf")
+    }
+
+    @Test func verifyQuarantineRejectsWrongPrefix() {
+        #expect(parseVerifyQuarantine("VERIFY_RECOVERED file=B002.mxf") == nil)
+    }
+
+    // --- applyIngestProgressLine: recovery vs quarantine semantics ---
+
+    @Test func recoveredIncrementsCountAndDoesNotTripCopyError() {
+        let i = feed(["VERIFY_RECOVERED file=A001.mov"])
+        #expect(i.recoveredFiles == 1)
+        #expect(i.quarantinedFiles == 0)
+        #expect(i.hasCopyError == false)
+    }
+
+    @Test func quarantineIncrementsCountAndTripsCopyError() {
+        let i = feed(["VERIFY_QUARANTINE file=B002.mxf"])
+        #expect(i.quarantinedFiles == 1)
+        #expect(i.recoveredFiles == 0)
+        #expect(i.hasCopyError == true)
+    }
+
+    @Test func recoveryCountsAccumulateAcrossLines() {
+        let i = feed([
+            "VERIFY_RECOVERED file=A001.mov",
+            "VERIFY_RECOVERED file=A002.mov",
+            "VERIFY_QUARANTINE file=B002.mxf",
+        ])
+        #expect(i.recoveredFiles == 2)
+        #expect(i.quarantinedFiles == 1)
+        // Any quarantine trips the footage-safety failure flag.
+        #expect(i.hasCopyError == true)
+    }
+
+    @Test func recoveredOnlyRunPassesWithoutCopyError() {
+        // Mirrors a shell run where every mismatch recovered: VERIFY_PASS summary,
+        // recovered files counted, and NO copy error → auto-eject stays allowed.
+        let i = feed([
+            "VERIFY_RECOVERED file=A001.mov",
+            "VERIFY_PASS checked=20 recovered=1",
+        ])
+        #expect(i.recoveredFiles == 1)
+        #expect(i.hasCopyError == false)
+    }
+
+    @Test func quarantineRunFailsViaSummary() {
+        // A run with a quarantine: the summary VERIFY_FAIL also trips the gate.
+        let i = feed([
+            "VERIFY_QUARANTINE file=B002.mxf",
+            "VERIFY_FAIL checked=20 failed=1 recovered=0",
+        ])
+        #expect(i.quarantinedFiles == 1)
+        #expect(i.hasCopyError == true)
+    }
+
     // --- parseCollisionRenamed (field splitting) ---
 
     @Test func collisionRenamedTwoFields() {
@@ -1435,6 +1503,96 @@ struct CardRunnerTests {
         #expect(delegate.elementCounts["hash"] == 2)
         #expect(delegate.elementCounts["file"] == 2)
         #expect(delegate.elementCounts["sha256"] == 2)
+    }
+
+    // MARK: - ReportGenerator (offload report export)
+
+    private func makeEntry(card: String, files: Int, bytes: Int64, mbps: Int,
+                           durationSec: Int, tier: String = "fullyVerified",
+                           dest: String = "/Volumes/T7/Proj/clips") -> IngestHistoryEntry {
+        IngestHistoryEntry(cardName: card, status: "Completed", newFiles: files,
+                           skippedFiles: 0, avgMBps: mbps, durationSec: durationSec,
+                           destPath: dest, mediaLabel: "clips",
+                           totalBytesTransferred: bytes, verificationTierRaw: tier)
+    }
+
+    @Test func csvHasHeaderPlusOneRowPerEntry() {
+        let entries = [
+            makeEntry(card: "A001", files: 12, bytes: 5_000_000_000, mbps: 480, durationSec: 65),
+            makeEntry(card: "B002", files: 30, bytes: 20_000_000_000, mbps: 620, durationSec: 200)
+        ]
+        let csv = ReportGenerator.generateCSV(entries: entries)
+        let lines = csv.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        #expect(lines.count == 3)                       // header + 2 rows
+        #expect(lines[0] == ReportGenerator.csvHeader)
+        #expect(lines[1].contains("A001"))
+        #expect(lines[2].contains("B002"))
+        // Verification label surfaced verbatim.
+        #expect(lines[1].contains("VERIFIED"))
+    }
+
+    @Test func csvEscapesCommasAndQuotes() {
+        let e = makeEntry(card: "Cam \"A\", Card 1", files: 1, bytes: 1_073_741_824,
+                          mbps: 100, durationSec: 10)
+        let csv = ReportGenerator.generateCSV(entries: [e])
+        let row = csv.split(separator: "\n").map(String.init)[1]
+        // The card field must be quoted, with the embedded quote doubled.
+        #expect(row.contains("\"Cam \"\"A\"\", Card 1\""))
+        // The row still splits into exactly 9 logical columns despite the embedded comma —
+        // verify the escaped field kept the comma inside the quotes (no stray column break).
+        #expect(ReportGenerator.csvEscape("Cam \"A\", Card 1") == "\"Cam \"\"A\"\", Card 1\"")
+    }
+
+    @Test func emptyEntriesProducesHeaderOnlyCSV() {
+        let csv = ReportGenerator.generateCSV(entries: [])
+        #expect(csv == ReportGenerator.csvHeader + "\n")
+    }
+
+    @Test func summaryTotalsAreCorrect() {
+        // 5 GiB and 20 GiB exactly (bytes are GiB multiples).
+        let entries = [
+            makeEntry(card: "A", files: 10, bytes: 5 * 1_073_741_824, mbps: 400, durationSec: 100),
+            makeEntry(card: "B", files: 15, bytes: 20 * 1_073_741_824, mbps: 600, durationSec: 300)
+        ]
+        let t = ReportGenerator.totals(for: entries)
+        #expect(t.cards == 2)
+        #expect(t.files == 25)
+        #expect(abs(t.gib - 25.0) < 0.0001)
+        #expect(t.durationSec == 400)
+        // Duration-weighted avg: (400*100 + 600*300) / 400 = 550.
+        #expect(t.sessionAvgMBps == 550)
+
+        let summary = ReportGenerator.generateSummary(entries: entries, title: "Test Report")
+        #expect(summary.contains("Cards: 2"))
+        #expect(summary.contains("Files: 25"))
+        #expect(summary.contains("25.00 GB"))
+        #expect(summary.contains("550 MB/s"))
+    }
+}
+
+// MARK: - Actionable notification action → Notification.Name mapping
+
+@Suite("Notification actions")
+struct NotificationActionTests {
+    @Test("Reveal maps to Open Destination")
+    func revealMapsToOpenDestination() {
+        #expect(notificationName(forActionIdentifier: NotificationAction.reveal) == .menuOpenDestination)
+    }
+
+    @Test("Eject maps to Eject Card")
+    func ejectMapsToEjectCard() {
+        #expect(notificationName(forActionIdentifier: NotificationAction.eject) == .menuEjectCard)
+    }
+
+    @Test("Retry maps to Start Ingest")
+    func retryMapsToStartIngest() {
+        #expect(notificationName(forActionIdentifier: NotificationAction.retry) == .menuStartIngest)
+    }
+
+    @Test("Unknown/default identifiers map to nil")
+    func unknownMapsToNil() {
+        #expect(notificationName(forActionIdentifier: "com.apple.UNNotificationDefaultActionIdentifier") == nil)
+        #expect(notificationName(forActionIdentifier: "") == nil)
     }
 }
 

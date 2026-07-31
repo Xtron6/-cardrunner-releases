@@ -491,6 +491,10 @@ nonisolated struct ActiveIngest {
     // Failure tracking
     var hasCopyError: Bool = false
     var ejectFailed: Bool = false   // eject failed or was skipped post-copy — does NOT trip hasCopyError
+
+    // File-scoped verification recovery tracking
+    var recoveredFiles: Int = 0     // files that mismatched but were re-copied and now match — NOT a failure
+    var quarantinedFiles: Int = 0   // files still mismatched after re-copy — unrecoverable, trips hasCopyError
     var friendlyName: String = ""   // card label / shooter name, stored so termination handler can access it
 
     // Verification tier — honest badge reflecting what actually ran

@@ -79,6 +79,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             #endif
         }
 
+        // Actionable notifications: wire the delegate + register Reveal / Eject / Retry
+        // categories so completion & failure banners carry action buttons.
+        UNUserNotificationCenter.current().delegate = NotificationActionHandler.shared
+        NotificationActionHandler.shared.registerCategories()
+
         // Minimum macOS version guard — show a friendly alert and quit if too old.
         let version = ProcessInfo.processInfo.operatingSystemVersion
         if version.majorVersion < 14 {
@@ -7693,7 +7698,9 @@ struct ContentView: View {
                         self.ingestAlertMessage = failBody
                         self.showIngestAlert    = true
                     } else {
-                        self.notifyIfBackgrounded(title: "Transfer failed — do not format card", body: failBody)
+                        self.notifyIfBackgrounded(title: "Transfer failed — do not format card",
+                                                  body: failBody,
+                                                  category: NotificationCategory.failed)
                     }
                 } else if newFiles == 0 {
                     AudioEngine.shared.upToDate()
@@ -7760,7 +7767,10 @@ struct ContentView: View {
                         self.ingestAlertMessage = alertBody
                         self.showIngestAlert    = true
                     } else {
-                        self.notifyIfBackgrounded(title: "Transfer complete ✓", body: notifBody)
+                        self.notifyIfBackgrounded(title: "Transfer complete ✓",
+                                                  body: notifBody,
+                                                  category: NotificationCategory.complete,
+                                                  userInfo: destPath.isEmpty ? [:] : [kNotificationDestPathKey: destPath])
                     }
                 }
 
@@ -8363,12 +8373,21 @@ struct ContentView: View {
     }
 
     /// Sends a macOS banner notification only when the app is not the active frontmost window.
-    private func notifyIfBackgrounded(title: String, body: String) {
+    private func notifyIfBackgrounded(title: String,
+                                      body: String,
+                                      category: String? = nil,
+                                      userInfo: [String: String] = [:]) {
         guard !NSApplication.shared.isActive else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body  = body
         content.sound = .default
+        if let category, !category.isEmpty {
+            content.categoryIdentifier = category
+        }
+        if !userInfo.isEmpty {
+            content.userInfo = userInfo
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
@@ -12664,7 +12683,42 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Ingest History").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
-                Spacer(); v3SheetClose { showV3History = false }
+                Spacer()
+                // Export the entries currently shown in this sheet (the same recent set the
+                // ScrollView renders) as a CSV + Markdown summary the DIT can hand off, so the
+                // daily media report is generated on demand rather than hand-typed. User-triggered
+                // ONLY — no automatic prompting anywhere.
+                if !historyEntries.isEmpty {
+                    Button {
+                        let shown = Array(historyEntries.prefix(80))
+                        let df = DateFormatter(); df.locale = Locale(identifier: "en_US_POSIX")
+                        df.dateFormat = "yyyy-MM-dd"
+                        let stamp = df.string(from: Date())
+                        let panel = NSSavePanel()
+                        panel.title = "Export Offload Report"
+                        panel.message = "Saves a CSV and a Markdown summary of the ingests shown here."
+                        panel.nameFieldStringValue = "CardRunner-Report-\(stamp).csv"
+                        if panel.runModal() == .OK, let url = panel.url {
+                            let csv = ReportGenerator.generateCSV(entries: shown)
+                            let summary = ReportGenerator.generateSummary(
+                                entries: shown, title: "CardRunner Offload Report — \(stamp)")
+                            try? csv.write(to: url, atomically: true, encoding: .utf8)
+                            // Sidecar Markdown summary next to the CSV (same basename, .md).
+                            let mdURL = url.deletingPathExtension().appendingPathExtension("md")
+                            try? summary.write(to: mdURL, atomically: true, encoding: .utf8)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .semibold))
+                            Text("Export report").font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(v3Cyan)
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(v3Cyan.opacity(0.12), in: Capsule())
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain).help("Export the shown ingests as a CSV + summary report")
+                }
+                v3SheetClose { showV3History = false }
             }
             HStack(spacing: 12) {
                 v3StatCard("CARDS", "\(allTimeStats.totalCards)", "sdcard")

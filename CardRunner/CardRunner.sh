@@ -1294,7 +1294,7 @@ resolve_dest_dir_for_file() {
 verify_transfer() {
   local src="$1"       # card root (e.g. /Volumes/Untitled)
   local list="$2"      # new_list file (relative paths)
-  local checked=0 passed=0 failed=0
+  local checked=0 passed=0 failed=0 recovered=0 quarantined=0
 
   # Build the list of files to verify
   local files=()
@@ -1345,9 +1345,30 @@ verify_transfer() {
     if [[ "$src_md5" == "$dst_md5" && -n "$src_md5" ]]; then
       (( passed++ ))
     else
-      (( failed++ ))
-      echo "VERIFY_FAIL file=${base_name}"
-      log_line "VERIFY FAIL: $rel — src=$src_md5 dst=$dst_md5"
+      # File-scoped recovery: the checksum mismatched, so attempt to re-copy this
+      # single file from source to its known destination path and re-verify it.
+      # A recovered file counts as a pass; only a still-mismatched (or failed)
+      # re-copy is a true, eject-blocking failure (quarantine).
+      log_line "VERIFY MISMATCH: $rel — src=$src_md5 dst=$dst_md5 — attempting single-file recovery"
+      if cp -f "$src_file" "$dest_file" 2>/dev/null; then
+        local re_dst_md5
+        re_dst_md5=$(md5 -q "$dest_file" 2>/dev/null)
+        if [[ "$src_md5" == "$re_dst_md5" && -n "$src_md5" ]]; then
+          (( recovered++ ))
+          echo "VERIFY_RECOVERED file=${base_name}"
+          log_line "VERIFY RECOVERED: $rel — re-copied and now matches src=$src_md5"
+        else
+          (( failed++ ))
+          (( quarantined++ ))
+          echo "VERIFY_QUARANTINE file=${base_name}"
+          log_line "VERIFY QUARANTINE: $rel — still mismatched after re-copy src=$src_md5 dst=$re_dst_md5"
+        fi
+      else
+        (( failed++ ))
+        (( quarantined++ ))
+        echo "VERIFY_QUARANTINE file=${base_name}"
+        log_line "VERIFY QUARANTINE: $rel — re-copy failed src=$src_md5"
+      fi
     fi
 
     # Emit progress for full-verify so the GUI can animate
@@ -1358,10 +1379,13 @@ verify_transfer() {
 
   if (( checked == 0 )); then
     echo "VERIFY_SKIP reason=no_files_sampled"
-  elif (( failed == 0 )); then
-    echo "VERIFY_PASS checked=$checked"
+  elif (( quarantined == 0 )); then
+    # Zero unrecoverable failures — every mismatch (if any) was recovered.
+    # This still PASSES so auto-eject is allowed.
+    echo "VERIFY_PASS checked=$checked recovered=$recovered"
   else
-    echo "VERIFY_FAIL checked=$checked failed=$failed"
+    # At least one quarantined (unrecoverable) file — this FAILS and blocks eject.
+    echo "VERIFY_FAIL checked=$checked failed=$quarantined recovered=$recovered"
   fi
 }
 
