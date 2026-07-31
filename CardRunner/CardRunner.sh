@@ -1036,6 +1036,21 @@ record_ingested_olympics() {
 # all newly copied files so future runs skip them.
 # -----------------------------------------------------------
 
+_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  # Control characters are rare but legal in macOS filenames (e.g. pasted from
+  # another OS, or a card with odd metadata) — escape per JSON spec so a stray
+  # newline/tab doesn't corrupt the manifest structure.
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\f'/\\f}"
+  printf '%s' "$s"
+}
+
 _get_card_uuid() {
   # Try diskutil first (most reliable — persists across mounts).
   local uuid
@@ -1946,7 +1961,8 @@ PYEOF
     local _now _tid
     _now="$(date '+%Y-%m-%d %H:%M:%S')"
     _tid="${$}_$(date +%s)"
-    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=NoNewFiles | Mode=$MODE | Card=$cardname | Friendly=$friendly | Project=$PROJECT_NAME | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest"
+    local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
+    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=NoNewFiles | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest"
     return 0
   fi
 
@@ -2042,6 +2058,19 @@ PYEOF
       [[ -n "$_mk_rel" ]] && _MANIFEST_LOADED_KEYS["${_mk_rel}|${_mk_sz}|${_mk_mt}|"]=1
     done < "$CARD_MANIFEST"
   fi
+
+  # ── Correction manifest: generate a runID for this run and echo it to Swift
+  # so ActiveIngest.runID can be recorded (used later if the operator retypes
+  # the card name after copy — CorrectionLogic.swift moves files by manifest
+  # instead of blind whole-folder rename). Entries accumulate below as copy
+  # groups succeed; the JSON is written once after the group loop. Manifest
+  # write failure is entirely non-fatal — best-effort correction aid, never
+  # part of core copy safety.
+  local _corr_run_id _corr_entries_file _corr_src_id
+  _corr_run_id="corr-$(date +%Y%m%d%H%M%S)-$$"
+  _corr_entries_file="$(mktemp /tmp/cardrunner_corr_entries.XXXXXX 2>/dev/null || true)"
+  _corr_src_id="$(_get_card_uuid 2>/dev/null || echo unknown)"
+  [[ "$DRY_RUN" != "yes" ]] && echo "RUN_ID ${_corr_run_id}"
 
   # ── One cardcopy call per destination group ─────────────────────────────
   local _failed_groups=0      # incremented if any PRIMARY copy group returns non-zero
@@ -2235,6 +2264,31 @@ PYEOF
       apply_rename_group "$_grp_dest" "$_grp_rels" "$_rename_label"
     fi
 
+    # Record every file this group actually copied for the correction manifest —
+    # done HERE, after apply_rename_group, and reading through _rename_map, so the
+    # recorded filename is the REAL on-disk name in both cases that can change it
+    # after the primary copy succeeds: a cardcopy COLLISION_RENAMED (dual-slot/
+    # chaptered DCIM duplicate basenames, handled earlier via stderr parsing) and
+    # a RENAME_TEMPLATE substitution (apply_rename_group, just above). Without this,
+    # CorrectionLogic.swift would look for the pre-rename basename on disk, find
+    # nothing, and silently skip the entry instead of correcting it.
+    # NOTE: this is a separate, secondary manifest from CARD_MANIFEST above — it
+    # exists to let a post-copy folder rename move files by known identity instead
+    # of a blind whole-folder move. It is keyed by relPath|size like CARD_MANIFEST
+    # but written to a different file and must not be conflated with (or
+    # substituted for) the re-ingest dedup manifest.
+    if (( _grp_primary_ok == 1 )) && [[ -n "$_corr_entries_file" && "$DRY_RUN" != "yes" ]]; then
+      {
+        while IFS= read -r -d '' _ce_rel; do
+          [[ -z "$_ce_rel" ]] && continue
+          local _ce_size="${_file_size[$_ce_rel]:-0}"
+          local _ce_fn="${_rename_map[$_ce_rel]:-${_ce_rel##*/}}"
+          local _ce_label="${CARDLABEL:-$cardname}"
+          printf '%s\t%s\t%s\t%s\t%s\n' "$_ce_rel" "$_ce_fn" "$_ce_size" "$_ce_label" "$_grp_dest"
+        done < "$_grp_rels"
+      } >> "$_corr_entries_file" 2>/dev/null || true
+    fi
+
     # ── N-way mirror: copy the same source files to EACH secondary destination ──────
     # Each mirror dest is derived by prefix-swapping a SECONDARY root for PRIMARY_ROOT in
     # _grp_dest (leading prefix only, never global '//'). Custom-folder mode (DEST_ROOT
@@ -2296,6 +2350,44 @@ PYEOF
       done < "$_grp_rels"
     fi
   done
+
+  # ── Write correction manifest (best-effort, non-fatal) ──────────────────
+  # Stored under the DESTINATION ROOT (not under {date}/{label}/) so it
+  # survives a later rename of the label folder — that folder is exactly
+  # what a correction move may relocate. Schema mirrors CorrectionManifest
+  # in CorrectionLogic.swift; keep the two in lockstep if this changes.
+  if [[ "$DRY_RUN" != "yes" && -n "$_corr_entries_file" && -s "$_corr_entries_file" ]]; then
+    (
+      local _corr_root="${DEST_ROOT:-$PRIMARY_ROOT}"
+      if [[ -n "$_corr_root" ]]; then
+        local _corr_dir="${_corr_root}/.cardrunner/manifests"
+        mkdir -p "$_corr_dir" 2>/dev/null
+        local _corr_file="${_corr_dir}/${_corr_run_id}.json"
+        local _corr_ts
+        _corr_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        {
+          printf '{\n'
+          printf '  "runID": "%s",\n' "$(_json_escape "$_corr_run_id")"
+          printf '  "destPath": "%s",\n' "$(_json_escape "$last_dest")"
+          printf '  "timestamp": "%s",\n' "$_corr_ts"
+          printf '  "sourceVolume": "%s",\n' "$(_json_escape "$_corr_src_id")"
+          printf '  "entries": [\n'
+          local _corr_first=1
+          while IFS=$'\t' read -r _ce_rel _ce_fn _ce_size _ce_label _ce_dest; do
+            [[ -z "$_ce_rel" ]] && continue
+            (( _corr_first )) || printf ',\n'
+            _corr_first=0
+            printf '    {"relPath": "%s", "filename": "%s", "size": %s, "hash": null, "label": "%s", "destPath": "%s"}' \
+              "$(_json_escape "$_ce_rel")" "$(_json_escape "$_ce_fn")" "$_ce_size" \
+              "$(_json_escape "$_ce_label")" "$(_json_escape "$_ce_dest")"
+          done < "$_corr_entries_file"
+          printf '\n  ]\n'
+          printf '}\n'
+        } > "$_corr_file" 2>/dev/null
+      fi
+    ) 2>/dev/null || true
+  fi
+  rm -f "$_corr_entries_file" 2>/dev/null
 
   rm -rf "$group_dir"
 
@@ -2408,7 +2500,8 @@ PYEOF
   else
     status_field="OK"
   fi
-  log_line "$NOW_HUMAN | ID=$transfer_id | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$status_field | Mode=$MODE | Card=$cardname | Friendly=$friendly | Project=$PROJECT_NAME | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=$new_count | NewMB=$MB_NEW | DurationSec=$DUR | AvgMBps=$AVG | TodayOnly=$TODAY_ONLY | Dest=$log_dest"
+  local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
+  log_line "$NOW_HUMAN | ID=$transfer_id | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$status_field | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=$new_count | NewMB=$MB_NEW | DurationSec=$DUR | AvgMBps=$AVG | TodayOnly=$TODAY_ONLY | Dest=$log_dest"
 
   # Propagate failure to the caller. A copy-group failure or a verify mismatch must
   # NEVER surface to the operator as "done / safe to eject" — emit a distinct phase

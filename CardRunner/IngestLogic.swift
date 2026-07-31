@@ -92,7 +92,8 @@ func buildIngestArgs(_ c: IngestArgsConfig) -> [String] {
         args.append("--auto-eject")
     }
 
-    if c.fullVerifyEnabled {
+    if c.mhlEnabled || c.fullVerifyEnabled {
+        // MHL requires inline SHA-256 from cardcopy → force --full-verify.
         args.append("--full-verify")
     } else if c.verifyTransfer {
         args.append("--verify")
@@ -257,7 +258,20 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
             work = parts.count > 1 ? String(parts[1]) : ""
         }
         ingest.currentFileSize = sizeValue
-        if !work.isEmpty { ingest.currentFileName = (work as NSString).lastPathComponent }
+        if !work.isEmpty {
+            let fname = (work as NSString).lastPathComponent
+            ingest.currentFileName = fname
+            // Unconditional (NOT gated on --verify) — defense-in-depth fallback list for
+            // correction if the on-disk manifest JSON is missing. PROGRESS_FILE fires on
+            // file START, not completion-confirmed, but the correction path re-verifies
+            // existence/size on disk before moving anything, so an optimistic entry here
+            // is harmless.
+            ingest.copiedFiles.append(fname)
+        }
+
+    } else if line.hasPrefix("RUN_ID ") {
+        let id = line.dropFirst("RUN_ID ".count).trimmingCharacters(in: .whitespaces)
+        if !id.isEmpty { ingest.runID = id }
 
     } else if line.hasPrefix("PROGRESS_SUMMARY") {
         if let r = line.range(of: "avg_mb=") { ingest.avgMBps = crExtractInt(from: line, after: r) }
@@ -333,7 +347,25 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
         // non-zero exit were somehow missed.
         if newPhase == .failed { ingest.hasCopyError = true }
 
-    } else if line.hasPrefix("VERIFY_OK ") || line.hasPrefix("VERIFY_SKIP")
+    } else if line.hasPrefix("VERIFY_OK ") {
+        // Accumulate the FULL SHA-256 hash from cardcopy's inline verification.
+        // Format: "VERIFY_OK <filename> <sha256hex>" or "VERIFY_OK id=N <filename> <sha256hex>"
+        let payload = String(line.dropFirst("VERIFY_OK ".count))
+        var parts = payload.components(separatedBy: " ")
+        // Strip optional "id=N" prefix (tagged mode for parallel secondary copies).
+        if let first = parts.first, first.hasPrefix("id=") { parts.removeFirst() }
+        if parts.count >= 2 {
+            let filename = parts[0]
+            let fullHash = parts[1]   // FULL SHA-256, not truncated
+            ingest.verifyHashes[filename] = fullHash
+        }
+
+    } else if line.hasPrefix("EJECT_FAILED") || line.hasPrefix("EJECT_SKIPPED") {
+        // Post-copy eject failure/skip — the copy already succeeded, so this must NOT
+        // trip hasCopyError. Tracked separately so the UI can nudge the user to eject manually.
+        ingest.ejectFailed = true
+
+    } else if line.hasPrefix("VERIFY_SKIP")
            || line.hasPrefix("SECONDARY_PROGRESS dest=") || line.hasPrefix("SECONDARY_ERROR")
            || line.hasPrefix("TRANSFER_REPORT path=") {
         // UI/log only — no ingest state.
@@ -581,6 +613,36 @@ nonisolated func detectCardMode(at cardPath: String, globalFallback: String) -> 
     if videoCount >= photoCount && videoCount > 0 { return "video" }
     if photoCount > 0 { return "photo" }
     return globalFallback
+}
+
+/// Pure function: determine the verification tier for a completed ingest.
+/// Returns nil when no badge should be shown (didFail or no files).
+/// Rules:
+///   didFail / newFiles==0     → nil (no badge)
+///   no verify at all          → .sizeChecked
+///   spot-check (--verify)     → .spotVerified(N)
+///   full verify (--full-verify) → .fullyVerified
+///   full verify + MHL written → .sealed
+func determineVerificationTier(
+    verifyEnabled: Bool,       // --verify was on (spot-check)
+    fullVerifyEnabled: Bool,   // --full-verify was on (inline SHA-256)
+    mhlEnabled: Bool,
+    mhlWritten: Bool,
+    newFiles: Int,
+    verifyCheckedCount: Int,   // number of files spot-checked (from verifyChecked)
+    didFail: Bool
+) -> VerificationTier? {
+    guard !didFail, newFiles > 0 else { return nil }
+
+    if fullVerifyEnabled || mhlEnabled {
+        // Full verify was in effect (mhlEnabled forces it)
+        if mhlWritten { return .sealed }
+        return .fullyVerified
+    }
+    if verifyEnabled {
+        return .spotVerified(count: verifyCheckedCount)
+    }
+    return .sizeChecked
 }
 
 /// Common short connector words kept lowercase in a derived title (except when first). Only members

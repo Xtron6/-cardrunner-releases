@@ -194,7 +194,7 @@ struct CardRunnerApp: App {
         .defaultSize(width: 1200, height: 780)
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
-        .windowResizability(.automatic)
+        .windowResizability(.contentMinSize)
         .commands {
             CardRunnerCommands(
                 updaterController: appDelegate.updaterController,

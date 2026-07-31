@@ -707,4 +707,517 @@ struct CardRunnerTests {
         // Stripping would leave nothing → keep the raw folder name rather than an empty name.
         #expect(deriveDestName(fromProject: "260626_") == "260626_")
     }
+
+    // MARK: - MHLWriter (ASC MHL sidecar generation)
+
+    @Test func mhlWriterGeneratesValidXML() {
+        let entry = MHLHashEntry(
+            relativePath: "clips/260729/A001.mxf",
+            sha256Hex: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            fileSize: 1_073_741_824,
+            modificationDate: Date(timeIntervalSince1970: 1722200000)
+        )
+        let xml = MHLWriter.generateXML(entries: [entry])
+        #expect(xml.contains("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+        #expect(xml.contains("<hashlist version=\"2.0\">"))
+        #expect(xml.contains("<path>clips/260729/A001.mxf</path>"))
+        #expect(xml.contains("<sha256>a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2</sha256>"))
+        #expect(xml.contains("<size>1073741824</size>"))
+        #expect(xml.contains("<creatorinfo>"))
+        #expect(xml.contains("<name>CardRunner</name>"))
+        #expect(xml.contains("</hashlist>"))
+    }
+
+    @Test func mhlWriterEscapesSpecialChars() {
+        let entry = MHLHashEntry(
+            relativePath: "clips/A&B <C> \"D\".mxf",
+            sha256Hex: "abcd1234",
+            fileSize: 100,
+            modificationDate: Date()
+        )
+        let xml = MHLWriter.generateXML(entries: [entry])
+        #expect(xml.contains("A&amp;B &lt;C&gt; &quot;D&quot;.mxf"))
+        #expect(!xml.contains("A&B"))  // raw & must not appear
+    }
+
+    @Test func mhlWriterEmptyEntriesGeneratesValidXML() {
+        let xml = MHLWriter.generateXML(entries: [])
+        #expect(xml.contains("<hashlist version=\"2.0\">"))
+        #expect(xml.contains("</hashlist>"))
+        #expect(!xml.contains("<hash>"))
+    }
+
+    @Test func mhlWriterSingleFileRoundTrip() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let entry = MHLHashEntry(
+            relativePath: "test.mxf",
+            sha256Hex: "deadbeef",
+            fileSize: 42,
+            modificationDate: Date()
+        )
+        let url = try MHLWriter.writeMHL(entries: [entry], to: tmp, cardName: "TestCard")
+        #expect(url.pathExtension == "mhl")
+        #expect(url.path.contains("ASC_MHL"))
+        #expect(url.lastPathComponent.hasPrefix("TestCard_"))
+        let content = try String(contentsOf: url, encoding: .utf8)
+        #expect(content.contains("<sha256>deadbeef</sha256>"))
+        try FileManager.default.removeItem(at: tmp)
+    }
+
+    // MARK: - VerificationTier truth table
+
+    @Test func tierNoneWhenFailed() {
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: true, mhlEnabled: true,
+            mhlWritten: true, newFiles: 5, verifyCheckedCount: 5, didFail: true)
+        #expect(t == nil)
+    }
+
+    @Test func tierNoneWhenNoFiles() {
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: true, mhlEnabled: false,
+            mhlWritten: false, newFiles: 0, verifyCheckedCount: 0, didFail: false)
+        #expect(t == nil)
+    }
+
+    @Test func tierSizeCheckedWhenNoVerify() {
+        let t = determineVerificationTier(
+            verifyEnabled: false, fullVerifyEnabled: false, mhlEnabled: false,
+            mhlWritten: false, newFiles: 5, verifyCheckedCount: 0, didFail: false)
+        #expect(t == .sizeChecked)
+    }
+
+    @Test func tierSpotVerifiedWhenVerifyOnly() {
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: false, mhlEnabled: false,
+            mhlWritten: false, newFiles: 5, verifyCheckedCount: 3, didFail: false)
+        #expect(t == .spotVerified(count: 3))
+    }
+
+    @Test func tierFullyVerifiedWhenFullVerify() {
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: true, mhlEnabled: false,
+            mhlWritten: false, newFiles: 5, verifyCheckedCount: 5, didFail: false)
+        #expect(t == .fullyVerified)
+    }
+
+    @Test func tierSealedWhenFullVerifyPlusMHL() {
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: true, mhlEnabled: true,
+            mhlWritten: true, newFiles: 5, verifyCheckedCount: 5, didFail: false)
+        #expect(t == .sealed)
+    }
+
+    @Test func tierFullyVerifiedWhenMHLEnabledButNotWritten() {
+        // MHL enabled but write failed → degrade to fullyVerified, not sealed
+        let t = determineVerificationTier(
+            verifyEnabled: true, fullVerifyEnabled: true, mhlEnabled: true,
+            mhlWritten: false, newFiles: 5, verifyCheckedCount: 5, didFail: false)
+        #expect(t == .fullyVerified)
+    }
+
+    @Test func tierMHLEnabledForcesFullVerifyPath() {
+        // mhlEnabled ON + fullVerifyEnabled OFF → still goes through full-verify path
+        let t = determineVerificationTier(
+            verifyEnabled: false, fullVerifyEnabled: false, mhlEnabled: true,
+            mhlWritten: true, newFiles: 5, verifyCheckedCount: 0, didFail: false)
+        #expect(t == .sealed)
+    }
+
+    // MARK: - buildIngestArgs with mhlEnabled
+
+    @Test func buildArgsMHLEnabledForcesFullVerify() {
+        var c = cfg()
+        c.mhlEnabled = true
+        c.fullVerifyEnabled = false
+        c.verifyTransfer = false
+        let args = buildIngestArgs(c)
+        #expect(args.contains("--full-verify"))
+        #expect(!args.contains("--verify"))
+    }
+
+    @Test func buildArgsMHLEnabledWithVerifyStillForcesFullVerify() {
+        // mhlEnabled ON + verifyTransfer ON → --full-verify wins, no --verify
+        var c = cfg(verifyTransfer: true)
+        c.mhlEnabled = true
+        let args = buildIngestArgs(c)
+        #expect(args.contains("--full-verify"))
+        #expect(!args.contains("--verify"))
+    }
+
+    // MARK: - VERIFY_OK parser accumulates full hashes
+
+    @Test func parserAccumulatesFullHashFromVerifyOK() {
+        let i = feed([
+            "VERIFY_OK clip001.mxf a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            "VERIFY_OK clip002.mxf deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ])
+        #expect(i.verifyHashes.count == 2)
+        #expect(i.verifyHashes["clip001.mxf"] == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+        #expect(i.verifyHashes["clip002.mxf"] == "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+    }
+
+    @Test func parserAccumulatesHashFromTaggedVerifyOK() {
+        let i = feed(["VERIFY_OK id=3 clip.mxf abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"])
+        #expect(i.verifyHashes["clip.mxf"] == "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234")
+    }
+
+    // MARK: - VerificationTier persistence
+
+    @Test func verificationTierRoundTrips() {
+        #expect(VerificationTier.fromStorage("sizeChecked") == .sizeChecked)
+        #expect(VerificationTier.fromStorage("fullyVerified") == .fullyVerified)
+        #expect(VerificationTier.fromStorage("sealed") == .sealed)
+        #expect(VerificationTier.fromStorage("spotVerified:7") == .spotVerified(count: 7))
+        #expect(VerificationTier.fromStorage("unknown") == .sizeChecked)  // safe default
+    }
+
+    @Test func historyEntryDecodesLegacyWithoutTier() throws {
+        let e = IngestHistoryEntry(
+            cardName: "CARD", status: "Completed", newFiles: 10, skippedFiles: 0,
+            avgMBps: 500, durationSec: 5, destPath: "/Volumes/SSD/Shoot/260101")
+        let data = try enc.encode(e)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "verificationTierRaw")
+        let trimmed = try JSONSerialization.data(withJSONObject: obj)
+        let back = try dec.decode(IngestHistoryEntry.self, from: trimmed)
+        #expect(back.verificationTier == .sizeChecked)  // missing → safe default
+    }
+
+    // MARK: - CorrectionLogic — manifest round-trip
+
+    @Test func correctionManifestRoundTrips() throws {
+        let manifest = CorrectionManifest(
+            runID: "corr-20260730120000-123",
+            destPath: "/Volumes/SSD/Shoot/260730/OldLabel",
+            timestamp: "2026-07-30T12:00:00Z",
+            sourceVolume: "ABCD-1234",
+            entries: [
+                CorrectionManifestEntry(relPath: "DCIM/100MEDIA/A001.MP4", filename: "A001.MP4",
+                                         size: 1024, hash: "deadbeef", label: "OldLabel",
+                                         destPath: "/Volumes/SSD/Shoot/260730/OldLabel")
+            ])
+        let data = try JSONEncoder().encode(manifest)
+        let back = try JSONDecoder().decode(CorrectionManifest.self, from: data)
+        #expect(back == manifest)
+    }
+
+    @Test func correctionManifestLoadReturnsNilWhenMissing() {
+        let tmp = NSTemporaryDirectory() + "cr_corr_missing_\(UUID().uuidString)"
+        let result = loadManifest(destRoot: tmp, runID: "does-not-exist")
+        #expect(result == nil)
+    }
+
+    @Test func correctionManifestLoadReturnsNilWhenMalformed() throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "cr_corr_malformed_\(UUID().uuidString)"
+        let dir = root + "/.cardrunner/manifests"
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/badrun.json"
+        try "{ this is not valid json".write(toFile: path, atomically: true, encoding: .utf8)
+        let result = loadManifest(destRoot: root, runID: "badrun")
+        #expect(result == nil)
+        try? fm.removeItem(atPath: root)
+    }
+
+    @Test func correctionManifestLoadRoundTripsFromDisk() throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "cr_corr_disk_\(UUID().uuidString)"
+        let dir = root + "/.cardrunner/manifests"
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let manifest = CorrectionManifest(runID: "run1", destPath: "\(root)/260730/Label",
+                                           timestamp: "2026-07-30T12:00:00Z", sourceVolume: "vol",
+                                           entries: [])
+        let data = try JSONEncoder().encode(manifest)
+        try data.write(to: URL(fileURLWithPath: dir + "/run1.json"))
+        let back = loadManifest(destRoot: root, runID: "run1")
+        #expect(back?.runID == "run1")
+        try? fm.removeItem(atPath: root)
+    }
+
+    // MARK: - CorrectionLogic — collision resolution
+
+    private func makeTempDir() -> String {
+        let path = NSTemporaryDirectory() + "cr_corr_test_\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        return path
+    }
+
+    @Test func collisionResolvesToMovedWhenNoTarget() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("src/a.mov")
+        try fm.createDirectory(at: src.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "hello".write(to: src, atomically: true, encoding: .utf8)
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent("dst/a.mov")
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst, sourceHash: nil, targetHash: nil,
+                                        sourceLabel: "Card1", fileManager: fm)
+        #expect(outcome == .moved)
+        #expect(fm.fileExists(atPath: dst.path))
+        #expect(!fm.fileExists(atPath: src.path))
+    }
+
+    @Test func collisionDedupesOnIdenticalHash() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("src/a.mov")
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent("dst/a.mov")
+        try fm.createDirectory(at: src.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "same content".write(to: src, atomically: true, encoding: .utf8)
+        try "same content".write(to: dst, atomically: true, encoding: .utf8)
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst,
+                                        sourceHash: "hash1", targetHash: "hash1",
+                                        sourceLabel: "Card1", fileManager: fm)
+        #expect(outcome == .deduped)
+        #expect(!fm.fileExists(atPath: src.path))       // source cleaned up
+        #expect(fm.fileExists(atPath: dst.path))         // target untouched
+    }
+
+    @Test func collisionDedupesOnByteCompareWhenNoHash() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("src/a.mov")
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent("dst/a.mov")
+        try fm.createDirectory(at: src.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "identical bytes here".write(to: src, atomically: true, encoding: .utf8)
+        try "identical bytes here".write(to: dst, atomically: true, encoding: .utf8)
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst, sourceHash: nil, targetHash: nil,
+                                        sourceLabel: "Card1", fileManager: fm)
+        #expect(outcome == .deduped)
+    }
+
+    @Test func collisionSuffixesOnDifferingContent() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("src/a.mov")
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent("dst/a.mov")
+        try fm.createDirectory(at: src.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "source content".write(to: src, atomically: true, encoding: .utf8)
+        try "different target content".write(to: dst, atomically: true, encoding: .utf8)
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst, sourceHash: "h1", targetHash: "h2",
+                                        sourceLabel: "Card1", fileManager: fm)
+        guard case .suffixed(let newName) = outcome else {
+            Issue.record("expected .suffixed, got \(outcome)"); return
+        }
+        #expect(newName == "a__from-Card1.mov")
+        #expect(fm.fileExists(atPath: dst.deletingLastPathComponent().appendingPathComponent(newName).path))
+        #expect(!fm.fileExists(atPath: src.path))
+        #expect(fm.fileExists(atPath: dst.path))  // original target untouched
+    }
+
+    @Test func collisionSuffixDisambiguatesOnRepeatCollision() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        let dstDir = URL(fileURLWithPath: dir).appendingPathComponent("dst")
+        try fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
+        let dst = dstDir.appendingPathComponent("a.mov")
+        try "target".write(to: dst, atomically: true, encoding: .utf8)
+        // Pre-occupy the first suffix candidate so the resolver must go to -2.
+        try "already here".write(to: dstDir.appendingPathComponent("a__from-Card1.mov"),
+                                  atomically: true, encoding: .utf8)
+
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("src/a.mov")
+        try fm.createDirectory(at: src.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "new source content".write(to: src, atomically: true, encoding: .utf8)
+
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst, sourceHash: "hA", targetHash: "hB",
+                                        sourceLabel: "Card1", fileManager: fm)
+        guard case .suffixed(let newName) = outcome else {
+            Issue.record("expected .suffixed, got \(outcome)"); return
+        }
+        #expect(newName == "a__from-Card1-2.mov")
+    }
+
+    @Test func collisionIOFailureDoesNotStrandOrCrash() throws {
+        let fm = FileManager.default
+        let dir = makeTempDir()
+        defer { try? fm.removeItem(atPath: dir) }
+        // Source doesn't exist — moveItem/copyItem will fail. Must return .failed, not throw/crash.
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("nonexistent/a.mov")
+        let dst = URL(fileURLWithPath: dir).appendingPathComponent("dst/a.mov")
+        let outcome = resolveCollision(sourceURL: src, targetURL: dst, sourceHash: nil, targetHash: nil,
+                                        sourceLabel: "Card1", fileManager: fm)
+        guard case .failed = outcome else {
+            Issue.record("expected .failed, got \(outcome)"); return
+        }
+    }
+
+    // MARK: - CorrectionLogic — manifest reflects actual on-disk name (collision-rename /
+    // RENAME_TEMPLATE drift). CardRunner.sh now records entry.filename via _rename_map
+    // AFTER apply_rename_group runs, so it should be the REAL on-disk name, not the
+    // pre-rename source basename. This test proves the Swift side correctly finds and
+    // moves a file when the manifest entry's filename is the renamed one (simulating what
+    // the shell now writes for a collision-renamed or template-renamed file) — and, by
+    // contrast, demonstrates the failure mode if a manifest ever regresses to recording
+    // the pre-rename name.
+
+    @Test func manifestWithRenamedFilenameIsFoundAndMoved() throws {
+        let fm = FileManager.default
+        let root = makeTempDir()
+        defer { try? fm.removeItem(atPath: root) }
+        let oldDir = "\(root)/260730/OldLabel"
+        try fm.createDirectory(atPath: oldDir, withIntermediateDirectories: true)
+        // On disk, cardcopy/apply_rename_group already renamed the collided/templated file —
+        // only the RENAMED name exists, the original source basename does not.
+        try "renamed content".write(toFile: "\(oldDir)/A001__dup2.MP4", atomically: true, encoding: .utf8)
+
+        let manifest = CorrectionManifest(
+            runID: "run1", destPath: oldDir, timestamp: "t", sourceVolume: "Card1",
+            entries: [
+                // filename correctly reflects the on-disk (post-rename) name, as the
+                // fixed CardRunner.sh now records via _rename_map.
+                CorrectionManifestEntry(relPath: "DCIM/100MEDIA/A001.MP4", filename: "A001__dup2.MP4",
+                                         size: 5, hash: nil, label: "OldLabel", destPath: oldDir)
+            ])
+        let result = performManifestCorrection(
+            manifest: manifest, destRoot: root,
+            oldLabelPath: "260730/OldLabel", newLabelPath: "260730/NewLabel",
+            oldLabel: "OldLabel", newLabel: "NewLabel", sourceLabel: "Card1", fileManager: fm
+        )
+        #expect(result.movedCount == 1)
+        #expect(result.effectiveLabel == "NewLabel")
+        #expect(fm.fileExists(atPath: "\(root)/260730/NewLabel/A001__dup2.MP4"))
+    }
+
+    @Test func manifestWithStalePreRenameFilenameIsSkippedNotFailed() throws {
+        // Guards the failure mode the fix addresses: if a manifest entry's filename is the
+        // PRE-rename source basename (what CardRunner.sh used to write) while the actual
+        // on-disk file has already been renamed, performManifestCorrection must not find
+        // it — it's silently skipped (file "already moved or absent"), never counted as a
+        // hard failure, and the aggregate correctly reports 0 successes so the caller
+        // (ContentView.applyPendingFolderRename) falls through to the whole-folder fallback
+        // instead of reporting success with the new label.
+        let fm = FileManager.default
+        let root = makeTempDir()
+        defer { try? fm.removeItem(atPath: root) }
+        let oldDir = "\(root)/260730/OldLabel"
+        try fm.createDirectory(atPath: oldDir, withIntermediateDirectories: true)
+        try "renamed content".write(toFile: "\(oldDir)/A001__dup2.MP4", atomically: true, encoding: .utf8)
+
+        let manifest = CorrectionManifest(
+            runID: "run1", destPath: oldDir, timestamp: "t", sourceVolume: "Card1",
+            entries: [
+                // Stale: pre-rename basename — does not exist on disk.
+                CorrectionManifestEntry(relPath: "DCIM/100MEDIA/A001.MP4", filename: "A001.MP4",
+                                         size: 5, hash: nil, label: "OldLabel", destPath: oldDir)
+            ])
+        let result = performManifestCorrection(
+            manifest: manifest, destRoot: root,
+            oldLabelPath: "260730/OldLabel", newLabelPath: "260730/NewLabel",
+            oldLabel: "OldLabel", newLabel: "NewLabel", sourceLabel: "Card1", fileManager: fm
+        )
+        #expect(result.movedCount == 0)
+        #expect(result.failedCount == 0)   // skip, not a hard failure
+        #expect(result.effectiveLabel == "OldLabel")   // caller must fall through to whole-folder fallback
+        // The renamed file must still be exactly where it was — never touched or lost.
+        #expect(fm.fileExists(atPath: "\(oldDir)/A001__dup2.MP4"))
+    }
+
+    // MARK: - CorrectionLogic — orchestration aggregate counts
+
+    @Test func orchestrationAggregatesCountsAcrossMixedOutcomes() throws {
+        let fm = FileManager.default
+        let root = makeTempDir()
+        defer { try? fm.removeItem(atPath: root) }
+        let oldDir = "\(root)/260730/OldLabel"
+        let newDir = "\(root)/260730/NewLabel"
+        try fm.createDirectory(atPath: oldDir, withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: newDir, withIntermediateDirectories: true)
+
+        // f1.mov: clean move (no target).
+        try "f1".write(toFile: "\(oldDir)/f1.mov", atomically: true, encoding: .utf8)
+        // f2.mov: dedupe (identical content already at target).
+        try "f2-content".write(toFile: "\(oldDir)/f2.mov", atomically: true, encoding: .utf8)
+        try "f2-content".write(toFile: "\(newDir)/f2.mov", atomically: true, encoding: .utf8)
+        // f3.mov: suffix (different content at target).
+        try "f3-source".write(toFile: "\(oldDir)/f3.mov", atomically: true, encoding: .utf8)
+        try "f3-target".write(toFile: "\(newDir)/f3.mov", atomically: true, encoding: .utf8)
+        // f4.mov: referenced in manifest but missing on disk — should be skipped, not failed.
+
+        let manifest = CorrectionManifest(
+            runID: "run1", destPath: oldDir, timestamp: "t", sourceVolume: "Card1",
+            entries: [
+                CorrectionManifestEntry(relPath: "f1.mov", filename: "f1.mov", size: 2, hash: nil, label: "OldLabel", destPath: oldDir),
+                CorrectionManifestEntry(relPath: "f2.mov", filename: "f2.mov", size: 10, hash: nil, label: "OldLabel", destPath: oldDir),
+                CorrectionManifestEntry(relPath: "f3.mov", filename: "f3.mov", size: 9, hash: nil, label: "OldLabel", destPath: oldDir),
+                CorrectionManifestEntry(relPath: "f4.mov", filename: "f4.mov", size: 5, hash: nil, label: "OldLabel", destPath: oldDir),
+            ])
+
+        let result = performManifestCorrection(
+            manifest: manifest, destRoot: root,
+            oldLabelPath: "260730/OldLabel", newLabelPath: "260730/NewLabel",
+            oldLabel: "OldLabel", newLabel: "NewLabel", sourceLabel: "Card1", fileManager: fm
+        )
+
+        #expect(result.movedCount == 1)
+        #expect(result.dedupedCount == 1)
+        #expect(result.suffixedCount == 1)
+        #expect(result.failedCount == 0)   // missing entry is skipped, not counted as failed
+        #expect(result.effectiveLabel == "NewLabel")
+        #expect(fm.fileExists(atPath: "\(newDir)/f1.mov"))
+        #expect(!fm.fileExists(atPath: "\(oldDir)/f1.mov"))
+    }
+
+    @Test func orchestrationKeepsOldLabelWhenNothingSucceeds() throws {
+        let fm = FileManager.default
+        let root = makeTempDir()
+        defer { try? fm.removeItem(atPath: root) }
+        // No source files exist on disk at all — every entry is a skip, nothing moves.
+        let manifest = CorrectionManifest(
+            runID: "run1", destPath: "\(root)/260730/OldLabel", timestamp: "t", sourceVolume: "Card1",
+            entries: [
+                CorrectionManifestEntry(relPath: "ghost.mov", filename: "ghost.mov", size: 1, hash: nil,
+                                         label: "OldLabel", destPath: "\(root)/260730/OldLabel")
+            ])
+        let result = performManifestCorrection(
+            manifest: manifest, destRoot: root,
+            oldLabelPath: "260730/OldLabel", newLabelPath: "260730/NewLabel",
+            oldLabel: "OldLabel", newLabel: "NewLabel", sourceLabel: "Card1", fileManager: fm
+        )
+        #expect(result.effectiveLabel == "OldLabel")
+        #expect(result.movedCount == 0)
+    }
+
+    @Test func relativeLabelDirMatchesExactLastComponentOnly() {
+        let root = "/Volumes/SSD/Shoot"
+        #expect(relativeLabelDir("/Volumes/SSD/Shoot/260730/OldLabel", destRoot: root, label: "OldLabel") == "260730/OldLabel")
+        #expect(relativeLabelDir("/Volumes/SSD/Shoot/260730/ReelA/OldLabel", destRoot: root, label: "OldLabel") == "260730/ReelA/OldLabel")
+        // Suffix match on a longer name must NOT count as a match.
+        #expect(relativeLabelDir("/Volumes/SSD/Shoot/260730/OldLabelExtra", destRoot: root, label: "OldLabel") == nil)
+        #expect(relativeLabelDir("/Other/Path/260730/OldLabel", destRoot: root, label: "OldLabel") == nil)
+    }
+
+    @Test func withLastComponentReplacedSwapsOnlyFinalSegment() {
+        #expect(withLastComponentReplaced("260730/OldLabel", newLabel: "NewLabel") == "260730/NewLabel")
+        #expect(withLastComponentReplaced("260730/ReelA/OldLabel", newLabel: "NewLabel") == "260730/ReelA/NewLabel")
+    }
+
+    // MARK: - CorrectionLogic — Finder-tag fallback refuses rather than guesses
+
+    @Test func fallbackRefusesWhenNoManifestAndNoTagMarker() throws {
+        let fm = FileManager.default
+        let root = makeTempDir()
+        defer { try? fm.removeItem(atPath: root) }
+        let oldDir = "\(root)/260730/OldLabel"
+        try fm.createDirectory(atPath: oldDir, withIntermediateDirectories: true)
+        try "f1".write(toFile: "\(oldDir)/f1.mov", atomically: true, encoding: .utf8)  // untagged
+
+        let result = performFallbackCorrection(
+            destRoot: root, oldLabelPath: "260730/OldLabel", newLabelPath: "260730/NewLabel",
+            oldLabel: "OldLabel", newLabel: "NewLabel", fileManager: fm
+        )
+        #expect(result.refused == true)
+        #expect(result.effectiveLabel == "OldLabel")
+        // Refusing must never touch the file.
+        #expect(fm.fileExists(atPath: "\(oldDir)/f1.mov"))
+    }
 }

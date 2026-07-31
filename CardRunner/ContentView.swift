@@ -1810,6 +1810,7 @@ struct ContentView: View {
     // Pro Tools feature flags (all off by default)
     @AppStorage("pref_dualDestEnabled")       private var dualDestEnabled: Bool = false
     @AppStorage("pref_fullVerifyEnabled")     private var fullVerifyEnabled: Bool = false
+    @AppStorage("pref_mhlEnabled")            private var mhlEnabled: Bool = false
     @AppStorage("pref_transferReportEnabled") private var transferReportEnabled: Bool = false
     @AppStorage("pref_renameOnIngest")        private var renameOnIngestEnabled: Bool = false
     @AppStorage("pref_renameTemplate")        private var renameTemplate: String = "{cardname}_{original}"
@@ -1856,6 +1857,7 @@ struct ContentView: View {
     // v3 free-space labels are probed OFF the main thread and cached here so a slow/
     // sleeping/wedged drive can never stall a render. Renders read the cache; lifecycle
     // events (appear / mount / unmount / 30-s loop / add-dest sheet) refresh it.
+    @State private var v3RingWidth: CGFloat = 360
     @State private var v3FreeSpaceCache: [String: String] = [:]
 
     // v3 design sheets — Add destination / New project folder
@@ -2049,6 +2051,10 @@ struct ContentView: View {
     // (startIngest) or the routing resolves to a picker/queue/bail. Keyed by source path.
     @State private var v3StartingPaths: Set<String> = []
 
+    // Tracks when each destination line first lit up (keyed by destinationID, nil = default).
+    // Used to drive the 1-second laser sweep animation when a transfer starts.
+    @State private var destLineActivationTimes: [UUID?: Date] = [:]
+
     // Card nickname memory — UUID → human label persisted across sessions
     @State private var knownCardNicknames: [String: String] = [:]
     @State private var currentCardIsKnown: Bool   = false  // true → known card, show name badge
@@ -2143,6 +2149,7 @@ struct ContentView: View {
     @State private var v3AddDestHovered = false       // Add-destination button hover (glow)
     @State private var v3HoveredNameID: UUID? = nil   // source-lane card-name field under the cursor (glow)
     @State private var v3DoneExpanded: Bool = false   // "N safe to pull" panel: tapped-open to review done cards
+    @State private var v3DonePulling: Bool = false    // green glow pulse before the pile disappears
     @State private var v3LogAtBottom: Bool = true     // Activity-log: is the live tail on-screen? (drives follow + jump-to-tail)
     @State private var v3FakeCardSeq = 5              // DEV: sequence for spawned fake test cards (A006, A007…)
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
@@ -4704,12 +4711,14 @@ struct ContentView: View {
                 cancelAllIngests()
             }
             // File → Open Destination in Finder  (⌘⇧O). Also fired by the ring's "Open in Finder"
-            // button once a batch is done. Opens the RESOLVED v3 default destination — per-card
-            // copies land under whichever destination they're routed to, and the "Open Destination"
-            // intent is the default root. Falls back to the legacy primary only for a user with no
-            // Destination list (P1-5: was reading the legacy `selectedPrimary`, wrong for multi-dest).
+            // button once a batch is done. Opens the EXACT folder clips landed in (from
+            // FOLDERSYNC_START), not the destination root. Falls back to the default destination
+            // root only when no transfer has completed yet.
             .onReceive(NotificationCenter.default.publisher(for: .menuOpenDestination)) { _ in
-                if let p = defaultDestination?.path ?? selectedPrimary?.path, !p.isEmpty {
+                let exact = finderDestPath
+                if !exact.isEmpty {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: exact))
+                } else if let p = defaultDestination?.path ?? selectedPrimary?.path, !p.isEmpty {
                     NSWorkspace.shared.open(URL(fileURLWithPath: p))
                 }
             }
@@ -4807,7 +4816,9 @@ struct ContentView: View {
                     // tile from the green pile. The card was verified + retained until acted upon; this
                     // is the "acted upon" event. Only .done lanes are cleared (real ingests can't unmount).
                     for (k, ing) in activeIngests where ing.phase == .done && ing.sourcePath == url.path {
-                        activeIngests.removeValue(forKey: k)
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            activeIngests.removeValue(forKey: k)
+                        }
                     }
                 } else {
                     seenCardPaths = seenCardPaths.filter { FileManager.default.fileExists(atPath: $0) }
@@ -5868,6 +5879,12 @@ struct ContentView: View {
                         if self.runningCount > 0 {
                             self.enqueueAwaiting(newCards)
                         } else {
+                            // Auto-ingest ON means ingest NOW — never park/gate a card waiting for a
+                            // label confirmation (that would defeat the whole point of auto-ingest).
+                            // A card can still land under a stale sticky label from a prior shooter;
+                            // that misroute is recovered by the post-copy file-level correction
+                            // (retype the label → applyPendingFolderRename moves only THIS card's
+                            // files via the on-disk manifest), not by blocking the transfer.
                             self.routeKeepingVisible(newCards)
                         }
                     }
@@ -5904,22 +5921,124 @@ struct ContentView: View {
         }
     }
 
-    /// Apply a per-card folder rename AFTER a copy completes (never mid-copy — the shell caches
-    /// dest paths, so a live rename would split footage). Renames every {destPath}/{date}/{old}
-    /// directory to {date}/{new}. CONFLICT-SAFE: skips (and logs) when the target already exists
-    /// or the source is missing — it never merges, overwrites, or deletes. The manifest dedups on
-    /// SOURCE identity, so a renamed dest folder doesn't break re-ingest. Returns the name actually
-    /// in effect (new if at least one folder moved, else old — footage is never left in limbo).
+    /// Apply a per-card folder rename/correction AFTER a copy completes (never mid-copy — the
+    /// shell caches dest paths, so a live rename would split footage).
+    ///
+    /// PRIMARY path (manifest-driven, MERGE-safe): if `runID` is provided and a correction
+    /// manifest exists on disk for it (written by CardRunner.sh right after the copy succeeded),
+    /// every file THIS RUN copied is moved individually from {date}/{old}[/…] to
+    /// {date}/{new}[/…] via CorrectionLogic's collision-safe resolver — which MERGES into an
+    /// existing target folder instead of aborting, dedupes byte-identical collisions, and
+    /// disambiguates genuine name collisions with a `__from-<label>` suffix. Nothing is ever
+    /// overwritten or silently dropped.
+    ///
+    /// FALLBACK path (no manifest, or nothing relevant in it): preserves the ORIGINAL
+    /// conflict-safe whole-folder-move behavior — skip (and log) if the target already exists,
+    /// never merge/overwrite/delete. This is the deliberate, honest fallback for old/incomplete
+    /// manifests rather than guessing at batch membership (see CorrectionLogic.performFallbackCorrection).
+    ///
+    /// The re-ingest dedup manifest (CARD_MANIFEST in CardRunner.sh) is keyed by
+    /// rel|size|mtime — NOT by destination path — so moving files here never breaks re-ingest
+    /// skip-detection for the same card later.
+    ///
+    /// Returns the name actually in effect (new if at least one file/folder moved, else old —
+    /// footage is never left in limbo).
     @MainActor @discardableResult
-    private func applyPendingFolderRename(destPath: String, oldLabel: String, newLabel: String) -> String {
+    private func applyPendingFolderRename(destPath: String, oldLabel: String, newLabel: String, runID: String? = nil, copiedFiles: [String] = []) -> String {
         let fm = FileManager.default
         let oldT = oldLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let newT = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         // Only rename an EXISTING label folder to a new, valid, non-empty, different name.
         guard !destPath.isEmpty, !oldT.isEmpty, !newT.isEmpty, newT != oldT,
               !newT.contains("/"), newT != ".", newT != ".." else { return oldLabel }
+
+        // ── Primary: manifest-driven, merge-safe, file-level correction ────────────────────
+        if let runID, let manifest = loadManifest(destRoot: destPath, runID: runID) {
+            var relevantDirs = Set<String>()
+            for entry in manifest.entries {
+                if let relDir = relativeLabelDir(entry.destPath, destRoot: destPath, label: oldT) {
+                    relevantDirs.insert(relDir)
+                }
+            }
+            if !relevantDirs.isEmpty {
+                var anySucceeded = false
+                for relDir in relevantDirs.sorted() {
+                    let newRelDir = withLastComponentReplaced(relDir, newLabel: newT)
+                    let entriesForDir = manifest.entries.filter {
+                        relativeLabelDir($0.destPath, destRoot: destPath, label: oldT) == relDir
+                    }
+                    let subManifest = CorrectionManifest(runID: manifest.runID, destPath: manifest.destPath,
+                                                          timestamp: manifest.timestamp,
+                                                          sourceVolume: manifest.sourceVolume,
+                                                          entries: entriesForDir)
+                    let result = performManifestCorrection(
+                        manifest: subManifest, destRoot: destPath,
+                        oldLabelPath: relDir, newLabelPath: newRelDir,
+                        oldLabel: oldT, newLabel: newT,
+                        sourceLabel: manifest.sourceVolume, fileManager: fm,
+                        log: { msg in self.appendLog(msg) }
+                    )
+                    appendLog("CORRECTION SUMMARY (\(relDir) → \(newRelDir)): moved=\(result.movedCount) deduped=\(result.dedupedCount) suffixed=\(result.suffixedCount) failed=\(result.failedCount)\n")
+                    if result.effectiveLabel == newT { anySucceeded = true }
+                }
+                if anySucceeded {
+                    return newT
+                }
+                // Manifest existed and named this label, but NOT ONE entry actually moved/
+                // deduped/suffixed (e.g. every on-disk filename diverged from the manifest's
+                // recorded name — collision-rename/RENAME_TEMPLATE drift, or files already
+                // relocated by a prior correction). Do NOT silently report the old label as
+                // "done, nothing happened" — log it plainly and fall through to the whole-
+                // folder move fallback below so the operator still gets a correction attempt
+                // instead of a silent no-op.
+                appendLog("CORRECTION: manifest \(runID) named label \(oldT) but ZERO entries could be matched on disk — falling back to whole-folder move\n")
+            } else {
+                appendLog("CORRECTION: manifest \(runID) has no entries under label \(oldT) — falling back to whole-folder move\n")
+            }
+        }
+
+        // ── Tertiary: copiedFiles-list fallback ─────────────────────────────────────────
+        // No usable manifest (missing, or every entry failed to match on disk). Before
+        // resorting to the blind whole-folder move, try the weaker-but-still-concrete
+        // per-run copiedFiles list (populated unconditionally from PROGRESS_FILE lines —
+        // see IngestLogic.applyIngestProgressLine). Only attempted when there's something
+        // to try; any dir where nothing moves falls straight through to the whole-folder
+        // fallback below exactly as before.
+        if !copiedFiles.isEmpty {
+            var relevantDirs = Set<String>()
+            let dateDirsForScan = (try? fm.contentsOfDirectory(atPath: destPath)) ?? []
+            for d in dateDirsForScan {
+                let dateDir = "\(destPath)/\(d)"
+                var dIsDir: ObjCBool = false
+                guard fm.fileExists(atPath: dateDir, isDirectory: &dIsDir), dIsDir.boolValue else { continue }
+                if fm.fileExists(atPath: "\(dateDir)/\(oldT)") { relevantDirs.insert(d) }
+                for s in (try? fm.contentsOfDirectory(atPath: dateDir)) ?? [] {
+                    let subDir = "\(dateDir)/\(s)"
+                    var sIsDir: ObjCBool = false
+                    guard fm.fileExists(atPath: subDir, isDirectory: &sIsDir), sIsDir.boolValue else { continue }
+                    if fm.fileExists(atPath: "\(subDir)/\(oldT)") { relevantDirs.insert("\(d)/\(s)") }
+                }
+            }
+            if !relevantDirs.isEmpty {
+                var anySucceeded = false
+                for relDir in relevantDirs.sorted() {
+                    let oldLabelPath = "\(relDir)/\(oldT)"
+                    let newLabelPath = "\(relDir)/\(newT)"
+                    let result = performCopiedFilesCorrection(
+                        copiedFiles: copiedFiles, destRoot: destPath,
+                        oldLabelPath: oldLabelPath, newLabelPath: newLabelPath,
+                        oldLabel: oldT, newLabel: newT, sourceLabel: "unknown", fileManager: fm,
+                        log: { msg in self.appendLog(msg) }
+                    )
+                    appendLog("CORRECTION SUMMARY (copiedFiles, \(oldLabelPath) → \(newLabelPath)): moved=\(result.movedCount) deduped=\(result.dedupedCount) suffixed=\(result.suffixedCount) failed=\(result.failedCount)\n")
+                    if result.effectiveLabel == newT { anySucceeded = true }
+                }
+                if anySucceeded { return newT }
+            }
+        }
+
+        // ── Fallback: original conflict-safe whole-folder move (unchanged behavior) ────────
         var movedAny = false
-        // Conflict-safe move of {parent}/{oldT} → {parent}/{newT}. Never overwrites/merges/deletes.
         func tryRename(in parent: String) {
             let src = "\(parent)/\(oldT)", dst = "\(parent)/\(newT)"
             var isDir: ObjCBool = false
@@ -5931,9 +6050,6 @@ struct ContentView: View {
                  appendLog("Renamed card folder \(oldT) → \(newT)\n") }
             catch { appendLog("RENAME FAIL: \(src) → \(newT): \(error.localizedDescription) — kept \(oldT)\n") }
         }
-        // Cover the label folder wherever the engine nests it: {date}/{label} (flat/custom),
-        // and {date}/{reel|lane}/{label} (reel-multi / olympics). One extra shallow listing per
-        // date dir — both passes are conflict-safe, so a label that isn't there is simply skipped.
         let dateDirs = (try? fm.contentsOfDirectory(atPath: destPath)) ?? []
         for d in dateDirs {
             let dateDir = "\(destPath)/\(d)"
@@ -6947,6 +7063,16 @@ struct ContentView: View {
         activeIngests[processID]?.sourcePath = card.path
         activeIngests[processID]?.runMode = effectiveMode   // per-card detected mode, not global toggle
         activeIngests[processID]?.destinationID = (destination ?? defaultDestination)?.id
+        // Fire the laser-sweep animation if this destination line wasn't already lit.
+        // Key nil = default destination (treated identically by the canvas draw).
+        let sweepKey: UUID? = (destination ?? defaultDestination)?.id == defaultDestination?.id
+            ? nil : (destination ?? defaultDestination)?.id
+        let alreadyLit = activeIngests.contains {
+            $0.key != processID &&
+            $0.value.destinationID == (destination ?? defaultDestination)?.id &&
+            $0.value.phase != .done
+        }
+        if !alreadyLit { destLineActivationTimes[sweepKey] = Date() }
         // Record the destination volume for the scheduler.
         activeIngests[processID]?.destDeviceID = candidateDestDevice ?? 0
         // Probe drive tier once per physical device so the scheduler can allow same-drive
@@ -6962,6 +7088,9 @@ struct ContentView: View {
         // Snapshot verify setting at launch so the ✓VERIFIED badge reflects what was
         // actually in effect for this transfer, not what the toggle says at completion.
         activeIngests[processID]?.verifyEnabled = verifyTransfer || fullVerifyEnabled
+        activeIngests[processID]?.mhlEnabled = mhlEnabled
+        activeIngests[processID]?.fullVerifyEnabled = fullVerifyEnabled
+        activeIngests[processID]?.secondaryPaths = mirrorPaths
 
         // Clear stale summary card
         lastNewFiles        = 0
@@ -7019,7 +7148,8 @@ struct ContentView: View {
             broadcastDayFolders: broadcastDayFolders,
             dayStartHour: dayStartHour,
             finderTagEnabled: finderTagEnabled,
-            finderTagColor: finderTagColor))
+            finderTagColor: finderTagColor,
+            mhlEnabled: mhlEnabled))
 
         appendLog("=== Starting ingest for card: \(card.name) ===\n")   // banner always written (v3 log has no showLog flag)
         statusText = "Ingesting \(card.name)…"
@@ -7458,7 +7588,8 @@ struct ContentView: View {
                         // nothing to update in activeIngests here — the rename operates on the
                         // verified folder on disk via the local `ingest` snapshot.
                         self.applyPendingFolderRename(destPath: ingest.destPath,
-                                                      oldLabel: ingest.cardLabel, newLabel: newLabel)
+                                                      oldLabel: ingest.cardLabel, newLabel: newLabel,
+                                                      runID: ingest.runID, copiedFiles: ingest.copiedFiles)
                     }
                     self.clearFailedRecords(cardName: card.name, volumeUUID: card.volumeUUID,
                                             friendlyName: ingest.friendlyName, projectName: self.projectName)
@@ -7504,6 +7635,7 @@ struct ContentView: View {
                     destPath: destPath,
                     mediaLabel:            self.mediaLabel,
                     totalBytesTransferred: bytesTransferred,
+                    verificationTierRaw:   ingest.verificationTier.rawForStorage,
                     skipManifest:          ingest.skipManifest,
                     skipDestExists:        ingest.skipDestExists,
                     skipTodayFilter:       ingest.skipTodayFilter,
@@ -7616,8 +7748,10 @@ struct ContentView: View {
                         return msg
                     }()
                     let notifBody: String = {
-                        var msg = "Copied \(newFiles) files → \(relDest)"
-                        if !skipSummaryLine.isEmpty { msg += " · \(skipSummaryLine)" }
+                        var msg = "Copied \(newFiles) files \u{2192} \(relDest)"
+                        if !skipSummaryLine.isEmpty { msg += " \u{00B7} \(skipSummaryLine)" }
+                        let tierLabel = ingest.verificationTier.displayText
+                        msg += " \u{00B7} \(tierLabel)"
                         return msg
                     }()
                     if NSApplication.shared.isActive {
@@ -7648,6 +7782,70 @@ struct ContentView: View {
                     // Use the launch-time snapshot (ingest.verifyEnabled) not the live toggle,
                     // so the badge truthfully reflects what ran for THIS transfer.
                     ingest.verified    = ingest.verifyEnabled && newFiles > 0
+
+                    // --- MHL sidecar generation ---
+                    // Write only when ALL copied files have hashes and no failure occurred.
+                    if ingest.mhlEnabled && ingest.verifyHashes.count >= newFiles && newFiles > 0 {
+                        do {
+                            let destURL = URL(fileURLWithPath: destPath)
+                            // Build MHL entries from accumulated hashes
+                            let fm = FileManager.default
+                            var mhlEntries: [MHLHashEntry] = []
+                            for (filename, hash) in ingest.verifyHashes {
+                                // Find the file relative to destPath for the relative path
+                                let filePath = destURL.appendingPathComponent(filename)
+                                var fileSize: Int64 = 0
+                                var modDate = Date()
+                                if let attrs = try? fm.attributesOfItem(atPath: filePath.path) {
+                                    fileSize = attrs[.size] as? Int64 ?? 0
+                                    modDate = attrs[.modificationDate] as? Date ?? Date()
+                                }
+                                mhlEntries.append(MHLHashEntry(
+                                    relativePath: filename,
+                                    sha256Hex: hash,
+                                    fileSize: fileSize,
+                                    modificationDate: modDate
+                                ))
+                            }
+                            let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.0"
+                            let mhlURL = try MHLWriter.writeMHL(
+                                entries: mhlEntries,
+                                version: appVer,
+                                to: destURL,
+                                cardName: card.name
+                            )
+                            ingest.mhlWritten = true
+                            self.appendLog("MHL sidecar written: \(mhlURL.lastPathComponent)\n")
+
+                            // Copy MHL to secondary (mirror) destinations
+                            for secPath in ingest.secondaryPaths {
+                                let secMHLDir = URL(fileURLWithPath: secPath).appendingPathComponent("ASC_MHL", isDirectory: true)
+                                do {
+                                    try fm.createDirectory(at: secMHLDir, withIntermediateDirectories: true)
+                                    let secMHLFile = secMHLDir.appendingPathComponent(mhlURL.lastPathComponent)
+                                    try fm.copyItem(at: mhlURL, to: secMHLFile)
+                                } catch {
+                                    self.appendLog("Warning: could not copy MHL to secondary \(secPath): \(error.localizedDescription)\n")
+                                }
+                            }
+                        } catch {
+                            // MHL write failure must NOT fail the ingest — degrade to .fullyVerified
+                            self.appendLog("Warning: MHL sidecar write failed: \(error.localizedDescription)\n")
+                        }
+                    }
+
+                    // Determine honest verification tier using launch-time snapshots
+                    let tier = determineVerificationTier(
+                        verifyEnabled: ingest.verifyEnabled,
+                        fullVerifyEnabled: ingest.fullVerifyEnabled || ingest.mhlEnabled,
+                        mhlEnabled: ingest.mhlEnabled,
+                        mhlWritten: ingest.mhlWritten,
+                        newFiles: newFiles,
+                        verifyCheckedCount: ingest.verifyChecked,
+                        didFail: didFail
+                    )
+                    ingest.verificationTier = tier ?? .sizeChecked
+
                     self.activeIngests[processID] = ingest
                 } else if !didFail, FileManager.default.fileExists(atPath: card.path) {
                     // 0-new run (up-to-date / manifest-skip / wrong-mode): its lane was just removed
@@ -7963,6 +8161,42 @@ struct ContentView: View {
             let startIndex = logText.index(logText.endIndex, offsetBy: -maxChars)
             logText = String(logText[startIndex...])
         }
+
+        persistLogLine(t)
+    }
+
+    /// Appends a line to the same daily log file the shell's log_line writes to,
+    /// so Swift-side messages survive app restarts. Safe to call from any thread.
+    private func persistLogLine(_ t: String) {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm:ss"
+        let timestamp = df.string(from: Date())
+
+        let dayDf = DateFormatter()
+        dayDf.dateFormat = "yyyyMMdd"
+        let dayStamp = dayDf.string(from: Date())
+
+        let line = "[\(timestamp)] \(t)\n"
+
+        do {
+            let logsDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/CardRunner", isDirectory: true)
+            try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+
+            let logFile = logsDir.appendingPathComponent("cardrunner_\(dayStamp).log")
+            guard let data = line.data(using: .utf8) else { return }
+
+            if FileManager.default.fileExists(atPath: logFile.path) {
+                let handle = try FileHandle(forWritingTo: logFile)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: logFile, options: .atomic)
+            }
+        } catch {
+            // Silently continue — in-memory log still works.
+        }
     }
 
     // MARK: - PROGRESS_* Parsing
@@ -8024,6 +8258,12 @@ struct ContentView: View {
                 DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(failName)" }
             }
 
+        } else if line.hasPrefix("EJECT_FAILED") {
+            appendLog("⚠️ Card eject failed — remove manually\n")
+
+        } else if line.hasPrefix("EJECT_SKIPPED") {
+            appendLog("— Eject skipped\n")
+
         } else if line.hasPrefix("VERIFY_SKIP") {
             appendLog("— Verify skipped (no files sampled)\n")
 
@@ -8071,9 +8311,12 @@ struct ContentView: View {
 
         } else if line.hasPrefix("VERIFY_OK ") {
             let parts = line.dropFirst("VERIFY_OK ".count).components(separatedBy: " ")
-            let verifyName = parts.first ?? "file"
-            let verifyHash = parts.count > 1 ? String(parts[1].prefix(8)) : ""
-            appendLog("✓ Verified \(verifyName) [\(verifyHash)…]\n")
+            // Strip optional "id=N" prefix for tagged mode
+            var vParts = parts
+            if let first = vParts.first, first.hasPrefix("id=") { vParts.removeFirst() }
+            let verifyName = vParts.first ?? "file"
+            let verifyHash = vParts.count > 1 ? String(vParts[1].prefix(8)) : ""
+            appendLog("\u{2713} Verified \(verifyName) [\(verifyHash)...]\n")
 
         } else if line.hasPrefix("SECONDARY_ERROR") {
             let secondaryMsg: String
@@ -11486,7 +11729,7 @@ struct SetupWizardView: View {
             .padding(24)
         }
         .padding(24)
-        .frame(minWidth: 520, minHeight: 440)
+        .frame(minWidth: 900, minHeight: 440)
         .onAppear {
             recheckFDA()
             recheckNotifications()
@@ -11612,7 +11855,7 @@ struct SetupWizardView_Previews: PreviewProvider {
             currentSetupVersion: 1,
             isPresented: .constant(true)
         )
-        .frame(minWidth: 520, minHeight: 360)
+        .frame(minWidth: 900, minHeight: 360)
     }
 }
 
@@ -12915,7 +13158,8 @@ extension ContentView {
     /// default) destination so the operator can see where each parked card will land even at idle. The
     /// awaiting lines render in the idle static Canvas frame too (this fn runs in both branches) — they
     /// never widen the animated 20fps branch, so a parked linked card costs one static frame, not a loop.
-    private func v3DrawFunnel(_ ctx: inout GraphicsContext, rects: [String: CGRect], phase: CGFloat) {
+    private func v3DrawFunnel(_ ctx: inout GraphicsContext, rects: [String: CGRect], phase: CGFloat,
+                              activationTimes: [UUID?: Date] = [:], now: Date = Date()) {
         // Live drag-to-link line follows the cursor from the node to the drop point.
         if let dl = dragLine {
             var p = Path(); p.move(to: dl.from)
@@ -12963,12 +13207,45 @@ extension ContentView {
                 glowLine(curve(CGPoint(x: lr.maxX, y: lr.midY), leftPort), col)
             }
             if !v3ActiveLanes.isEmpty {
-                let destKeys: [String] = ["dest-default"] + destinations
-                    .filter { $0.id != defaultDestination?.id }.map { "dest-\($0.id)" }
+                // Only draw ring → destination lines for destinations that are actually
+                // receiving data from an active lane. nil destinationID means the lane
+                // routed to the default destination.
+                let activeDestIDs: Set<UUID?> = Set(v3ActiveLanes.map { $0.ing.destinationID })
                 let col = v3FailedCount > 0 ? v3Amber : v3AllDone ? v3Green : v3Cyan
-                for key in destKeys {
-                    guard let dr = rects[key] else { continue }
-                    glowLine(curve(rightPort, CGPoint(x: dr.minX, y: dr.midY)), col)
+
+                // Laser sweep: a bright comet that traces the bezier once over 1 second
+                // when a destination line first lights up. t goes 0→1 over the sweep duration;
+                // the comet is a short trimmed-path segment with a white hot core + cyan halo.
+                let sweepDuration: CGFloat = 1.0
+                let cometLen: CGFloat = 0.18  // fraction of path length the comet occupies
+
+                func drawSweep(_ path: Path, _ destKey: UUID?) {
+                    guard let activated = activationTimes[destKey] else { return }
+                    let elapsed = CGFloat(now.timeIntervalSince(activated))
+                    guard elapsed < sweepDuration else { return }
+                    let t = elapsed / sweepDuration          // 0 → 1
+                    let lo = max(0, t - cometLen)
+                    let hi = min(1, t)
+                    let comet = path.trimmedPath(from: lo, to: hi)
+                    // Wide dim halo → tighter bright band → hot white core
+                    ctx.stroke(comet, with: .color(v3Cyan.opacity(0.25)), style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    ctx.stroke(comet, with: .color(v3Cyan.opacity(0.65)), style: StrokeStyle(lineWidth: 4,  lineCap: .round))
+                    ctx.stroke(comet, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                }
+
+                if activeDestIDs.contains(nil) || activeDestIDs.contains(defaultDestination?.id) {
+                    if let dr = rects["dest-default"] {
+                        let p = curve(rightPort, CGPoint(x: dr.minX, y: dr.midY))
+                        glowLine(p, col)
+                        drawSweep(p, nil)
+                    }
+                }
+                for dest in destinations where dest.id != defaultDestination?.id {
+                    guard activeDestIDs.contains(dest.id),
+                          let dr = rects["dest-\(dest.id)"] else { continue }
+                    let p = curve(rightPort, CGPoint(x: dr.minX, y: dr.midY))
+                    glowLine(p, col)
+                    drawSweep(p, dest.id)
                 }
             }
         }
@@ -13256,6 +13533,9 @@ extension ContentView {
                 v3CompletionPreview
             }
             v3SettingsSection("INGEST") {
+                v3MenuRow("Default mode", "Fallback for cards where content can't be auto-detected. Cards with recognizable files are always detected automatically.",
+                          current: importMode, options: [("Video", "video"), ("Photo", "photo")]) { importMode = $0 }
+                v3SettingDivider()
                 v3MenuRow("Ingest order", "Order files are dispatched to the destination.",
                           current: ingestOrder, options: [("Oldest first", "oldest"), ("Newest first", "newest")]) { ingestOrder = $0 }
             }
@@ -13275,7 +13555,9 @@ extension ContentView {
         v3SettingsSection("VERIFICATION & SAFETY") {
             v3ToggleRow("Verify transfer (spot-check)", "Checksum a random sample of up to 10 files after each ingest.", $verifyTransfer)
             v3SettingDivider()
-            v3ToggleRow("Full checksum verification", "MD5 every file on source and destination. Slower, exhaustive.", $fullVerifyEnabled)
+            v3ToggleRow("Full checksum verification", "SHA-256 every file on source and destination. Slower, exhaustive.", $fullVerifyEnabled)
+            v3SettingDivider()
+            v3ToggleRow("Write MHL sidecar", "Generate an ASC MHL manifest per card (enables full verify). Industry-standard chain-of-custody proof.", $mhlEnabled)
             v3SettingDivider()
             v3ToggleRow("Auto-eject after ingest", "Safely eject the card once every byte is confirmed.", $autoEject)
             v3SettingDivider()
@@ -13718,19 +14000,6 @@ extension ContentView {
                         .contentShape(Capsule())
                 }.menuStyle(.borderlessButton).fixedSize().v3Hover(glow: v3Cyan).help("Switch ingest preset")
             }
-            // Video / Photo mode (also ⌘1 / ⌘2). Photo mode changes what cardcopy ingests.
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { importMode = (importMode == "photo" ? "video" : "photo") }
-                AudioEngine.shared.modeSwitch()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: importMode == "photo" ? "camera.fill" : "video.fill")
-                    Text(importMode == "photo" ? "Photo" : "Video")
-                }
-                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                .padding(.horizontal, 12).frame(height: 32)
-                .background(.white.opacity(0.05), in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-            }.buttonStyle(.plain).help("Video / Photo mode (⌘1 / ⌘2)")
             Spacer()
             // Auto-ingest toggle lives ONLY in the center console now (Xavier's call — it used to
             // appear here, below the ring, AND in the footer). See v3Ring.
@@ -13748,10 +14017,16 @@ extension ContentView {
             // Each column fills the FULL stage height so its balanced top/bottom Spacers can
             // center the content group on the ring's vertical center (was top-pinned → cards
             // piled down from the top). The ring already had balanced spacers.
-            v3Sources.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            v3Ring.frame(width: 360)   // ring VStack already fills height via its balanced spacers
-            v3Destinations.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            v3Sources.frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            v3Ring.frame(width: v3RingWidth)   // ring VStack already fills height via its balanced spacers
+            v3Destinations.frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
+        .background(GeometryReader { stageGeo in
+            Color.clear.onChange(of: stageGeo.size.width) { _, w in
+                v3RingWidth = min(420, max(280, w * 0.28))
+            }
+            .onAppear { v3RingWidth = min(420, max(280, stageGeo.size.width * 0.28)) }
+        })
         .frame(maxHeight: .infinity)
         .coordinateSpace(name: "stage")
         .backgroundPreferenceValue(V3AnchorKey.self) { anchors in
@@ -13769,12 +14044,17 @@ extension ContentView {
                 let v3FunnelFlowing = v3ActiveLanes.contains {
                     [.scanning, .building, .copying, .finalizing, .verifying].contains($0.ing.phase)
                 }
-                if runningCount > 0 || dragLine != nil || v3FunnelFlowing {
+                // Also keep the animated branch alive for 1 s after a new dest line fires
+                // so the laser sweep has frames to render even if the copy hasn't started yet.
+                let hasSweepInFlight = destLineActivationTimes.values
+                    .contains { Date().timeIntervalSince($0) < 1.0 }
+                if runningCount > 0 || dragLine != nil || v3FunnelFlowing || hasSweepInFlight {
                     TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { tl in
                         Canvas { ctx, _ in
                             let phase = CGFloat(tl.date.timeIntervalSinceReferenceDate
                                 .truncatingRemainder(dividingBy: 0.7)) / 0.7 * 14
-                            v3DrawFunnel(&ctx, rects: rects, phase: phase)
+                            v3DrawFunnel(&ctx, rects: rects, phase: phase,
+                                         activationTimes: destLineActivationTimes, now: tl.date)
                         }
                     }
                 } else {
@@ -13944,7 +14224,7 @@ extension ContentView {
                             .frame(width: 22, height: 22).background(v3Amber.opacity(0.12), in: Circle())
                     }.buttonStyle(.plain).help("Dismiss — only after you've confirmed the footage is safe")
                 }
-                .padding(12).frame(width: 360)
+                .padding(12).frame(maxWidth: .infinity)
                 .background(v3Amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(v3Amber.opacity(0.45)))
             }
@@ -14014,7 +14294,7 @@ extension ContentView {
             }
             v3LaneBottom(id, ing)
         }
-        .padding(14).frame(width: 360)
+        .padding(14).frame(maxWidth: .infinity)
         .background(.white.opacity(0.04))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(
             ing.phase == .failed ? v3Red.opacity(0.4) : .white.opacity(0.10)))
@@ -14053,7 +14333,8 @@ extension ContentView {
         if !ing.cardLabel.isEmpty {
             if ing.phase == .done {
                 let applied = applyPendingFolderRename(destPath: ing.destPath,
-                                                       oldLabel: ing.cardLabel, newLabel: newName)
+                                                       oldLabel: ing.cardLabel, newLabel: newName,
+                                                       runID: ing.runID, copiedFiles: ing.copiedFiles)
                 activeIngests[id]?.cardLabel = applied
                 activeIngests[id]?.friendlyName = applied
                 activeIngests[id]?.pendingRename = nil
@@ -14232,7 +14513,7 @@ extension ContentView {
                 }
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 12).frame(width: 360)
+        .padding(.horizontal, 16).padding(.vertical, 12).frame(maxWidth: .infinity)
         .v3GlowCard(tint: v3Amber, radius: 18, fill: 0.04, border: 0.55, glow: 0.28, glowRadius: 22)
         .overlay(alignment: .trailing) { v3RouteDot(aw) }
         .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["lane-\(aw.id)": $0] }
@@ -14310,7 +14591,17 @@ extension ContentView {
             .help(anyMounted ? "Eject all cards that are safe to pull" : "Clear the safe-to-pull list")
             .accessibilityLabel(anyMounted ? "Eject all cards that are safe to pull" : "Clear the safe-to-pull list")
         }
-        .frame(width: 360)
+        .frame(maxWidth: .infinity)
+        // Green glow pulse on pull/dismiss — a brief brightness flash before the pile animates out.
+        .brightness(v3DonePulling ? 0.15 : 0)
+        .shadow(color: v3Green.opacity(v3DonePulling ? 0.6 : 0), radius: v3DonePulling ? 24 : 0)
+        // Disappearing "pop away": scale down + fade when the last card is removed.
+        .transition(.asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.95)).animation(.spring(response: 0.3, dampingFraction: 0.7)),
+            removal:   .opacity.combined(with: .scale(scale: 0.92)).animation(.spring(response: 0.3, dampingFraction: 0.75))
+        ))
+        // Padding so the glow shadow isn't clipped by the parent ScrollView.
+        .padding(.horizontal, 4).padding(.vertical, 2)
     }
 
     @ViewBuilder private func v3LaneBottom(_ id: UUID, _ ing: ActiveIngest) -> some View {
@@ -14349,12 +14640,29 @@ extension ContentView {
                 HStack(spacing: 7) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(v3Green)
                     Text("SAFE TO PULL").font(.system(size: 12, weight: .bold)).foregroundStyle(v3Green)
-                    // Verified badge — the whole value proposition, made visible. Shown when a checksum
-                    // verify actually ran (verifyTransfer on); a clean PHASE-done means it PASSED.
-                    if ing.verified {
-                        Text("✓ VERIFIED").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Green)
+                    // Honest tiered verification badge — reflects what ACTUALLY ran.
+                    let tierBadge = ing.verificationTier
+                    switch tierBadge {
+                    case .sealed:
+                        Text("\u{2713} SEALED").font(.system(size: 9, weight: .bold)).foregroundStyle(Color(hex: "#fbbf24"))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color(hex: "#fbbf24").opacity(0.14), in: Capsule())
+                    case .fullyVerified:
+                        Text("\u{2713} VERIFIED").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Green)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(v3Green.opacity(0.14), in: Capsule())
+                    case .spotVerified(let n):
+                        Text("\u{2713} SPOT VERIFIED (\(n))").font(.system(size: 9, weight: .bold)).foregroundStyle(v3Amber)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(v3Amber.opacity(0.14), in: Capsule())
+                    case .sizeChecked:
+                        if ing.verified {
+                            // Legacy fallback: verified flag set but tier is sizeChecked (shouldn't happen
+                            // but safe backward compat)
+                            Text("SIZE CHECKED").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(.white.opacity(0.06), in: Capsule())
+                        }
                     }
                     Spacer()
                     // If the card is still mounted → "Pull" (eject; the tile clears on didUnmount).
@@ -14412,9 +14720,18 @@ extension ContentView {
 
     /// Clear a finished card's tile from the safe-to-pull pile WITHOUT ejecting — the card is already
     /// gone (Auto-Eject removed it), so there's nothing to eject; this just dismisses the (already
-    /// footage-safe, verified-copied) confirmation tile.
+    /// footage-safe, verified-copied) confirmation tile.  Plays a brief green glow pulse → scale-down
+    /// "pop away" so the tile doesn't just vanish.
     private func v3DismissDoneCard(_ id: UUID) {
-        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { _ = activeIngests.removeValue(forKey: id) }
+        // 1. Flash the green glow
+        withAnimation(.easeOut(duration: 0.12)) { v3DonePulling = true }
+        // 2. After the flash, scale-down + fade out and remove
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                v3DonePulling = false
+                _ = activeIngests.removeValue(forKey: id)
+            }
+        }
     }
 
     /// Whether ANY done card is still physically mounted — drives the "All" button between an
@@ -14426,13 +14743,20 @@ extension ContentView {
 
     /// "Pull all": eject every still-mounted done card (safe eject via the existing handler) AND
     /// clear the tiles of any done cards already gone (Auto-Eject) — which .menuEjectCard can't do.
+    /// Plays the green glow pulse → scale-down pop for already-gone tiles.
     private func v3PullAllDone() {
         v3Post(.menuEjectCard)   // ejects every still-mounted card (existing, !isBusy-guarded handler)
         let goneIDs = activeIngests.filter { $0.value.phase == .done
             && ($0.value.sourcePath.isEmpty || !FileManager.default.fileExists(atPath: $0.value.sourcePath)) }
             .map { $0.key }
         guard !goneIDs.isEmpty else { return }
-        withAnimation(v3Anim(.easeInOut(duration: 0.2))) { for id in goneIDs { activeIngests.removeValue(forKey: id) } }
+        withAnimation(.easeOut(duration: 0.12)) { v3DonePulling = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                v3DonePulling = false
+                for id in goneIDs { activeIngests.removeValue(forKey: id) }
+            }
+        }
     }
 
     /// Mixed-card hint — shown only when the engine actually skipped wrong-mode files on a
@@ -14461,14 +14785,14 @@ extension ContentView {
                     .rotationEffect(.degrees(-90)).animation(.easeInOut(duration: 0.2), value: v3AggregatePct)
                 v3RingCenter
             }
-            .frame(width: 320, height: 320)
+            .frame(width: v3RingWidth - 40, height: v3RingWidth - 40)
             .anchorPreference(key: V3AnchorKey.self, value: .bounds) { ["ring": $0] }
             // Live combined-speed sparkline — mounts only during an active copy (needs ≥2 samples),
             // so idle / all-done ring states are untouched. No TimelineView: the Canvas redraws on
             // the existing per-second speedHistory update, not a continuous animation loop.
             if runningCount > 0 && speedHistory.count >= 2 {
                 SparklineView(samples: speedHistory, currentMBps: v3CombinedMBps, color: v3Cyan)
-                    .frame(width: 200, height: 40)
+                    .frame(width: v3RingWidth * 0.56, height: 40)
                     .transition(.opacity)
             }
             // The ONE auto-ingest toggle (used to also live in the top bar + footer). The redundant
@@ -14526,7 +14850,7 @@ extension ContentView {
                 Text("card\(awaitingCards.count == 1 ? "" : "s") waiting to route")
                     .font(.system(size: 15, weight: .medium)).foregroundStyle(.white)
                 Text("Drag each to a destination to start").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-            }.frame(width: 220)
+            }.frame(width: v3RingWidth * 0.61)
         } else if v3AllDone {
             VStack(spacing: 8) {
                 Image(systemName: "checkmark.circle").font(.system(size: 34)).foregroundStyle(v3Green)
@@ -14561,7 +14885,7 @@ extension ContentView {
                 if !v3Summary.isEmpty {
                     Text(v3Summary).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
                 }
-            }.frame(width: 220)
+            }.frame(width: v3RingWidth * 0.61)
         }
     }
     private var v3Summary: String {

@@ -5,6 +5,49 @@ import Foundation
 
 /// Physical-drive speed tier used by the parallel-ingest scheduler.
 /// Probed once per `dev_t` via `diskutil info` and cached in ContentView.
+/// Honest verification tier — reflects what ACTUALLY ran for a given transfer.
+/// Determined by a single pure function (determineVerificationTier) so the badge
+/// never lies about what was checked.
+nonisolated enum VerificationTier: Equatable, Codable {
+    case sizeChecked                // no verify — only file-size match
+    case spotVerified(count: Int)   // --verify spot-check on N files (MD5)
+    case fullyVerified              // --full-verify inline SHA-256 on every file
+    case sealed                     // --full-verify + MHL sidecar written
+
+    var displayText: String {
+        switch self {
+        case .sizeChecked:           return "SIZE CHECKED"
+        case .spotVerified(let n):   return "SPOT VERIFIED (\(n))"
+        case .fullyVerified:         return "VERIFIED"
+        case .sealed:                return "SEALED"
+        }
+    }
+
+    /// Raw string for persistence (associated values need manual coding).
+    var rawForStorage: String {
+        switch self {
+        case .sizeChecked:           return "sizeChecked"
+        case .spotVerified(let n):   return "spotVerified:\(n)"
+        case .fullyVerified:         return "fullyVerified"
+        case .sealed:                return "sealed"
+        }
+    }
+
+    /// Decode from storage string. Unknown → .sizeChecked (safe default for old entries).
+    static func fromStorage(_ raw: String) -> VerificationTier {
+        if raw == "sizeChecked"   { return .sizeChecked }
+        if raw == "fullyVerified" { return .fullyVerified }
+        if raw == "sealed"        { return .sealed }
+        if raw.hasPrefix("spotVerified:"),
+           let n = Int(raw.dropFirst("spotVerified:".count)) {
+            return .spotVerified(count: n)
+        }
+        return .sizeChecked
+    }
+}
+
+/// Physical-drive speed tier used by the parallel-ingest scheduler.
+/// Probed once per `dev_t` via `diskutil info` and cached in ContentView.
 nonisolated enum DriveTier {
     case fast    // NVMe, PCIe, Apple Fabric — parallel writes are fine
     case medium  // USB 3.x SSD — parallel writes are fine
@@ -125,6 +168,7 @@ nonisolated struct IngestArgsConfig {
     var dayStartHour: Int
     var finderTagEnabled: Bool
     var finderTagColor: String
+    var mhlEnabled: Bool = false
 }
 
 /// One distinct capture-date found on a card during pre-ingest scanning.
@@ -264,13 +308,18 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
     /// Actual bytes transferred (from totalBytesNew). 0 = not available, fall back
     /// to the avgMBps × durationSec approximation for display purposes.
     let totalBytesTransferred: Int64
+    /// Persisted verification tier. Old entries decode to "sizeChecked".
+    let verificationTierRaw: String
 
     var totalSkipped: Int { skipManifest + skipDestExists + skipTodayFilter + skipWrongMode }
+
+    var verificationTier: VerificationTier { VerificationTier.fromStorage(verificationTierRaw) }
 
     init(cardName: String, status: String, newFiles: Int, skippedFiles: Int,
          avgMBps: Int, durationSec: Int, destPath: String,
          mediaLabel: String = "clips",
          totalBytesTransferred: Int64 = 0,
+         verificationTierRaw: String = "sizeChecked",
          skipManifest: Int = 0, skipDestExists: Int = 0,
          skipTodayFilter: Int = 0, skipWrongMode: Int = 0,
          skipProxy: Int = 0, skipMissing: Int = 0) {
@@ -285,6 +334,7 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
         self.timestamp             = Date()
         self.mediaLabel            = mediaLabel
         self.totalBytesTransferred = totalBytesTransferred
+        self.verificationTierRaw   = verificationTierRaw
         self.skipManifest          = skipManifest
         self.skipDestExists        = skipDestExists
         self.skipTodayFilter       = skipTodayFilter
@@ -307,6 +357,7 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
         timestamp    = try c.decode(Date.self,   forKey: .timestamp)
         mediaLabel             = try c.decodeIfPresent(String.self,  forKey: .mediaLabel)             ?? "clips"
         totalBytesTransferred  = try c.decodeIfPresent(Int64.self,   forKey: .totalBytesTransferred)  ?? 0
+        verificationTierRaw    = try c.decodeIfPresent(String.self,  forKey: .verificationTierRaw)    ?? "sizeChecked"
         skipManifest           = try c.decodeIfPresent(Int.self,     forKey: .skipManifest)           ?? 0
         skipDestExists         = try c.decodeIfPresent(Int.self,     forKey: .skipDestExists)         ?? 0
         skipTodayFilter        = try c.decodeIfPresent(Int.self,     forKey: .skipTodayFilter)        ?? 0
@@ -439,7 +490,17 @@ nonisolated struct ActiveIngest {
 
     // Failure tracking
     var hasCopyError: Bool = false
+    var ejectFailed: Bool = false   // eject failed or was skipped post-copy — does NOT trip hasCopyError
     var friendlyName: String = ""   // card label / shooter name, stored so termination handler can access it
+
+    // Verification tier — honest badge reflecting what actually ran
+    var verificationTier: VerificationTier = .sizeChecked
+    // SHA-256 hashes accumulated from VERIFY_OK lines (filename → full hex hash)
+    var verifyHashes: [String: String] = [:]
+    var mhlWritten: Bool = false
+    var mhlEnabled: Bool = false        // snapshot of toggle at launch
+    var fullVerifyEnabled: Bool = false  // snapshot of toggle at launch
+    var secondaryPaths: [String] = []   // mirror destinations for MHL copy
 
     // Collision renames — populated when cardcopy auto-renames a file to avoid overwriting a
     // distinct clip that shares the same basename (GoPro/Canon chaptered DCIM, dual-slot Sony, etc.)
@@ -452,6 +513,15 @@ nonisolated struct ActiveIngest {
     // Physical-volume device id (st_dev) of this ingest's destination — used by the
     // destination-aware scheduler to keep two cards off the same drive at once. 0 = unknown.
     var destDeviceID: dev_t = 0
+
+    // Correction manifest support — lets a post-copy label rename move exactly the files
+    // this run copied instead of the whole {date}/{label} folder. See CorrectionLogic.swift.
+    var runID: String? = nil          // parsed from "RUN_ID <id>" — keys the on-disk JSON manifest
+    var copiedFiles: [String] = []    // filenames seen via PROGRESS_FILE, unconditional (not gated
+                                       // on --verify). Tertiary correction fallback — consumed by
+                                       // CorrectionLogic.performCopiedFilesCorrection when NEITHER
+                                       // the on-disk manifest NOR the Finder-tag boundary is usable.
+                                       // See applyPendingFolderRename in ContentView.swift.
 }
 
 /// The authoritative result of a finished ingest. This is the single most important
