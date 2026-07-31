@@ -2045,6 +2045,11 @@ PYEOF
   group_dir="$(mktemp -d /tmp/cardrunner_groups.XXXXXX)"
 
   local last_dest=""
+  # Distinct destination CLIP folders this run writes to (Proxies/ subfolders
+  # collapse into their parent). Size 1 = a single-day / single-folder offload →
+  # F should open THAT folder (the .mp4s). Size >1 = multi-day → open the parent
+  # that holds every date folder. Consumed at OPEN_TARGET below.
+  local -A _clip_roots=()
   while IFS= read -r rel; do
     [[ -z "$rel" ]] && continue
     local src_file="$src/$rel"
@@ -2071,6 +2076,8 @@ PYEOF
     printf '%s\0' "$rel"      >> "${group_dir}/${key}.rels"
     printf '%s'   "$dest_dir" >  "${group_dir}/${key}.dest"
     last_dest="$dest_dir"
+    # Record the clip root (a Proxies/ group belongs to its parent date folder).
+    _clip_roots["${dest_dir%/Proxies}"]=1
   done < "$new_list"
 
   # ── Load manifest once for all groups (avoids re-reading per group) ─────
@@ -2118,6 +2125,12 @@ PYEOF
     # FOLDERSYNC_START emitted AFTER DEST_VANISHED check so FolderSync only
     # sees it when the destination is actually reachable and copying will proceed.
     [[ "$DRY_RUN" != "yes" ]] && log_line "FOLDERSYNC_START dest=$_grp_dest mode=$MODE"
+    # Also emit to STDOUT so the app knows the EXACT date folder being written RIGHT
+    # NOW — this makes F / Reveal open the active clips folder mid-transfer (the app's
+    # FOLDERSYNC_START handler sets destPath). Skip Proxies/ groups so the live target
+    # stays the real date folder, not its Proxies subfolder. OPEN_TARGET (at the end)
+    # then settles the final single-day-folder vs multi-day-parent decision.
+    [[ "$DRY_RUN" != "yes" && "$_grp_dest" != */Proxies ]] && echo "FOLDERSYNC_START dest=$_grp_dest mode=$MODE"
 
     mkdir -p "$_grp_dest"
 
@@ -2494,6 +2507,18 @@ PYEOF
   # ALL date subfolders — the right place to open in Finder and the right dest
   # for FolderSync and log analytics to reference.
   echo "PROGRESS_DEST $open_dest"
+
+  # OPEN_TARGET — the folder F / Reveal should open. PROGRESS_DEST (above) stays
+  # the project parent for FolderSync + log analytics; this is the operator-facing
+  # "take me to what I just offloaded" path. Single destination folder (a normal
+  # single-day shoot) → open THAT clips folder so F lands on the .mp4s directly.
+  # Multiple date folders in one run → open the parent that contains them all.
+  local _open_target="$open_dest"
+  if (( ${#_clip_roots[@]} == 1 )); then
+    local _only_root
+    for _only_root in "${(@k)_clip_roots}"; do _open_target="$_only_root"; done
+  fi
+  echo "OPEN_TARGET $_open_target"
 
   # Cleanup temp files
   rm -f "$list_all" "$new_list"

@@ -303,9 +303,17 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
             if !path.isEmpty { ingest.destPath = path }
         }
 
+    } else if line.hasPrefix("OPEN_TARGET ") {
+        // Authoritative F / Reveal target computed by the shell: the exact clips
+        // folder for a single-folder (single-day) offload, or the parent that holds
+        // every date folder for a multi-day run. Overwrites any earlier path so
+        // "open what I just offloaded" lands where the operator expects.
+        let p = line.replacingOccurrences(of: "OPEN_TARGET ", with: "")
+        if !p.isEmpty { ingest.destPath = p }
+
     } else if line.hasPrefix("PROGRESS_DEST ") {
-        // Fallback: clips-root path emitted at end. Only use when FOLDERSYNC_START never fired
-        // (e.g. 0-new-file runs). Don't overwrite the more specific FOLDERSYNC_START path.
+        // Fallback: clips-root path emitted at end. Only use when a more specific
+        // path (OPEN_TARGET / FOLDERSYNC_START) never set destPath (e.g. 0-new-file runs).
         let p = line.replacingOccurrences(of: "PROGRESS_DEST ", with: "")
         if ingest.destPath.isEmpty { ingest.destPath = p }
 
