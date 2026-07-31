@@ -1305,12 +1305,21 @@ verify_transfer() {
       files+=("$rel")
     done < "$list"
   else
-    # Spot-check mode: sample up to 10 random files
+    # Spot-check mode: sample a size-scaled random subset.
+    # Target = max(20, ceil(10% of total candidates)), capped at 200 so huge
+    # cards don't spend forever checksumming.  On a 2000-file card this lifts
+    # coverage from <1% (fixed 10) to 10%.
+    local _total_candidates _sample_target
+    _total_candidates=$(awk 'NF>0' "$list" 2>/dev/null | wc -l | tr -d ' ')
+    (( _sample_target = (_total_candidates + 9) / 10 ))   # ceil(10%)
+    (( _sample_target < 20 ))  && _sample_target=20
+    (( _sample_target > 200 )) && _sample_target=200
     while IFS= read -r rel; do
       [[ -z "${rel//[[:space:]]/}" ]] && continue
       files+=("$rel")
-      (( ${#files[@]} >= 10 )) && break
+      (( ${#files[@]} >= _sample_target )) && break
     done < <(sort -R "$list" 2>/dev/null || cat "$list")
+    log_line "spot-check: verifying ${#files[@]} of ${_total_candidates} files"
   fi
 
   local total=${#files[@]}
@@ -1869,7 +1878,20 @@ PYEOF
       dest_file="${dest_dir}/${base_name}"
     fi
 
-    if [[ ! -f "$dest_file" ]]; then
+    # Dest-exists skip must compare SIZE, not just existence.  A truncated or
+    # partial file already sitting at the destination (e.g. from an interrupted
+    # earlier copy) would otherwise be masked forever.  Only treat the dest as a
+    # valid duplicate when it exists AND its size matches the source; a size
+    # mismatch means re-copy so the good source overwrites the bad dest.
+    local _dest_dup=no
+    if [[ -f "$dest_file" ]]; then
+      local _src_sz="${_file_size[$rel]:-}" _dst_sz
+      [[ -z "$_src_sz" || "$_src_sz" == "0" ]] && _src_sz=$(stat -f %z "$src_file" 2>/dev/null || echo 0)
+      _dst_sz=$(stat -f %z "$dest_file" 2>/dev/null || echo -1)
+      [[ "$_dst_sz" == "$_src_sz" ]] && _dest_dup=yes
+    fi
+
+    if [[ "$_dest_dup" != "yes" ]]; then
       # In-memory manifest lookup — replaces per-file grep + 2×stat.
       local _sz="${_file_size[$rel]:-0}" _mt="${_file_mtime[$rel]:-0}"
       # Subscript MUST be quoted — an unquoted '|'-containing key never matches
@@ -2422,13 +2444,42 @@ PYEOF
   # Capture output so we can detect VERIFY_FAIL and fold it into status_field —
   # previously verify_transfer printed to stdout but its result was never checked,
   # meaning a corrupted card still logged Status=OK.
-  local _verify_failed=0
-  if [[ "$VERIFY" == "yes" && "$DRY_RUN" != "yes" ]]; then
+  # _verify_effective is set only when a verification pass actually checksummed
+  # at least one file and it passed (verify_transfer emits VERIFY_PASS only when
+  # checked>0 && failed==0).  A VERIFY_SKIP (every sample skipped/not-found) or
+  # verify being disabled entirely leaves it 0 — so a zero-integrity copy can
+  # never satisfy the auto-eject gate below.
+  local _verify_failed=0 _verify_effective=0
+  # Decide whether to run a verification pass.  Normally driven by the VERIFY
+  # setting — but auto-eject FORCES at least a spot-check even when the operator
+  # turned verification off.  Ejecting a card invites the operator to reformat
+  # it, so the app must never bless (eject) a card it never checked.  "Auto-eject
+  # on" therefore IMPLIES "verify at least a sample"; those two settings being
+  # independent is the real bug this closes.  Coverage scales with card size, so
+  # a forced spot-check on a normal card costs seconds (see verify_transfer).
+  local _run_verify=no _forced_spotcheck=no
+  if [[ "$VERIFY" == "yes" ]]; then
+    _run_verify=yes
+  elif [[ "$AUTO_EJECT" == "yes" ]]; then
+    _run_verify=yes
+    _forced_spotcheck=yes
+  fi
+  if [[ "$_run_verify" == "yes" && "$DRY_RUN" != "yes" ]]; then
     echo "PHASE verifying"
     local _verify_out
-    _verify_out="$(verify_transfer "$src" "$new_list")"
+    if [[ "$_forced_spotcheck" == "yes" ]]; then
+      log_line "VERIFY FORCED: auto-eject is on with verification off — running a spot-check before eject"
+      # Force spot-check mode regardless of any stale FULL_VERIFY state.
+      local _saved_full_verify="$FULL_VERIFY"
+      FULL_VERIFY=no
+      _verify_out="$(verify_transfer "$src" "$new_list")"
+      FULL_VERIFY="$_saved_full_verify"
+    else
+      _verify_out="$(verify_transfer "$src" "$new_list")"
+    fi
     echo "$_verify_out"   # re-emit for Swift UI parsing
     echo "$_verify_out" | grep -q "^VERIFY_FAIL" && _verify_failed=1
+    echo "$_verify_out" | grep -q "^VERIFY_PASS" && _verify_effective=1
   fi
   # Generate transfer report before temp files are cleaned up (skipped for dry runs)
   if [[ "$TRANSFER_REPORT" == "yes" && "$DRY_RUN" != "yes" && "$new_count" -gt 0 ]]; then
@@ -2452,7 +2503,8 @@ PYEOF
   # reformat the card before realising the only copy is corrupt — the exact
   # catastrophe the verify feature exists to prevent (E3).
   if [[ "$DRY_RUN" != "yes" && "$AUTO_EJECT" == "yes" \
-        && _failed_groups -eq 0 && ${_verify_failed:-0} -eq 0 && ${_failed_secondaries:-0} -eq 0 ]]; then
+        && _failed_groups -eq 0 && ${_verify_failed:-0} -eq 0 && ${_failed_secondaries:-0} -eq 0 \
+        && ${_verify_effective:-0} -eq 1 ]]; then
     # Retry up to 3 times with a 4-second pause between attempts.
     # Spotlight and Finder often hold a handle on newly-written files for a
     # few seconds after transfer completes — a brief wait clears the lock.
@@ -2476,6 +2528,14 @@ PYEOF
           && ( _failed_groups -gt 0 || ${_verify_failed:-0} -ne 0 || ${_failed_secondaries:-0} -ne 0 ) ]]; then
     log_line "EJECT SKIPPED: copy/verify/mirror failure — card kept mounted for retry (failed_groups=$_failed_groups verify_failed=${_verify_failed:-0} mirror_failed=${_failed_secondaries:-0})"
     echo "EJECT_SKIPPED reason=verify_or_copy_failure"
+  elif [[ "$DRY_RUN" != "yes" && "$AUTO_EJECT" == "yes" && ${_verify_effective:-0} -ne 1 ]]; then
+    # Safety net: auto-eject forces a spot-check (above), so verification always
+    # runs here — this branch only fires if that pass could verify NOTHING (every
+    # sampled file skipped/not-found so checked==0, i.e. VERIFY_SKIP).  Refuse to
+    # eject a card whose copy integrity was never actually confirmed — ejecting
+    # would let the operator reformat before discovering nothing was verified.
+    log_line "EJECT SKIPPED: verification could not confirm any files (verify_effective=0) — card kept mounted; copy integrity unconfirmed"
+    echo "EJECT_SKIPPED reason=no_verification"
   fi
 
   local NOW_HUMAN log_dest transfer_id status_field

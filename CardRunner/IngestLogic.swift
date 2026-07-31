@@ -391,6 +391,108 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
     }
 }
 
+// MARK: - Pure protocol-line parsers (UI-layer, side-effect-free)
+//
+// These extract the small typed facts out of the safety-critical cardcopy protocol lines
+// so the parsing can be unit-tested in isolation. The View's handleProgressLineUI calls
+// these, then applies its side effects (appendLog / statusText / AudioEngine / alerts).
+// MUST stay in sync with the protocol emitted by CardRunner.sh / cardcopy.
+
+/// KB → GB with ceiling rounding: `ceil(kb / 1048576)`. Matches the historic
+/// `(kb + 1048575) / 1048576` integer math exactly (1 KiB..1 GiB → 1, etc.).
+func crCeilKBToGB(_ kb: Int) -> Int {
+    if kb <= 0 { return 0 }
+    return (kb + 1048575) / 1048576
+}
+
+/// Parse `DEST_INSUFFICIENT ... need_kb=<n> free_kb=<n>` into GB figures.
+/// Preserves the original flooring behavior: a missing `need_kb` yields 0 (not 1);
+/// a present `need_kb` is floored at 1 GB; `free_kb` is floored at 0.
+func parseDestInsufficient(_ line: String) -> (needGB: Int, freeGB: Int)? {
+    guard line.hasPrefix("DEST_INSUFFICIENT") else { return nil }
+    var needGB = 0
+    var freeGB = 0
+    if let r = line.range(of: "need_kb=") {
+        needGB = max(1, crCeilKBToGB(crExtractInt(from: line, after: r)))
+    }
+    if let r = line.range(of: "free_kb=") {
+        freeGB = max(0, crCeilKBToGB(crExtractInt(from: line, after: r)))
+    }
+    return (needGB, freeGB)
+}
+
+/// Result of parsing a `VERIFY_FAIL` line — either a named failed file or a failure count.
+enum VerifyFailInfo: Equatable {
+    case named(String)   // filename from `file=<name>` or the bare fallback token
+    case count(Int)      // aggregate `failed=<n>` mismatch count
+}
+
+/// Parse a `VERIFY_FAIL` line. Three shapes, in priority order:
+///  1. `... file=<name> ...`     → .named(name)   (name = token after file=, up to a space)
+///  2. `... failed=<n> ...`      → .count(n)
+///  3. `VERIFY_FAIL <name> ...`  → .named(name)   (first token after the prefix)
+func parseVerifyFail(_ line: String) -> VerifyFailInfo? {
+    guard line.hasPrefix("VERIFY_FAIL") else { return nil }
+    if line.contains("file=") {
+        let failName = line.components(separatedBy: "file=").last?
+            .components(separatedBy: " ").first ?? "unknown"
+        return .named(failName)
+    } else if let r = line.range(of: "failed=") {
+        return .count(crExtractInt(from: line, after: r))
+    } else {
+        let failName = String(line.dropFirst("VERIFY_FAIL ".count)
+            .components(separatedBy: " ").first ?? "unknown")
+        return .named(failName)
+    }
+}
+
+/// Parse `COLLISION_RENAMED <original> <renamed>` into its two filenames.
+/// Returns nil when fewer than two space-separated fields are present.
+func parseCollisionRenamed(_ line: String) -> (original: String, renamed: String)? {
+    guard line.hasPrefix("COLLISION_RENAMED ") else { return nil }
+    let parts = line.dropFirst("COLLISION_RENAMED ".count).components(separatedBy: " ")
+    guard parts.count >= 2 else { return nil }
+    return (parts[0], parts[1])
+}
+
+/// Parse `VERIFY_OK [id=<n>] <name> [<hash> ...]`. Strips an optional leading `id=` token,
+/// returns the filename, the first 8 chars of the hash (empty when absent), and the raw id.
+func parseVerifyOK(_ line: String) -> (name: String, hash: String, id: String?)? {
+    guard line.hasPrefix("VERIFY_OK ") else { return nil }
+    var vParts = line.dropFirst("VERIFY_OK ".count).components(separatedBy: " ")
+    var id: String? = nil
+    if let first = vParts.first, first.hasPrefix("id=") {
+        id = String(first.dropFirst("id=".count))
+        vParts.removeFirst()
+    }
+    let name = vParts.first ?? "file"
+    let hash = vParts.count > 1 ? String(vParts[1].prefix(8)) : ""
+    return (name, hash, id)
+}
+
+/// Classification of a `SECONDARY_ERROR` line by its `reason=` field.
+enum SecondaryErrorKind: Equatable {
+    case copyFailed(exit: String)   // reason=copy_failed — exit token (trimmed) or leftover
+    case notMounted                 // reason=not_mounted
+    case generic                    // any other/absent reason
+}
+
+/// Classify a `SECONDARY_ERROR` line. For copy_failed, the exit value is everything after
+/// `exit=` (trimmed); when no `exit=` is present this is the whole line (matching the
+/// original `components(separatedBy:).last ?? "?"` behavior, which never yields "?").
+func classifySecondaryError(_ line: String) -> SecondaryErrorKind? {
+    guard line.hasPrefix("SECONDARY_ERROR") else { return nil }
+    if line.contains("reason=copy_failed") {
+        let exitCode = (line.components(separatedBy: "exit=").last ?? "?")
+            .trimmingCharacters(in: .whitespaces)
+        return .copyFailed(exit: exitCode)
+    } else if line.contains("reason=not_mounted") {
+        return .notMounted
+    } else {
+        return .generic
+    }
+}
+
 /// Decide whether a card whose destination lives on `candidateDestDevice` may START NOW
 /// (true) or must QUEUE (false). The scheduler is DESTINATION-AWARE: it parallelizes across
 /// separate physical drives and — when the drive tier is `.fast` or `.medium` (any SSD) —

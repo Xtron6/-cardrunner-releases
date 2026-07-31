@@ -180,6 +180,10 @@ private extension Bundle {
 struct CardRunnerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    /// Shared live-status singleton the menu-bar item reads. ContentView publishes
+    /// into it (see MenuBarStatus.swift → MERGE HOOK). Reads idle until then.
+    @State private var ingestStatus = IngestStatusCenter.shared
+
     var body: some Scene {
         WindowGroup {
             // CR_V3_DEMO=1  → pure-sim node dashboard (CardRunnerV3View) for previewing the design.
@@ -200,6 +204,29 @@ struct CardRunnerApp: App {
                 updaterController: appDelegate.updaterController,
                 showDebugMenu: ProcessInfo.processInfo.environment["CR_V3_PREVIEW"] == "1",
                 isLegacyUI: ProcessInfo.processInfo.environment["CR_LEGACY_UI"] == "1")
+        }
+
+        // ── Menu-bar status item ─────────────────────────────────────────────
+        // Glanceable offload status while the main window is buried. Shows a
+        // compact "▶ n · ✓ m" title when busy (icon only when idle) and a
+        // dropdown of active cards with %, MB/s and ETA + Show Main Window.
+        MenuBarExtra {
+            MenuBarStatusView(status: ingestStatus, showWindow: Self.bringMainWindowForward)
+        } label: {
+            MenuBarStatusLabel(status: ingestStatus)
+        }
+        .menuBarExtraStyle(.window)
+    }
+
+    /// Un-hide + activate the app and raise the primary content window.
+    private static func bringMainWindowForward() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        // Prefer a real content window (skip the menu-bar extra's own panel).
+        if let win = NSApp.windows.first(where: { $0.canBecomeMain && $0.contentView != nil }) {
+            win.makeKeyAndOrderFront(nil)
+        } else {
+            NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }
     }
 }

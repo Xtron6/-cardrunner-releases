@@ -7458,6 +7458,7 @@ struct ContentView: View {
                 }
                 self.activeProcesses.removeValue(forKey: processID)
                 self.runningCount = max(0, self.runningCount - 1)
+                self.publishMenuBarStatus()
                 // Release the App-Nap suppression token for this ingest.
                 if let act = self.ingestActivities.removeValue(forKey: processID) {
                     ProcessInfo.processInfo.endActivity(act)
@@ -8217,6 +8218,17 @@ struct ContentView: View {
         }
 
         activeIngests[processID] = ingest
+        publishMenuBarStatus()
+    }
+
+    /// Push a live snapshot of ingest state to the menu-bar status item (MenuBarStatus.swift).
+    /// Called from the progress chokepoint and completion paths so the menu bar reflects
+    /// active cards, running count, and session-done without observing ContentView's @State
+    /// directly. `publish` marshals to the main actor itself, so this is safe from anywhere.
+    private func publishMenuBarStatus() {
+        IngestStatusCenter.shared.publish(active: activeIngests,
+                                          runningCount: runningCount,
+                                          sessionDone: sessionCardCount)
     }
 
     /// UI-only reactions to a progress line — sounds, status text, alerts, logging.
@@ -8242,20 +8254,15 @@ struct ContentView: View {
 
         } else if line.hasPrefix("VERIFY_FAIL") {
             AudioEngine.shared.verifyFailed()
-            if line.contains("file=") {
-                let failName = line.components(separatedBy: "file=").last?
-                    .components(separatedBy: " ").first ?? "unknown"
+            switch parseVerifyFail(line) {
+            case .named(let failName):
                 appendLog("❌ CHECKSUM MISMATCH: \(failName) — destination file may be corrupt\n")
                 DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(failName)" }
-            } else if let r = line.range(of: "failed=") {
-                let n = extractInt(from: line, after: r)
+            case .count(let n):
                 appendLog("⚠️ Verify FAILED — \(n) file(s) had checksum mismatches\n")
                 DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(n) file(s)" }
-            } else {
-                let failName = String(line.dropFirst("VERIFY_FAIL ".count)
-                    .components(separatedBy: " ").first ?? "unknown")
-                appendLog("❌ CHECKSUM MISMATCH: \(failName) — destination file may be corrupt\n")
-                DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(failName)" }
+            case .none:
+                break
             }
 
         } else if line.hasPrefix("EJECT_FAILED") {
@@ -8280,16 +8287,7 @@ struct ContentView: View {
 
         } else if line.hasPrefix("DEST_INSUFFICIENT") {
             // Pre-flight space check failed — surface a friendly message (E1).
-            var needGB = 0
-            var freeGB = 0
-            if let r = line.range(of: "need_kb=") {
-                let kb = extractInt(from: line, after: r)
-                needGB = max(1, (kb + 1048575) / 1048576)
-            }
-            if let r = line.range(of: "free_kb=") {
-                let kb = extractInt(from: line, after: r)
-                freeGB = max(0, (kb + 1048575) / 1048576)
-            }
+            let (needGB, freeGB) = parseDestInsufficient(line) ?? (0, 0)
             let driveName: String = {
                 guard !ingest.destPath.isEmpty else { return "destination" }
                 let comps = URL(fileURLWithPath: ingest.destPath).pathComponents
@@ -8304,28 +8302,23 @@ struct ContentView: View {
             }
 
         } else if line.hasPrefix("COLLISION_RENAMED ") {
-            let parts = line.dropFirst("COLLISION_RENAMED ".count).components(separatedBy: " ")
-            if parts.count >= 2 {
-                appendLog("⚠️ Duplicate filename: \(parts[0]) → saved as \(parts[1])\n")
+            if let (original, renamed) = parseCollisionRenamed(line) {
+                appendLog("⚠️ Duplicate filename: \(original) → saved as \(renamed)\n")
             }
 
         } else if line.hasPrefix("VERIFY_OK ") {
-            let parts = line.dropFirst("VERIFY_OK ".count).components(separatedBy: " ")
-            // Strip optional "id=N" prefix for tagged mode
-            var vParts = parts
-            if let first = vParts.first, first.hasPrefix("id=") { vParts.removeFirst() }
-            let verifyName = vParts.first ?? "file"
-            let verifyHash = vParts.count > 1 ? String(vParts[1].prefix(8)) : ""
-            appendLog("\u{2713} Verified \(verifyName) [\(verifyHash)...]\n")
+            if let v = parseVerifyOK(line) {
+                appendLog("\u{2713} Verified \(v.name) [\(v.hash)...]\n")
+            }
 
         } else if line.hasPrefix("SECONDARY_ERROR") {
             let secondaryMsg: String
-            if line.contains("reason=copy_failed") {
-                let exitCode = line.components(separatedBy: "exit=").last ?? "?"
-                secondaryMsg = "⚠️ Secondary copy failed (exit \(exitCode.trimmingCharacters(in: .whitespaces))) — primary copy is intact"
-            } else if line.contains("reason=not_mounted") {
+            switch classifySecondaryError(line) {
+            case .copyFailed(let exitCode):
+                secondaryMsg = "⚠️ Secondary copy failed (exit \(exitCode)) — primary copy is intact"
+            case .notMounted:
                 secondaryMsg = "⚠️ Secondary drive not mounted — secondary copy skipped"
-            } else {
+            case .generic, .none:
                 secondaryMsg = "⚠️ Secondary copy error — primary copy is intact"
             }
             appendLog("\(secondaryMsg)\n")
@@ -13559,7 +13552,7 @@ extension ContentView {
             v3SettingDivider()
             v3ToggleRow("Write MHL sidecar", "Generate an ASC MHL manifest per card (enables full verify). Industry-standard chain-of-custody proof.", $mhlEnabled)
             v3SettingDivider()
-            v3ToggleRow("Auto-eject after ingest", "Safely eject the card once every byte is confirmed.", $autoEject)
+            v3ToggleRow("Auto-eject after ingest", "Ejects the card once the copy is confirmed. Always runs at least a quick checksum sample before ejecting — even if verification is off — so a card is never ejected unchecked.", $autoEject)
             v3SettingDivider()
             v3ToggleRow("Transfer report (CSV)", "Write a per-ingest CSV to TransferReports/ on the destination.", $transferReportEnabled)
         }

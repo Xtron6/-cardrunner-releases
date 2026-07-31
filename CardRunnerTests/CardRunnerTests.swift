@@ -719,8 +719,10 @@ struct CardRunnerTests {
         )
         let xml = MHLWriter.generateXML(entries: [entry])
         #expect(xml.contains("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
-        #expect(xml.contains("<hashlist version=\"2.0\">"))
-        #expect(xml.contains("<path>clips/260729/A001.mxf</path>"))
+        // Conformant ASC MHL v1.1 — version string matches the v1.1 body (<file>, not <path>).
+        #expect(xml.contains("<hashlist version=\"1.1\">"))
+        #expect(!xml.contains("version=\"2.0\""))
+        #expect(xml.contains("<file>clips/260729/A001.mxf</file>"))
         #expect(xml.contains("<sha256>a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2</sha256>"))
         #expect(xml.contains("<size>1073741824</size>"))
         #expect(xml.contains("<creatorinfo>"))
@@ -742,7 +744,7 @@ struct CardRunnerTests {
 
     @Test func mhlWriterEmptyEntriesGeneratesValidXML() {
         let xml = MHLWriter.generateXML(entries: [])
-        #expect(xml.contains("<hashlist version=\"2.0\">"))
+        #expect(xml.contains("<hashlist version=\"1.1\">"))
         #expect(xml.contains("</hashlist>"))
         #expect(!xml.contains("<hash>"))
     }
@@ -1219,5 +1221,229 @@ struct CardRunnerTests {
         #expect(result.effectiveLabel == "OldLabel")
         // Refusing must never touch the file.
         #expect(fm.fileExists(atPath: "\(oldDir)/f1.mov"))
+    }
+
+    // MARK: - Protocol-line parser extraction (handleProgressLineUI hardening)
+
+    // --- crCeilKBToGB / parseDestInsufficient (KB → GB ceiling boundaries) ---
+
+    @Test func ceilKBToGBBoundaries() {
+        #expect(crCeilKBToGB(0) == 0)
+        #expect(crCeilKBToGB(1) == 1)                 // 1 byte-worth over zero → 1 GB
+        #expect(crCeilKBToGB(1048576) == 1)           // exactly 1 GiB → 1
+        #expect(crCeilKBToGB(1048577) == 2)           // 1 KiB over 1 GiB → 2
+        #expect(crCeilKBToGB(2097152) == 2)           // exactly 2 GiB → 2
+        #expect(crCeilKBToGB(-5) == 0)                // garbage/negative → 0
+    }
+
+    @Test func destInsufficientParsesNeedAndFree() {
+        let r = parseDestInsufficient("DEST_INSUFFICIENT need_kb=2097153 free_kb=1048576")
+        #expect(r?.needGB == 3)   // ceil(2097153) = 3
+        #expect(r?.freeGB == 1)   // exactly 1 GiB
+    }
+
+    @Test func destInsufficientFloorsNeedAtOneButFreeAtZero() {
+        // need_kb present but tiny → floored to 1; free_kb=0 → 0.
+        let r = parseDestInsufficient("DEST_INSUFFICIENT need_kb=1 free_kb=0")
+        #expect(r?.needGB == 1)
+        #expect(r?.freeGB == 0)
+    }
+
+    @Test func destInsufficientMissingNeedStaysZero() {
+        // Missing need_kb keeps needGB at 0 (NOT floored to 1) — preserves original behavior.
+        let r = parseDestInsufficient("DEST_INSUFFICIENT free_kb=1048577")
+        #expect(r?.needGB == 0)
+        #expect(r?.freeGB == 2)
+    }
+
+    @Test func destInsufficientEmptyFields() {
+        let r = parseDestInsufficient("DEST_INSUFFICIENT")
+        #expect(r?.needGB == 0)
+        #expect(r?.freeGB == 0)
+    }
+
+    @Test func destInsufficientRejectsWrongPrefix() {
+        #expect(parseDestInsufficient("DEST_FREE gb=10") == nil)
+    }
+
+    // --- parseVerifyFail (three shapes + malformed) ---
+
+    @Test func verifyFailFileFormWins() {
+        #expect(parseVerifyFail("VERIFY_FAIL file=A001.mov extra") == .named("A001.mov"))
+    }
+
+    @Test func verifyFailFilePrecedesFailedCount() {
+        // Both present: file= takes priority (matches original branch order).
+        #expect(parseVerifyFail("VERIFY_FAIL failed=3 file=clip.mov") == .named("clip.mov"))
+    }
+
+    @Test func verifyFailCountForm() {
+        #expect(parseVerifyFail("VERIFY_FAIL failed=4") == .count(4))
+    }
+
+    @Test func verifyFailBareFallbackForm() {
+        #expect(parseVerifyFail("VERIFY_FAIL B002.mxf") == .named("B002.mxf"))
+    }
+
+    @Test func verifyFailBarePrefixOnly() {
+        // "VERIFY_FAIL " with nothing after → fallback drops prefix, first token is "".
+        #expect(parseVerifyFail("VERIFY_FAIL ") == .named(""))
+    }
+
+    @Test func verifyFailRejectsWrongPrefix() {
+        #expect(parseVerifyFail("VERIFY_PASS checked=3") == nil)
+    }
+
+    // --- parseCollisionRenamed (field splitting) ---
+
+    @Test func collisionRenamedTwoFields() {
+        let r = parseCollisionRenamed("COLLISION_RENAMED orig.mov orig_1.mov")
+        #expect(r?.original == "orig.mov")
+        #expect(r?.renamed == "orig_1.mov")
+    }
+
+    @Test func collisionRenamedExtraFieldsIgnored() {
+        let r = parseCollisionRenamed("COLLISION_RENAMED a.mov a_1.mov trailing junk")
+        #expect(r?.original == "a.mov")
+        #expect(r?.renamed == "a_1.mov")
+    }
+
+    @Test func collisionRenamedMissingSecondFieldReturnsNil() {
+        #expect(parseCollisionRenamed("COLLISION_RENAMED onlyone.mov") == nil)
+    }
+
+    @Test func collisionRenamedRejectsWrongPrefix() {
+        #expect(parseCollisionRenamed("COLLISION_SKIP a b") == nil)
+    }
+
+    // --- parseVerifyOK (id stripping + hash prefix) ---
+
+    @Test func verifyOKNameAndHashPrefix() {
+        let v = parseVerifyOK("VERIFY_OK clip.mov 0123456789abcdef")
+        #expect(v?.name == "clip.mov")
+        #expect(v?.hash == "01234567")   // first 8 chars
+        #expect(v?.id == nil)
+    }
+
+    @Test func verifyOKStripsIdPrefix() {
+        let v = parseVerifyOK("VERIFY_OK id=7 shot.mxf deadbeefcafe")
+        #expect(v?.id == "7")
+        #expect(v?.name == "shot.mxf")
+        #expect(v?.hash == "deadbeef")
+    }
+
+    @Test func verifyOKMissingHash() {
+        let v = parseVerifyOK("VERIFY_OK lonely.mov")
+        #expect(v?.name == "lonely.mov")
+        #expect(v?.hash == "")
+    }
+
+    @Test func verifyOKShortHashNotPadded() {
+        let v = parseVerifyOK("VERIFY_OK x.mov ab")
+        #expect(v?.hash == "ab")
+    }
+
+    @Test func verifyOKEmptyBodyDefaultsName() {
+        // "VERIFY_OK " with a trailing space splits to [""] → empty name (matches original).
+        let v = parseVerifyOK("VERIFY_OK ")
+        #expect(v?.name == "")
+        #expect(v?.hash == "")
+        // The "file" fallback only fires when the component list is truly empty.
+        let v2 = parseVerifyOK("VERIFY_OK")   // no trailing space → nil (prefix requires it)
+        #expect(v2 == nil)
+    }
+
+    @Test func verifyOKRejectsWrongPrefix() {
+        #expect(parseVerifyOK("VERIFY_PASS checked=1") == nil)
+    }
+
+    // --- classifySecondaryError (reason= classification) ---
+
+    @Test func secondaryErrorCopyFailedExtractsExit() {
+        #expect(classifySecondaryError("SECONDARY_ERROR reason=copy_failed exit=23")
+                == .copyFailed(exit: "23"))
+    }
+
+    @Test func secondaryErrorNotMounted() {
+        #expect(classifySecondaryError("SECONDARY_ERROR reason=not_mounted dest=/Volumes/B")
+                == .notMounted)
+    }
+
+    @Test func secondaryErrorGenericFallback() {
+        #expect(classifySecondaryError("SECONDARY_ERROR reason=weird") == .generic)
+    }
+
+    @Test func secondaryErrorCopyFailedMissingExitTakesWholeLine() {
+        // No exit= token: original math takes components.last (the whole line), trimmed.
+        let line = "SECONDARY_ERROR reason=copy_failed"
+        #expect(classifySecondaryError(line) == .copyFailed(exit: line))
+    }
+
+    @Test func secondaryErrorRejectsWrongPrefix() {
+        #expect(classifySecondaryError("SECONDARY_PROGRESS dest=/Volumes/B") == nil)
+    }
+
+    // MARK: - MHLWriter — ASC MHL v1.1 conformance (golden round-trip)
+
+    @Test func mhlWriterEmitsWellFormedConformantV11() throws {
+        let entries = [
+            MHLHashEntry(
+                relativePath: "A001_C001/clip & take <1>.mov",
+                sha256Hex: "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789",
+                fileSize: 123456789,
+                modificationDate: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            MHLHashEntry(
+                relativePath: "A001_C002/clip.mxf",
+                sha256Hex: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                fileSize: 42,
+                modificationDate: Date(timeIntervalSince1970: 1_700_000_500)
+            ),
+        ]
+
+        let xml = MHLWriter.generateXML(entries: entries, creatorInfo: "CardRunner", version: "1.9.0")
+
+        // Version string must match the v1.1 body structure — never a mislabeled v2.0.
+        #expect(xml.contains("<hashlist version=\"1.1\">"))
+        #expect(!xml.contains("version=\"2.0\""))
+
+        // Required v1.1 creatorinfo + per-file elements.
+        #expect(xml.contains("<creatorinfo>"))
+        #expect(xml.contains("<tool>CardRunner 1.9.0</tool>"))
+        #expect(xml.contains("<hostname>"))
+        #expect(xml.contains("<file>A001_C002/clip.mxf</file>"))
+        #expect(xml.contains("<size>123456789</size>"))
+        #expect(xml.contains("<lastmodificationdate>"))
+        #expect(xml.contains("<hashdate>"))
+        // Hash must be lowercased hex.
+        #expect(xml.contains("<sha256>abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789</sha256>"))
+
+        // Special characters must be XML-escaped in the path.
+        #expect(xml.contains("clip &amp; take &lt;1&gt;.mov"))
+        #expect(!xml.contains("clip & take <1>.mov"))
+
+        // Must parse back as well-formed XML with no error.
+        let data = try #require(xml.data(using: .utf8))
+        let parser = XMLParser(data: data)
+        let delegate = MHLParseChecker()
+        parser.delegate = delegate
+        let ok = parser.parse()
+        #expect(ok)
+        #expect(parser.parserError == nil)
+        // Confirm the tree carries both file entries and the root element.
+        #expect(delegate.elementCounts["hashlist"] == 1)
+        #expect(delegate.elementCounts["hash"] == 2)
+        #expect(delegate.elementCounts["file"] == 2)
+        #expect(delegate.elementCounts["sha256"] == 2)
+    }
+}
+
+/// Minimal XMLParser delegate that tallies element occurrences to prove well-formedness.
+private final class MHLParseChecker: NSObject, XMLParserDelegate {
+    var elementCounts: [String: Int] = [:]
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?,
+                attributes attributeDict: [String: String]) {
+        elementCounts[elementName, default: 0] += 1
     }
 }

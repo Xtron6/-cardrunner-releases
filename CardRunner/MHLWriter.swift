@@ -20,27 +20,46 @@ nonisolated enum MHLWriter {
          .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
-    /// Generate ASC MHL XML string from hash entries.
+    /// Generate an ASC MHL v1.1 XML string from hash entries.
+    ///
+    /// This emits the original ASC / Pomfort Media Hash List format (`version="1.1"`),
+    /// which is widely readable by YoYotta, Silverstack and ShotPut Pro. The body
+    /// structure intentionally matches the v1.1 schema exactly:
+    ///   - `<creatorinfo>` carries `<name>`, `<username>`, `<hostname>`, `<tool>`
+    ///     (name + version) and `<startdate>`/`<finishdate>`.
+    ///   - Each `<hash>` carries `<file>` (relative path), `<size>` (bytes),
+    ///     `<lastmodificationdate>`, `<sha256>` (lowercase hex) and `<hashdate>`.
+    ///
+    /// The version string ("1.1") deliberately matches the element structure below —
+    /// we do NOT emit v2.0-labelled markup with v1.x children.
     static func generateXML(entries: [MHLHashEntry], creatorInfo: String = "CardRunner",
                              version: String = "1.9.0") -> String {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         let now = iso.string(from: Date())
 
+        let userName = NSUserName()
+        let hostName = ProcessInfo.processInfo.hostName
+        let tool = "\(creatorInfo) \(version)"
+
         var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        xml += "<hashlist version=\"2.0\">\n"
+        xml += "<hashlist version=\"1.1\">\n"
         xml += "  <creatorinfo>\n"
         xml += "    <name>\(xmlEscape(creatorInfo))</name>\n"
-        xml += "    <version>\(xmlEscape(version))</version>\n"
-        xml += "    <creationdate>\(now)</creationdate>\n"
+        xml += "    <username>\(xmlEscape(userName))</username>\n"
+        xml += "    <hostname>\(xmlEscape(hostName))</hostname>\n"
+        xml += "    <tool>\(xmlEscape(tool))</tool>\n"
+        xml += "    <startdate>\(now)</startdate>\n"
+        xml += "    <finishdate>\(now)</finishdate>\n"
         xml += "  </creatorinfo>\n"
 
         for entry in entries {
             xml += "  <hash>\n"
-            xml += "    <path>\(xmlEscape(entry.relativePath))</path>\n"
+            xml += "    <file>\(xmlEscape(entry.relativePath))</file>\n"
             xml += "    <size>\(entry.fileSize)</size>\n"
-            xml += "    <creationdate>\(iso.string(from: entry.modificationDate))</creationdate>\n"
-            xml += "    <sha256>\(entry.sha256Hex)</sha256>\n"
+            xml += "    <lastmodificationdate>\(iso.string(from: entry.modificationDate))</lastmodificationdate>\n"
+            xml += "    <sha256>\(entry.sha256Hex.lowercased())</sha256>\n"
+            xml += "    <hashdate>\(now)</hashdate>\n"
             xml += "  </hash>\n"
         }
 
