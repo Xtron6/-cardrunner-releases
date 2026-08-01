@@ -1911,3 +1911,80 @@ struct BottleneckDescriptorTests {
         #expect(result == nil)
     }
 }
+
+@Suite("Remote alerts")
+struct RemoteAlertsTests {
+
+    @Test func remoteGateOffWhenDisabled() {
+        #expect(shouldSendRemoteAlert(enabled: false, idleSeconds: 99999, thresholdMinutes: 0) == false)
+        #expect(shouldSendRemoteAlert(enabled: false, idleSeconds: 0, thresholdMinutes: 5) == false)
+    }
+
+    @Test func remoteGateRespectsThreshold() {
+        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 90, thresholdMinutes: 2) == false)
+        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 130, thresholdMinutes: 2) == true)
+    }
+
+    @Test func remoteGateZeroThresholdAlwaysFires() {
+        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 5, thresholdMinutes: 0) == true)
+    }
+
+    @Test func remoteGateExactBoundary() {
+        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 120, thresholdMinutes: 2) == true)
+    }
+
+    @Test func remoteBodySuccessVerified() {
+        let body = remoteAlertBody(cardName: "A003", newFiles: 142, destRel: "Gallo 8TB/260801", verified: true, failed: false)
+        #expect(body.contains("✅"))
+        #expect(body.contains("A003"))
+        #expect(body.contains("142 files"))
+        #expect(body.contains("Gallo 8TB/260801"))
+        #expect(body.contains("verified"))
+    }
+
+    @Test func remoteBodySuccessUnverified() {
+        let body = remoteAlertBody(cardName: "A003", newFiles: 142, destRel: "Gallo 8TB/260801", verified: false, failed: false)
+        #expect(!body.contains("verified"))
+    }
+
+    @Test func remoteBodyFailure() {
+        let body = remoteAlertBody(cardName: "A003", newFiles: 0, destRel: "Gallo 8TB/260801", verified: false, failed: true)
+        #expect(body.contains("⚠️"))
+        #expect(body.contains("failed"))
+        #expect(body.contains("Do not format"))
+    }
+
+    @Test func remoteBodySingularFile() {
+        let body = remoteAlertBody(cardName: "A003", newFiles: 1, destRel: "Gallo 8TB/260801", verified: false, failed: false)
+        #expect(body.contains("1 file"))
+        #expect(!body.contains("1 files"))
+    }
+
+    // MARK: Composite delivery gate (AFK override + away gate + destination guard)
+
+    @Test func deliverNeverWithoutDestination() {
+        // AFK on, away on, long idle — but nothing configured → never send.
+        #expect(shouldDeliverRemoteAlert(afkMode: true, awayEnabled: true, idleSeconds: 9999,
+                                         thresholdMinutes: 2, hasDestination: false) == false)
+    }
+
+    @Test func deliverAFKBypassesIdle() {
+        // AFK guarantees a send even with zero idle and the away toggle OFF.
+        #expect(shouldDeliverRemoteAlert(afkMode: true, awayEnabled: false, idleSeconds: 0,
+                                         thresholdMinutes: 2, hasDestination: true) == true)
+    }
+
+    @Test func deliverFallsBackToAwayGate() {
+        // AFK off → behaves like the automatic idle gate.
+        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: true, idleSeconds: 30,
+                                         thresholdMinutes: 2, hasDestination: true) == false)
+        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: true, idleSeconds: 130,
+                                         thresholdMinutes: 2, hasDestination: true) == true)
+    }
+
+    @Test func deliverOffWhenNothingEnabled() {
+        // AFK off, away off → never, even when idle and configured.
+        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: false, idleSeconds: 9999,
+                                         thresholdMinutes: 2, hasDestination: true) == false)
+    }
+}
