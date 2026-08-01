@@ -2694,6 +2694,9 @@ PYEOF
   [[ -z "$_dest_link"  ]] && _dest_link="unknown";   _dest_link="${_dest_link//|/-}"
   [[ -z "$_dest_media" ]] && _dest_media="unknown";  _dest_media="${_dest_media//|/-}"
 
+  # Emit hardware link info to stdout so the Swift app can compute bottleneck descriptions.
+  echo "SPEED_HARDWARE src_link=${_src_link} dest_link=${_dest_link}"
+
   local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
   log_line "$NOW_HUMAN | ID=$transfer_id | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$status_field | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=$new_count | NewMB=$MB_NEW | DurationSec=$DUR | AvgMBps=$AVG | TodayOnly=$TODAY_ONLY | Dest=$log_dest | CopySec=$DUR | VerifySec=$_verify_secs | EjectSec=$_eject_secs_log | SourceProtocol=$_src_proto | SourceLink=$_src_link | DestProtocol=$_dest_proto | DestLink=$_dest_link | DestMedia=$_dest_media"
 

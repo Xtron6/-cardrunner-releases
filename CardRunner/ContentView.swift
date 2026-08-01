@@ -7637,7 +7637,29 @@ struct ContentView: View {
                 // Records peak + a robust sustained throughput (median of the non-ramp samples)
                 // so a slow run can be diagnosed from the log, not just the shell-side average.
                 let speedRunID = ingest.runID ?? processID.uuidString
-                self.persistLogLine("SPEED_DETAIL runID=\(speedRunID) peak=\(ingest.peakMBps) sustained=\(sustainedMBps(ingest.speedSamples)) avg=\(avgMBps) samples=\(ingest.speedSamples.count)")
+                let sustainedSpeed = sustainedMBps(ingest.speedSamples)
+                self.persistLogLine("SPEED_DETAIL runID=\(speedRunID) peak=\(ingest.peakMBps) sustained=\(sustainedSpeed) avg=\(avgMBps) samples=\(ingest.speedSamples.count)")
+
+                // Read hardware connection fields from the shell's Status= log line.
+                // The shell writes SourceProtocol / SourceLink / DestProtocol / DestLink / DestMedia
+                // to the log file (not stdout), and it writes that line before emitting PHASE done,
+                // so by process-exit time the entry is guaranteed to be on disk.
+                let hwFields: (srcProto: String, srcLink: String, dstProto: String, dstLink: String, dstMedia: String) = {
+                    let dayDf = DateFormatter(); dayDf.dateFormat = "yyyyMMdd"
+                    let logPath = FileManager.default.homeDirectoryForCurrentUser
+                        .appendingPathComponent("Library/Logs/CardRunner/cardrunner_\(dayDf.string(from: Date())).log")
+                    guard let contents = try? String(contentsOf: logPath, encoding: .utf8) else {
+                        return ("", "", "", "", "")
+                    }
+                    // Walk lines in reverse to find the most recent Status= line for this card.
+                    let cardKey = "Card=\(card.name.replacingOccurrences(of: "|", with: "-"))"
+                    for line in contents.components(separatedBy: "\n").reversed() {
+                        if line.contains("Status=") && line.contains(cardKey) && line.contains("SourceProtocol=") {
+                            return parseHardwareFields(from: line)
+                        }
+                    }
+                    return ("", "", "", "", "")
+                }()
 
                 let entry = IngestHistoryEntry(
                     cardName: card.name,
@@ -7655,7 +7677,14 @@ struct ContentView: View {
                     skipTodayFilter:       ingest.skipTodayFilter,
                     skipWrongMode:         ingest.skipWrongMode,
                     skipProxy:             ingest.skipProxy,
-                    skipMissing:           ingest.skipMissing
+                    skipMissing:           ingest.skipMissing,
+                    peakMBps:              ingest.peakMBps,
+                    sustainedMBps:         sustainedSpeed,
+                    sourceProtocol:        hwFields.srcProto,
+                    sourceLink:            hwFields.srcLink,
+                    destProtocol:          hwFields.dstProto,
+                    destLink:              hwFields.dstLink,
+                    destMedia:             hwFields.dstMedia
                 )
                 self.historyEntries.insert(entry, at: 0)
                 self.saveHistory()   // saveHistory trims to 24 h window
@@ -7768,6 +7797,14 @@ struct ContentView: View {
                         if !skipSummaryLine.isEmpty { msg += " \u{00B7} \(skipSummaryLine)" }
                         let tierLabel = ingest.verificationTier.displayText
                         msg += " \u{00B7} \(tierLabel)"
+                        if let bottleneck = bottleneckDescriptor(
+                            sourceLink: ingest.sourceLink,
+                            destLink: ingest.destLink,
+                            avgMBps: avgMBps,
+                            peakMBps: ingest.peakMBps
+                        ) {
+                            msg += " \u{00B7} \(bottleneck)"
+                        }
                         return msg
                     }()
                     if NSApplication.shared.isActive {
@@ -12776,11 +12813,15 @@ extension ContentView {
                  : neutral   ? "minus.circle"
                              : "checkmark.circle.fill"
         let badgeLabel = wrongMode ? "Wrong mode" : e.status
+        let peakMBps = e.peakMBps
+        let speedLabel: String = peakMBps > 0 && peakMBps > e.avgMBps
+            ? "\(e.avgMBps) avg · \(peakMBps) peak MB/s"
+            : "\(e.avgMBps) MB/s"
         return HStack(spacing: 12) {
             Image(systemName: icon).foregroundStyle(col)
             VStack(alignment: .leading, spacing: 3) {
                 Text(e.cardName.isEmpty ? "Card" : e.cardName).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                Text("\(e.newFiles) \(e.mediaLabel) · \(e.avgMBps) MB/s · \(v3Duration(e.durationSec)) · \(v3RelDate(e.timestamp))")
+                Text("\(e.newFiles) \(e.mediaLabel) · \(speedLabel) · \(v3Duration(e.durationSec)) · \(v3RelDate(e.timestamp))")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                 // Where it landed + jump straight to that folder (the drive must still be mounted).
                 if !e.destPath.isEmpty {
@@ -14670,10 +14711,46 @@ extension ContentView {
                     }
                 }.frame(height: 4)
                 // Granular per-card progress: which file of how many + live speed.
-                Text(ing.newFiles > 0
-                     ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
-                     : String(format: "%.0f MB/s", max(0, ing.liveMBps)))
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                HStack(alignment: .center, spacing: 8) {
+                    Text(ing.newFiles > 0
+                         ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
+                         : String(format: "%.0f MB/s", max(0, ing.liveMBps)))
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                    // Peak speed label — shown only during active copying when live is
+                    // meaningfully below peak (> 5% gap) and peak data is available.
+                    if ing.phase == .copying, ing.peakMBps > 0,
+                       ing.liveMBps < Double(ing.peakMBps) * 0.95 {
+                        Text("↑ \(ing.peakMBps) MB/s")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.30))
+                    }
+                    // Mini sparkline — shown only during active copying when enough samples exist.
+                    if ing.phase == .copying, ing.speedSamples.count >= 4 {
+                        Canvas { ctx, size in
+                            let s = Array(ing.speedSamples.suffix(60))
+                            guard s.count >= 2 else { return }
+                            let maxVal = max(s.max() ?? 1.0, 1.0)
+                            let w = size.width
+                            let h = size.height
+                            let step = w / CGFloat(s.count - 1)
+                            var linePath = Path()
+                            for (i, val) in s.enumerated() {
+                                let x = CGFloat(i) * step
+                                let y = h - CGFloat(val / maxVal) * h * 0.85
+                                if i == 0 { linePath.move(to: CGPoint(x: x, y: y)) }
+                                else       { linePath.addLine(to: CGPoint(x: x, y: y)) }
+                            }
+                            var fillPath = linePath
+                            fillPath.addLine(to: CGPoint(x: CGFloat(s.count - 1) * step, y: h))
+                            fillPath.addLine(to: CGPoint(x: 0, y: h))
+                            fillPath.closeSubpath()
+                            ctx.fill(fillPath, with: .color(Color(hex: "#0dcff5").opacity(0.15)))
+                            ctx.stroke(linePath, with: .color(Color(hex: "#0dcff5").opacity(0.70)), lineWidth: 1.2)
+                        }
+                        .frame(width: 60, height: 18)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
                 // Low-headroom heads-up — the destination is cutting it close (< 1.2× needed). The
                 // hard pre-flight abort already blocks a too-full drive; this is the early soft signal.
                 if ing.lowDiskWarning {

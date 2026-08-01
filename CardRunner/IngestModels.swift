@@ -310,6 +310,15 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
     let totalBytesTransferred: Int64
     /// Persisted verification tier. Old entries decode to "sizeChecked".
     let verificationTierRaw: String
+    // Speed diagnostics — 0 / "" = not available (old entries)
+    let peakMBps: Int       // peak live throughput sample seen during copy
+    let sustainedMBps: Int  // robust median of non-ramp samples (see sustainedMBps(_:))
+    // Hardware connection info — "" = not available (old entries)
+    let sourceProtocol: String
+    let sourceLink: String
+    let destProtocol: String
+    let destLink: String
+    let destMedia: String
 
     var totalSkipped: Int { skipManifest + skipDestExists + skipTodayFilter + skipWrongMode }
 
@@ -322,7 +331,10 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
          verificationTierRaw: String = "sizeChecked",
          skipManifest: Int = 0, skipDestExists: Int = 0,
          skipTodayFilter: Int = 0, skipWrongMode: Int = 0,
-         skipProxy: Int = 0, skipMissing: Int = 0) {
+         skipProxy: Int = 0, skipMissing: Int = 0,
+         peakMBps: Int = 0, sustainedMBps: Int = 0,
+         sourceProtocol: String = "", sourceLink: String = "",
+         destProtocol: String = "", destLink: String = "", destMedia: String = "") {
         self.id                    = UUID()
         self.cardName              = cardName
         self.status                = status
@@ -341,6 +353,13 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
         self.skipWrongMode         = skipWrongMode
         self.skipProxy             = skipProxy
         self.skipMissing           = skipMissing
+        self.peakMBps              = peakMBps
+        self.sustainedMBps         = sustainedMBps
+        self.sourceProtocol        = sourceProtocol
+        self.sourceLink            = sourceLink
+        self.destProtocol          = destProtocol
+        self.destLink              = destLink
+        self.destMedia             = destMedia
     }
 
     // Custom decoder so old stored entries (without newer fields) still load cleanly
@@ -364,6 +383,13 @@ nonisolated struct IngestHistoryEntry: Identifiable, Codable {
         skipWrongMode          = try c.decodeIfPresent(Int.self,     forKey: .skipWrongMode)          ?? 0
         skipProxy              = try c.decodeIfPresent(Int.self,     forKey: .skipProxy)              ?? 0
         skipMissing            = try c.decodeIfPresent(Int.self,     forKey: .skipMissing)            ?? 0
+        peakMBps               = try c.decodeIfPresent(Int.self,     forKey: .peakMBps)              ?? 0
+        sustainedMBps          = try c.decodeIfPresent(Int.self,     forKey: .sustainedMBps)         ?? 0
+        sourceProtocol         = try c.decodeIfPresent(String.self,  forKey: .sourceProtocol)        ?? ""
+        sourceLink             = try c.decodeIfPresent(String.self,  forKey: .sourceLink)            ?? ""
+        destProtocol           = try c.decodeIfPresent(String.self,  forKey: .destProtocol)          ?? ""
+        destLink               = try c.decodeIfPresent(String.self,  forKey: .destLink)              ?? ""
+        destMedia              = try c.decodeIfPresent(String.self,  forKey: .destMedia)             ?? ""
     }
 }
 
@@ -495,6 +521,13 @@ nonisolated struct ActiveIngest {
     var skipProxy: Int = 0       // proxy/sub clips excluded (proxy copy disabled)
     var skipMissing: Int = 0     // matched at scan but missing at copy time (NOT copied)
     var totalSkipped: Int { skipManifest + skipDestExists + skipTodayFilter + skipWrongMode + skipProxy + skipMissing }
+
+    // Hardware connection diagnostics — populated from the shell's Status= log line
+    var sourceProtocol: String = ""
+    var sourceLink: String = ""
+    var destProtocol: String = ""
+    var destLink: String = ""
+    var destMedia: String = ""
 
     // Failure tracking
     var hasCopyError: Bool = false

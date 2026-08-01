@@ -1548,6 +1548,49 @@ struct CardRunnerTests {
         #expect(csv == ReportGenerator.csvHeader + "\n")
     }
 
+    // MARK: Speed columns (Lane 4 — TIER2-MERGE: peakMBps will come from entry field)
+
+    @Test func reportCSVIncludesSpeedColumns() {
+        // CSV header must include Peak MB/s column.
+        #expect(ReportGenerator.csvHeader.contains("Peak MB/s"))
+        // A row with a non-zero peak (simulated via a subclass/wrapper once Lane 1 merges;
+        // for now we verify the column slot exists via the header split).
+        let e = makeEntry(card: "A001", files: 12, bytes: 5_000_000_000, mbps: 631, durationSec: 65)
+        let csv = ReportGenerator.generateCSV(entries: [e])
+        let lines = csv.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        #expect(lines.count == 2)
+        // Header must have 11 columns (9 original + Peak MB/s + Hardware).
+        let headerCols = lines[0].split(separator: ",", omittingEmptySubsequences: false)
+        #expect(headerCols.count == 11)
+        // Data row must also have 11 columns.
+        let dataCols = lines[1].split(separator: ",", omittingEmptySubsequences: false)
+        #expect(dataCols.count == 11)
+    }
+
+    @Test func reportCSVOmitsPeakWhenZero() {
+        // When peakMBps == 0 (not available), the Peak MB/s column must be empty string, not "0".
+        // TIER2-MERGE: once Lane 1 adds peakMBps to IngestHistoryEntry, pass peakMBps: 0 explicitly.
+        let e = makeEntry(card: "A001", files: 5, bytes: 1_073_741_824, mbps: 400, durationSec: 30)
+        let csv = ReportGenerator.generateCSV(entries: [e])
+        let lines = csv.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        #expect(lines.count == 2)
+        let row = lines[1]
+        // The Peak MB/s column (index 9) must be empty — ends with two trailing commas or comma-empty.
+        // We check: the string "0" is NOT the peak column by verifying it doesn't end with ",0,"
+        // and the row ends with ",," (both peak and hardware are empty).
+        #expect(row.hasSuffix(",,"), "Peak column should be empty when peakMBps is 0; row: \(row)")
+    }
+
+    @Test func hardwarePathFormatsCorrectly() {
+        // "USB" + "10Gb/s" + "Thunderbolt" + "40Gb/s" + "SSD" → "USB 10Gb/s→TB 40Gb/s SSD"
+        let result = ReportGenerator.formatHardwarePath(
+            sourceProtocol: "USB", sourceLink: "10Gb/s",
+            destProtocol: "Thunderbolt", destLink: "40Gb/s",
+            destMedia: "SSD"
+        )
+        #expect(result == "USB 10Gb/s→TB 40Gb/s SSD")
+    }
+
     @Test func summaryTotalsAreCorrect() {
         // 5 GiB and 20 GiB exactly (bytes are GiB multiples).
         let entries = [
@@ -1737,5 +1780,134 @@ struct ThroughputDiagnosticsTests {
         for i in 0..<2000 { appendDecimatingSample(Double(i), to: &samples, cap: 600) }
         #expect(samples.count <= 600)
         #expect(!samples.isEmpty)
+    }
+
+    // MARK: - IngestHistoryEntry speed-diagnostic fields
+
+    /// Round-trip: encode an entry with speed + hardware fields; decode and verify all survive.
+    @Test func historyEntryRoundTripsSpeedFields() throws {
+        let entry = IngestHistoryEntry(
+            cardName: "CARD_A", status: "Completed",
+            newFiles: 42, skippedFiles: 3,
+            avgMBps: 320, durationSec: 90, destPath: "/Volumes/SSD/Project",
+            peakMBps: 480, sustainedMBps: 410,
+            sourceProtocol: "USB", sourceLink: "10Gb/s",
+            destProtocol: "Thunderbolt", destLink: "40Gb/s", destMedia: "SSD"
+        )
+        let data = try enc.encode(entry)
+        let decoded = try dec.decode(IngestHistoryEntry.self, from: data)
+        #expect(decoded.peakMBps      == 480)
+        #expect(decoded.sustainedMBps == 410)
+        #expect(decoded.sourceProtocol == "USB")
+        #expect(decoded.sourceLink     == "10Gb/s")
+        #expect(decoded.destProtocol   == "Thunderbolt")
+        #expect(decoded.destLink       == "40Gb/s")
+        #expect(decoded.destMedia      == "SSD")
+    }
+
+    /// Legacy compat: a JSON blob without speed fields must decode to safe defaults (0 / "").
+    @Test func historyEntryDecodesLegacyMissingFields() throws {
+        let legacy = IngestHistoryEntry(
+            cardName: "CARD_B", status: "Completed",
+            newFiles: 10, skippedFiles: 0,
+            avgMBps: 200, durationSec: 30, destPath: "/Volumes/SSD/Old"
+        )
+        // Drop all speed/hardware keys to simulate an entry written by an older build.
+        var json = try #require(try JSONSerialization.jsonObject(with: enc.encode(legacy)) as? [String: Any])
+        for key in ["peakMBps", "sustainedMBps", "sourceProtocol", "sourceLink",
+                    "destProtocol", "destLink", "destMedia"] {
+            json.removeValue(forKey: key)
+        }
+        let data = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try dec.decode(IngestHistoryEntry.self, from: data)
+        #expect(decoded.peakMBps       == 0)
+        #expect(decoded.sustainedMBps  == 0)
+        #expect(decoded.sourceProtocol == "")
+        #expect(decoded.sourceLink     == "")
+        #expect(decoded.destProtocol   == "")
+        #expect(decoded.destLink       == "")
+        #expect(decoded.destMedia      == "")
+    }
+
+    /// parseHardwareFields extracts USB source and SSD destination correctly.
+    @Test func parseHardwareFieldsExtractsUSB() {
+        let line = "2026-08-01 12:00:00 | ID=abc | Status=OK | Card=CARD_A | SourceProtocol=USB | SourceLink=10Gb/s | DestProtocol=Thunderbolt | DestLink=40Gb/s | DestMedia=SSD"
+        let hw = parseHardwareFields(from: line)
+        #expect(hw.srcProto == "USB")
+        #expect(hw.srcLink  == "10Gb/s")
+        #expect(hw.dstProto == "Thunderbolt")
+        #expect(hw.dstLink  == "40Gb/s")
+        #expect(hw.dstMedia == "SSD")
+    }
+
+    /// parseHardwareFields maps "unknown" values to empty strings.
+    @Test func parseHardwareFieldsMapsUnknownToEmpty() {
+        let line = "2026-08-01 12:00:00 | ID=xyz | Status=OK | Card=CARD_B | SourceProtocol=unknown | SourceLink=unknown | DestProtocol=unknown | DestLink=unknown | DestMedia=unknown"
+        let hw = parseHardwareFields(from: line)
+        #expect(hw.srcProto == "")
+        #expect(hw.srcLink  == "")
+        #expect(hw.dstProto == "")
+        #expect(hw.dstLink  == "")
+        #expect(hw.dstMedia == "")
+    }
+
+    /// sustainedMBps from a realistic sample set matches the expected median-of-core value.
+    @Test func historyEntrySustainedMBpsFromSamples() {
+        // Simulate: ramp (low), plateau, tail dropout
+        let samples: [Double] = [50, 80, 100, 390, 400, 410, 405, 395, 0, 20, 380]
+        let result = sustainedMBps(samples)
+        // Positive samples: [50,80,100,390,400,410,405,395,20,380]
+        // Median of positives ≈ 387.5 → threshold = 96.875
+        // Core (≥ threshold): [100,390,400,410,405,395,380] → sorted median = 395
+        #expect(result == 395)
+    }
+}
+
+// MARK: - Bottleneck descriptor tests
+
+@Suite("Bottleneck descriptor")
+struct BottleneckDescriptorTests {
+
+    @Test("Link parsing: 10Gb/s → 1250 MB/s, 40Gb/s → 5000 MB/s")
+    func bottleneckLinkParsingGbps() {
+        #expect(parseLinkMBps("10Gb/s") == 1250)
+        #expect(parseLinkMBps("40Gb/s") == 5000)
+        #expect(parseLinkMBps("5Gb/s")  == 625)
+        #expect(parseLinkMBps("20Gb/s") == 2500)
+    }
+
+    @Test("Returns nil when both links are unknown")
+    func bottleneckReturnsNilForUnknown() {
+        let result = bottleneckDescriptor(sourceLink: "unknown", destLink: "unknown",
+                                          avgMBps: 500, peakMBps: 600)
+        #expect(result == nil)
+    }
+
+    @Test("Detects reader-limited when peak is near source cap")
+    func bottleneckDetectsReaderLimit() {
+        let result = bottleneckDescriptor(sourceLink: "10Gb/s", destLink: "40Gb/s",
+                                          avgMBps: 1000, peakMBps: 1150)
+        #expect(result?.hasPrefix("Reader-limited") == true)
+    }
+
+    @Test("Detects drive-limited when peak is near dest cap and well below source cap")
+    func bottleneckDetectsDriveLimit() {
+        let result = bottleneckDescriptor(sourceLink: "40Gb/s", destLink: "5Gb/s",
+                                          avgMBps: 500, peakMBps: 580)
+        #expect(result?.hasPrefix("Drive-limited") == true)
+    }
+
+    @Test("Detects below-expected when peak is far below both theoretical maxes")
+    func bottleneckDetectsBelowExpected() {
+        let result = bottleneckDescriptor(sourceLink: "10Gb/s", destLink: "5Gb/s",
+                                          avgMBps: 80, peakMBps: 100)
+        #expect(result?.contains("Below expected") == true)
+    }
+
+    @Test("Returns nil when peak is in an inconclusive middle range")
+    func bottleneckInconclusiveReturnsNil() {
+        let result = bottleneckDescriptor(sourceLink: "10Gb/s", destLink: "40Gb/s",
+                                          avgMBps: 800, peakMBps: 900)
+        #expect(result == nil)
     }
 }

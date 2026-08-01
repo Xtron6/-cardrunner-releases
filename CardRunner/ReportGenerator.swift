@@ -79,7 +79,47 @@ nonisolated enum ReportGenerator {
         return field
     }
 
-    static let csvHeader = "Date,Time,Card,Files,Size (GB),Avg MB/s,Duration,Verification,Destination"
+    static let csvHeader = "Date,Time,Card,Files,Size (GB),Avg MB/s,Duration,Verification,Destination,Peak MB/s,Hardware"
+
+    // MARK: Speed / Hardware helpers
+
+    /// Abbreviated hardware path, e.g. "USB 10Gb/s→TB 40Gb/s SSD".
+    /// Returns "" when source or dest link info is not available.
+    static func hardwarePathLabel(for e: IngestHistoryEntry) -> String {
+        let sourceLink = e.sourceLink
+        let sourceProtocol = e.sourceProtocol
+        let destLink = e.destLink
+        let destProtocol = e.destProtocol
+        let destMedia = e.destMedia
+        guard !sourceLink.isEmpty, !destLink.isEmpty else { return "" }
+        var parts: [String] = []
+        if !sourceProtocol.isEmpty { parts.append(sourceProtocol) }
+        parts.append(sourceLink)
+        parts.append("→")
+        // Abbreviate "Thunderbolt" → "TB"
+        let dp = destProtocol.replacingOccurrences(of: "Thunderbolt", with: "TB")
+        if !dp.isEmpty { parts.append(dp) }
+        parts.append(destLink)
+        if !destMedia.isEmpty { parts.append(destMedia) }
+        return parts.joined(separator: " ")
+    }
+
+    /// Pure helper: format a hardware path from its components (for testing and UI).
+    /// Abbreviates "Thunderbolt" → "TB".
+    static func formatHardwarePath(sourceProtocol: String, sourceLink: String,
+                                   destProtocol: String, destLink: String,
+                                   destMedia: String) -> String {
+        guard !sourceLink.isEmpty, !destLink.isEmpty else { return "" }
+        var parts: [String] = []
+        if !sourceProtocol.isEmpty { parts.append(sourceProtocol) }
+        parts.append(sourceLink)
+        parts.append("→")
+        let dp = destProtocol.replacingOccurrences(of: "Thunderbolt", with: "TB")
+        if !dp.isEmpty { parts.append(dp) }
+        parts.append(destLink)
+        if !destMedia.isEmpty { parts.append(destMedia) }
+        return parts.joined(separator: " ")
+    }
 
     private static func csvDateTime(_ d: Date) -> (date: String, time: String) {
         let df = DateFormatter(); df.locale = Locale(identifier: "en_US_POSIX")
@@ -94,6 +134,7 @@ nonisolated enum ReportGenerator {
         var lines = [csvHeader]
         for e in entries {
             let dt = csvDateTime(e.timestamp)
+            let peakMBps = e.peakMBps
             let cols = [
                 dt.date,
                 dt.time,
@@ -103,7 +144,9 @@ nonisolated enum ReportGenerator {
                 String(e.avgMBps),
                 durationLabel(e.durationSec),
                 verificationLabel(e),
-                e.destPath
+                e.destPath,
+                peakMBps > 0 ? String(peakMBps) : "",
+                hardwarePathLabel(for: e)
             ]
             lines.append(cols.map(csvEscape).joined(separator: ","))
         }
@@ -142,6 +185,8 @@ nonisolated enum ReportGenerator {
         out += String(format: "- Total size: %.2f GB\n", t.gib)
         out += "- Duration: \(durationLabel(t.durationSec))\n"
         out += "- Session avg: \(t.sessionAvgMBps) MB/s\n"
+        let sessionPeak = entries.map { $0.peakMBps }.max() ?? 0
+        if sessionPeak > 0 { out += "- Session peak: \(sessionPeak) MB/s\n" }
         return out
     }
 }

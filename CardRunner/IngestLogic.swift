@@ -317,6 +317,19 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
         let p = line.replacingOccurrences(of: "PROGRESS_DEST ", with: "")
         if ingest.destPath.isEmpty { ingest.destPath = p }
 
+    } else if line.hasPrefix("SPEED_HARDWARE") {
+        // Emitted by the shell just before the final log line so Swift can compute
+        // bottleneck descriptions without reading the on-disk log file.
+        if let r = line.range(of: "src_link=") {
+            let rest = String(line[r.upperBound...])
+            let token = rest.components(separatedBy: " ").first ?? rest
+            if !token.isEmpty && token != "unknown" { ingest.sourceLink = token }
+        }
+        if let r = line.range(of: "dest_link=") {
+            let token = String(line[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !token.isEmpty && token != "unknown" { ingest.destLink = token }
+        }
+
     } else if line.hasPrefix("VERIFY_PROGRESS") {
         if let rc = line.range(of: "current="), let rt = line.range(of: "total=") {
             ingest.verifyChecked = crExtractInt(from: line, after: rc)
@@ -464,6 +477,80 @@ func sustainedMBps(_ samples: [Double]) -> Int {
     var core = positive.filter { $0 >= threshold }
     if core.isEmpty { core = positive }               // safety: never median an empty set
     return Int(median(core).rounded())
+}
+
+// MARK: - Hardware field parser (pure)
+
+/// Extract hardware connection fields from a shell summary log line that uses
+/// ` | Key=Value` separators (the `Status=OK` / `Status=Error` log format).
+/// Returns a tuple of (srcProto, srcLink, dstProto, dstLink, dstMedia).
+/// Any field missing from the line is returned as an empty string.
+func parseHardwareFields(from line: String) -> (srcProto: String, srcLink: String, dstProto: String, dstLink: String, dstMedia: String) {
+    var fields: [String: String] = [:]
+    for part in line.components(separatedBy: " | ") {
+        let kv = part.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+        if kv.count == 2 {
+            fields[kv[0]] = kv[1]
+        }
+    }
+    func field(_ key: String) -> String {
+        let v = fields[key] ?? ""
+        return v == "unknown" ? "" : v
+    }
+    return (srcProto: field("SourceProtocol"),
+            srcLink:  field("SourceLink"),
+            dstProto: field("DestProtocol"),
+            dstLink:  field("DestLink"),
+            dstMedia: field("DestMedia"))
+}
+
+// MARK: - Bottleneck descriptor
+
+/// Parse a link-speed string like "10Gb/s", "40Gb/s", "USB3" into MB/s.
+/// Returns nil for "unknown", empty string, or unrecognised formats.
+nonisolated func parseLinkMBps(_ link: String) -> Int? {
+    let s = link.lowercased().trimmingCharacters(in: .whitespaces)
+    if s == "unknown" || s.isEmpty { return nil }
+    if let r = s.range(of: #"^(\d+(?:\.\d+)?)\s*gb"#, options: .regularExpression) {
+        let numStr = String(s[r]).filter { $0.isNumber || $0 == "." }
+        if let gbps = Double(numStr) { return Int((gbps * 1000 / 8).rounded()) }
+    }
+    if let r = s.range(of: #"^(\d+(?:\.\d+)?)\s*mb"#, options: .regularExpression) {
+        let numStr = String(s[r]).filter { $0.isNumber || $0 == "." }
+        if let mbps = Double(numStr) { return Int(mbps.rounded()) }
+    }
+    if s == "usb2"  { return 60 }
+    if s == "usb3"  { return 625 }
+    if s == "usb32" { return 1250 }
+    return nil
+}
+
+/// Returns a short human-readable descriptor of what was the likely bottleneck.
+/// Returns nil when there is not enough data to conclude anything meaningful.
+nonisolated func bottleneckDescriptor(
+    sourceLink: String,
+    destLink: String,
+    avgMBps: Int,
+    peakMBps: Int
+) -> String? {
+    guard peakMBps > 0 else { return nil }
+    let sourceCap = parseLinkMBps(sourceLink)
+    let destCap   = parseLinkMBps(destLink)
+    if sourceCap == nil && destCap == nil { return nil }
+    if let sc = sourceCap, Double(peakMBps) >= Double(sc) * 0.85 {
+        return "Reader-limited (\(sourceLink))"
+    }
+    if let dc = destCap, Double(peakMBps) >= Double(dc) * 0.85 {
+        return "Drive-limited (\(destLink))"
+    }
+    let lowerCap = [sourceCap, destCap].compactMap { $0 }.min()
+    if let lower = lowerCap, Double(peakMBps) < Double(lower) * 0.60 {
+        return "Below expected — check connection"
+    }
+    if avgMBps > 0 && peakMBps > avgMBps * 2 {
+        return "Verify phase slowed avg"
+    }
+    return nil
 }
 
 // MARK: - Pure protocol-line parsers (UI-layer, side-effect-free)
