@@ -2008,7 +2008,7 @@ PYEOF
     _now="$(date '+%Y-%m-%d %H:%M:%S')"
     _tid="${$}_$(date +%s)"
     local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
-    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=NoNewFiles | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest"
+    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=NoNewFiles | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest | CopySec=0 | VerifySec=0 | EjectSec=0 | SourceProtocol=unknown | SourceLink=unknown | DestProtocol=unknown | DestLink=unknown | DestMedia=unknown"
     return 0
   fi
 
@@ -2034,6 +2034,22 @@ PYEOF
     rm -f "$_sort_in"
     log_line "SORT_ORDER: $SORT_ORDER — $new_count files ordered by capture time"
   fi
+
+  # ── Hardware-path diagnostics: background capture (NON-BLOCKING) ────────────
+  # Negotiated link speed needs system_profiler, which is SLOW (1-3s). Kick it
+  # off in the BACKGROUND right now so its cost fully overlaps the copy and can
+  # NEVER delay or fail footage transfer. The tempfile is parsed at summary time
+  # (bounded wait, then grep). Everything here degrades to "unknown" on failure.
+  local _hw_tmp="" _hw_pid=""
+  _hw_tmp="$(mktemp /tmp/cardrunner_hw.XXXXXX 2>/dev/null || true)"
+  if [[ -n "$_hw_tmp" ]]; then
+    { system_profiler SPUSBDataType SPThunderboltDataType 2>/dev/null > "$_hw_tmp"; } &
+    _hw_pid=$!
+  fi
+  # Stash the SOURCE card's diskutil info NOW, before any auto-eject unmounts it —
+  # querying it at summary time (post-eject) would return nothing and lose the exact
+  # source (CFexpress) protocol/media we most want to diagnose. Best-effort.
+  local _src_du="$(diskutil info "$CARD_PATH" 2>/dev/null || true)"
 
   # Files to copy — start the copy phase timer now.
   phase_start copying
@@ -2487,6 +2503,9 @@ PYEOF
   # verify being disabled entirely leaves it 0 — so a zero-integrity copy can
   # never satisfy the auto-eject gate below.
   local _verify_failed=0 _verify_effective=0
+  # Phase-split timing (summary scope): wall seconds spent in verify + eject.
+  # Default 0 so the summary logs 0 when a phase never ran.
+  local _verify_secs=0 _eject_secs_log=0
   # Decide whether to run a verification pass.  Normally driven by the VERIFY
   # setting — but auto-eject FORCES at least a spot-check even when the operator
   # turned verification off.  Ejecting a card invites the operator to reformat
@@ -2503,6 +2522,7 @@ PYEOF
   fi
   if [[ "$_run_verify" == "yes" && "$DRY_RUN" != "yes" ]]; then
     echo "PHASE verifying"
+    local _verify_t0=$(date +%s)
     local _verify_out
     if [[ "$_forced_spotcheck" == "yes" ]]; then
       log_line "VERIFY FORCED: auto-eject is on with verification off — running a spot-check before eject"
@@ -2517,6 +2537,7 @@ PYEOF
     echo "$_verify_out"   # re-emit for Swift UI parsing
     echo "$_verify_out" | grep -q "^VERIFY_FAIL" && _verify_failed=1
     echo "$_verify_out" | grep -q "^VERIFY_PASS" && _verify_effective=1
+    _verify_secs=$(( $(date +%s) - _verify_t0 ))
   fi
   # Generate transfer report before temp files are cleaned up (skipped for dry runs)
   if [[ "$TRANSFER_REPORT" == "yes" && "$DRY_RUN" != "yes" && "$new_count" -gt 0 ]]; then
@@ -2565,6 +2586,7 @@ PYEOF
       diskutil eject "$CARD_PATH" >/dev/null 2>&1; _eject_exit=$?
     done
     _eject_secs=$(( $(date +%s) - _eject_t0 ))
+    _eject_secs_log=$_eject_secs   # surface eject phase duration to the summary line
     if (( _eject_exit != 0 )); then
       log_line "EJECT FAIL: diskutil eject returned exit $_eject_exit for $CARD_PATH after $_eject_attempt attempt(s), ${_eject_secs}s"
       echo "EJECT_FAILED card=$CARD_PATH"
@@ -2609,8 +2631,71 @@ PYEOF
   else
     status_field="OK"
   fi
+  # ── Hardware-path diagnostics: resolve values (best-effort, degrade to unknown)
+  # diskutil is fast — call directly for Protocol + media (Solid State) on both
+  # ends. Link speed is read from the backgrounded system_profiler tempfile after
+  # a SHORT bounded wait so the summary can never hang. All wrapped so any failure
+  # is a silent no-op leaving the value "unknown".
+  local _src_proto="unknown" _src_link="unknown" _src_media="unknown"
+  local _dest_proto="unknown" _dest_link="unknown" _dest_media="unknown"
+  local _du_out="" _du_dev="" _du_ss=""
+  # --- source (card/reader) ---
+  _du_out="$_src_du"   # captured at copy start, before any auto-eject unmounted the card
+  if [[ -n "$_du_out" ]]; then
+    _src_proto="$(printf '%s\n' "$_du_out" | awk -F': *' '/^ *Protocol:/{print $2; exit}' 2>/dev/null)"
+    _du_ss="$(printf '%s\n' "$_du_out" | awk -F': *' '/Solid State:/{print $2; exit}' 2>/dev/null)"
+    [[ "$_du_ss" == "Yes" ]] && _src_media="SSD"
+    [[ "$_du_ss" == "No"  ]] && _src_media="HDD"
+  fi
+  # --- destination drive (resolve mounted device via df; space-safe first field)
+  _du_dev="$(df "${DEST_ROOT:-$PRIMARY_ROOT}" 2>/dev/null | awk 'NR==2{print $1}' 2>/dev/null || true)"
+  _du_out="$(diskutil info "${_du_dev:-${DEST_ROOT:-$PRIMARY_ROOT}}" 2>/dev/null || true)"
+  if [[ -n "$_du_out" ]]; then
+    _dest_proto="$(printf '%s\n' "$_du_out" | awk -F': *' '/^ *Protocol:/{print $2; exit}' 2>/dev/null)"
+    _du_ss="$(printf '%s\n' "$_du_out" | awk -F': *' '/Solid State:/{print $2; exit}' 2>/dev/null)"
+    [[ "$_du_ss" == "Yes" ]] && _dest_media="SSD"
+    [[ "$_du_ss" == "No"  ]] && _dest_media="HDD"
+  fi
+  # --- negotiated link speed from the backgrounded system_profiler capture ---
+  if [[ -n "$_hw_pid" ]]; then
+    # Bounded wait: system_profiler was launched at copy start and has almost
+    # always finished by now; cap at ~3s so the summary NEVER hangs on it.
+    local _hw_wait=0
+    while kill -0 "$_hw_pid" 2>/dev/null && (( _hw_wait < 30 )); do
+      sleep 0.1; (( _hw_wait++ ))
+    done
+    kill -0 "$_hw_pid" 2>/dev/null && kill "$_hw_pid" 2>/dev/null || true
+    wait "$_hw_pid" 2>/dev/null || true
+  fi
+  # Map a protocol to a link speed ONLY when the relevant section yields exactly
+  # one unique speed — an ambiguous/absent match logs "unknown" rather than guess.
+  _hw_link_for() {
+    local _proto="$1" _f="$2" _vals="" _n=0
+    [[ -z "$_f" || ! -s "$_f" ]] && { printf 'unknown'; return; }
+    case "$_proto" in
+      *USB*)
+        _vals="$(grep -Eo 'Speed: (Up to )?[0-9.]+ [MG]b/s' "$_f" 2>/dev/null | sed -E 's/^Speed: (Up to )?//' | sort -u)" ;;
+      *Thunderbolt*|*PCI*|*PCI-Express*)
+        _vals="$(grep -Eo '(Link Speed|Speed): [0-9.]+ [MG]b/s' "$_f" 2>/dev/null | sed -E 's/^(Link Speed|Speed): //' | sort -u)" ;;
+      *)
+        _vals="" ;;
+    esac
+    _n="$(printf '%s\n' "$_vals" | grep -c . 2>/dev/null)"
+    if [[ "$_n" == "1" ]]; then printf '%s' "$_vals"; else printf 'unknown'; fi
+  }
+  _src_link="$(_hw_link_for "$_src_proto" "$_hw_tmp" 2>/dev/null || echo unknown)"
+  _dest_link="$(_hw_link_for "$_dest_proto" "$_hw_tmp" 2>/dev/null || echo unknown)"
+  [[ -n "$_hw_tmp" ]] && rm -f "$_hw_tmp" 2>/dev/null || true
+  # Normalize empties to "unknown" and scrub any pipe (the log field separator).
+  [[ -z "$_src_proto"  ]] && _src_proto="unknown";   _src_proto="${_src_proto//|/-}"
+  [[ -z "$_src_link"   ]] && _src_link="unknown";    _src_link="${_src_link//|/-}"
+  [[ -z "$_src_media"  ]] && _src_media="unknown";   _src_media="${_src_media//|/-}"
+  [[ -z "$_dest_proto" ]] && _dest_proto="unknown";  _dest_proto="${_dest_proto//|/-}"
+  [[ -z "$_dest_link"  ]] && _dest_link="unknown";   _dest_link="${_dest_link//|/-}"
+  [[ -z "$_dest_media" ]] && _dest_media="unknown";  _dest_media="${_dest_media//|/-}"
+
   local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
-  log_line "$NOW_HUMAN | ID=$transfer_id | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$status_field | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=$new_count | NewMB=$MB_NEW | DurationSec=$DUR | AvgMBps=$AVG | TodayOnly=$TODAY_ONLY | Dest=$log_dest"
+  log_line "$NOW_HUMAN | ID=$transfer_id | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$status_field | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=$new_count | NewMB=$MB_NEW | DurationSec=$DUR | AvgMBps=$AVG | TodayOnly=$TODAY_ONLY | Dest=$log_dest | CopySec=$DUR | VerifySec=$_verify_secs | EjectSec=$_eject_secs_log | SourceProtocol=$_src_proto | SourceLink=$_src_link | DestProtocol=$_dest_proto | DestLink=$_dest_link | DestMedia=$_dest_media"
 
   # Propagate failure to the caller. A copy-group failure or a verify mismatch must
   # NEVER surface to the operator as "done / safe to eject" — emit a distinct phase

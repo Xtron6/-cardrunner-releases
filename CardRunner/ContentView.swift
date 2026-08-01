@@ -7633,6 +7633,12 @@ struct ContentView: View {
                     }
                 }
 
+                // Companion speed-diagnostics line — separate from the shell's PROGRESS_SUMMARY.
+                // Records peak + a robust sustained throughput (median of the non-ramp samples)
+                // so a slow run can be diagnosed from the log, not just the shell-side average.
+                let speedRunID = ingest.runID ?? processID.uuidString
+                self.persistLogLine("SPEED_DETAIL runID=\(speedRunID) peak=\(ingest.peakMBps) sustained=\(sustainedMBps(ingest.speedSamples)) avg=\(avgMBps) samples=\(ingest.speedSamples.count)")
+
                 let entry = IngestHistoryEntry(
                     cardName: card.name,
                     status: statusString,

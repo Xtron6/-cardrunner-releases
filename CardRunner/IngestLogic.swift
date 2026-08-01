@@ -400,16 +400,70 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
             if let intraBytes = Int64(byteStr) { ingest.currentIntraFileBytes = intraBytes }
             if parts.count >= 3 {
                 let speedToken = String(parts[2])
+                var freshMBps: Double? = nil
                 if speedToken.hasSuffix("MB/s"), let val = Double(speedToken.dropLast(4)), val > 0 {
-                    ingest.liveMBps = val
+                    freshMBps = val
                 } else if speedToken.hasSuffix("GB/s"), let val = Double(speedToken.dropLast(4)), val > 0 {
-                    ingest.liveMBps = val * 1024.0
+                    freshMBps = val * 1024.0
                 } else if speedToken.hasSuffix("kB/s"), let val = Double(speedToken.dropLast(4)), val > 0 {
-                    ingest.liveMBps = val / 1024.0
+                    freshMBps = val / 1024.0
+                }
+                if let fresh = freshMBps {
+                    ingest.liveMBps = fresh
+                    // Peak + sample capture happen at the single point a fresh live speed
+                    // arrives, so both are reliably fed for every card (see sustainedMBps).
+                    ingest.peakMBps = updatedPeakMBps(current: ingest.peakMBps, sample: fresh)
+                    appendDecimatingSample(fresh, to: &ingest.speedSamples)
                 }
             }
         }
     }
+}
+
+// MARK: - Throughput diagnostics (pure, unit-tested)
+
+/// Running peak: the larger of the current peak and a fresh live sample, in whole MB/s.
+/// Non-positive samples never lower the peak.
+func updatedPeakMBps(current peak: Int, sample: Double) -> Int {
+    guard sample > 0 else { return peak }
+    return max(peak, Int(sample.rounded()))
+}
+
+/// Append a live speed sample, keeping at most `cap` samples. When the cap is exceeded
+/// the series is decimated (every other sample kept), which bounds memory on very long
+/// copies while preserving the overall speed profile.
+func appendDecimatingSample(_ sample: Double, to samples: inout [Double], cap: Int = 600) {
+    samples.append(sample)
+    if samples.count > cap {
+        samples = stride(from: 0, to: samples.count, by: 2).map { samples[$0] }
+    }
+}
+
+/// A robust "sustained" throughput (whole MB/s) from a series of live MB/s samples.
+///
+/// Peak alone is noisy, and a plain average is dragged down by ramp-up and end-of-copy
+/// tail gaps — cardcopy emits low/zero samples while building the file list and at every
+/// file boundary. Definition:
+///   1. drop non-positive samples (idle / file-boundary zeros),
+///   2. drop the bottom ramp-up cluster: any sample below 25% of the MEDIAN positive
+///      sample (median, not max, so a single high spike can't raise the threshold and
+///      wrongly discard the real plateau),
+///   3. return the MEDIAN of what remains — robust to a lone spike or a single dropout.
+/// Returns 0 for empty input (or if no positive sample exists).
+func sustainedMBps(_ samples: [Double]) -> Int {
+    let positive = samples.filter { $0 > 0 }
+    guard !positive.isEmpty else { return 0 }
+
+    func median(_ xs: [Double]) -> Double {           // xs must be non-empty
+        let s = xs.sorted()
+        let mid = s.count / 2
+        return s.count % 2 == 0 ? (s[mid - 1] + s[mid]) / 2.0 : s[mid]
+    }
+
+    let threshold = median(positive) * 0.25
+    var core = positive.filter { $0 >= threshold }
+    if core.isEmpty { core = positive }               // safety: never median an empty set
+    return Int(median(core).rounded())
 }
 
 // MARK: - Pure protocol-line parsers (UI-layer, side-effect-free)

@@ -461,6 +461,14 @@ nonisolated struct ActiveIngest {
     // Live speed (MB/s) parsed from cardcopy polling-thread progress lines
     var liveMBps: Double = 0
 
+    // Peak throughput seen during this copy (MB/s). Updated to max(peakMBps, fresh sample)
+    // every time a fresh live speed arrives (see applyIngestProgressLine).
+    var peakMBps: Int = 0
+    // Every fresh live MB/s sample, for the robust "sustained" metric computed at completion.
+    // Bounded to ~600 entries via decimation (appendDecimatingSample) so a very long copy
+    // can't grow this unbounded.
+    var speedSamples: [Double] = []
+
     // Current ingest phase — drives the status capsule text
     var phase: IngestPhase = .idle
 

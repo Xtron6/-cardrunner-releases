@@ -1678,3 +1678,64 @@ private final class MHLParseChecker: NSObject, XMLParserDelegate {
         elementCounts[elementName, default: 0] += 1
     }
 }
+
+// MARK: - Throughput diagnostics (peak / sustained)
+
+@Suite("Throughput diagnostics")
+struct ThroughputDiagnosticsTests {
+
+    // ── sustainedMBps ────────────────────────────────────────────────
+    @Test("Empty input returns 0")
+    func sustainedEmpty() {
+        #expect(sustainedMBps([]) == 0)
+    }
+
+    @Test("All-zero input returns 0")
+    func sustainedAllZero() {
+        #expect(sustainedMBps([0, 0, 0]) == 0)
+    }
+
+    @Test("All-equal samples return that value")
+    func sustainedFlat() {
+        #expect(sustainedMBps([120, 120, 120, 120]) == 120)
+    }
+
+    @Test("Ramp-up profile returns the plateau, not the leading low values")
+    func sustainedIgnoresRampUp() {
+        // Leading zeros + low ramp, then a stable ~200 MB/s plateau.
+        let samples: [Double] = [0, 0, 5, 20, 60,
+                                 200, 205, 198, 202, 199, 201, 200, 203, 197, 200]
+        let s = sustainedMBps(samples)
+        #expect(s >= 195 && s <= 205)
+    }
+
+    @Test("A single spike among a stable plateau does not blow up the result")
+    func sustainedRobustToSpike() {
+        let samples: [Double] = [150, 152, 149, 151, 150, 900, 150, 148, 151, 150]
+        let s = sustainedMBps(samples)
+        #expect(s >= 148 && s <= 153)   // median ignores the lone 900 spike
+    }
+
+    // ── updatedPeakMBps ──────────────────────────────────────────────
+    @Test("Peak rises with a larger sample and ignores smaller / non-positive ones")
+    func peakTracksMax() {
+        var peak = 0
+        peak = updatedPeakMBps(current: peak, sample: 100.4)   // rounds to 100
+        #expect(peak == 100)
+        peak = updatedPeakMBps(current: peak, sample: 80)      // smaller — no change
+        #expect(peak == 100)
+        peak = updatedPeakMBps(current: peak, sample: 255.6)   // rounds up to 256
+        #expect(peak == 256)
+        peak = updatedPeakMBps(current: peak, sample: 0)       // non-positive — no change
+        #expect(peak == 256)
+    }
+
+    // ── appendDecimatingSample ───────────────────────────────────────
+    @Test("Sample array is capped by decimation")
+    func sampleArrayIsCapped() {
+        var samples: [Double] = []
+        for i in 0..<2000 { appendDecimatingSample(Double(i), to: &samples, cap: 600) }
+        #expect(samples.count <= 600)
+        #expect(!samples.isEmpty)
+    }
+}
