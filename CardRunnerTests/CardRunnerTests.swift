@@ -1588,7 +1588,7 @@ struct CardRunnerTests {
             destProtocol: "Thunderbolt", destLink: "40Gb/s",
             destMedia: "SSD"
         )
-        #expect(result == "USB 10Gb/s→TB 40Gb/s SSD")
+        #expect(result == "USB 10Gb/s → TB 40Gb/s SSD")
     }
 
     @Test func summaryTotalsAreCorrect() {
