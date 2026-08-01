@@ -1596,6 +1596,79 @@ struct NotificationActionTests {
     }
 }
 
+// MARK: - locateManifest: walk-up manifest discovery (footage-misrouting bug fix)
+
+@Suite("locateManifest walk-up")
+struct LocateManifestTests {
+    /// Standardize a path for robust comparison across macOS temp-dir symlinks
+    /// (e.g. /var → /private/var).
+    private func std(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func writeManifest(atRoot root: String, runID: String) throws {
+        let dir = "\(root)/.cardrunner/manifests"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let manifest = CorrectionManifest(
+            runID: runID,
+            destPath: "\(root)/260730_TorontoTennis/clips/260801/xavier",
+            timestamp: "2026-08-01T13:25:37Z",
+            sourceVolume: "CardVol",
+            entries: [
+                CorrectionManifestEntry(relPath: "A001.mov", filename: "A001.mov", size: 100,
+                                        hash: nil, label: "xavier",
+                                        destPath: "\(root)/260730_TorontoTennis/clips/260801/xavier")
+            ]
+        )
+        let data = try JSONEncoder().encode(manifest)
+        FileManager.default.createFile(atPath: "\(dir)/\(runID).json", contents: data)
+    }
+
+    @Test("Finds manifest at an ancestor when starting from a deep descendant")
+    func findsManifestAtAncestor() throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "cr-locate-\(UUID().uuidString)"
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let runID = "corr-20260801132537-50532"
+        try writeManifest(atRoot: root, runID: runID)
+
+        // Deep descendant path — need not exist on disk; deletingLastPathComponent works regardless.
+        let startDir = "\(root)/a/b/c"
+        let located = locateManifest(startDir: startDir, runID: runID)
+        #expect(located != nil)
+        #expect(located?.manifest.runID == runID)
+        #expect(located.map { std($0.root) } == std(root))
+    }
+
+    @Test("Returns nil when no manifest exists up the tree")
+    func nilWhenNoManifest() throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "cr-locate-none-\(UUID().uuidString)"
+        try fm.createDirectory(atPath: "\(root)/a/b/c", withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let located = locateManifest(startDir: "\(root)/a/b/c", runID: "corr-missing")
+        #expect(located == nil)
+    }
+
+    @Test("Finds a manifest sitting exactly at startDir (zero walk-up)")
+    func findsAtStartDir() throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "cr-locate-zero-\(UUID().uuidString)"
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let runID = "corr-zero"
+        try writeManifest(atRoot: root, runID: runID)
+
+        let located = locateManifest(startDir: root, runID: runID)
+        #expect(located != nil)
+        #expect(located.map { std($0.root) } == std(root))
+    }
+}
+
 /// Minimal XMLParser delegate that tallies element occurrences to prove well-formedness.
 private final class MHLParseChecker: NSObject, XMLParserDelegate {
     var elementCounts: [String: Int] = [:]

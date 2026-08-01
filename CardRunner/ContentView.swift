@@ -5958,10 +5958,12 @@ struct ContentView: View {
               !newT.contains("/"), newT != ".", newT != ".." else { return oldLabel }
 
         // ── Primary: manifest-driven, merge-safe, file-level correction ────────────────────
-        if let runID, let manifest = loadManifest(destRoot: destPath, runID: runID) {
+        if let runID, let located = locateManifest(startDir: destPath, runID: runID) {
+            let manifest = located.manifest
+            let manifestRoot = located.root
             var relevantDirs = Set<String>()
             for entry in manifest.entries {
-                if let relDir = relativeLabelDir(entry.destPath, destRoot: destPath, label: oldT) {
+                if let relDir = relativeLabelDir(entry.destPath, destRoot: manifestRoot, label: oldT) {
                     relevantDirs.insert(relDir)
                 }
             }
@@ -5970,14 +5972,14 @@ struct ContentView: View {
                 for relDir in relevantDirs.sorted() {
                     let newRelDir = withLastComponentReplaced(relDir, newLabel: newT)
                     let entriesForDir = manifest.entries.filter {
-                        relativeLabelDir($0.destPath, destRoot: destPath, label: oldT) == relDir
+                        relativeLabelDir($0.destPath, destRoot: manifestRoot, label: oldT) == relDir
                     }
                     let subManifest = CorrectionManifest(runID: manifest.runID, destPath: manifest.destPath,
                                                           timestamp: manifest.timestamp,
                                                           sourceVolume: manifest.sourceVolume,
                                                           entries: entriesForDir)
                     let result = performManifestCorrection(
-                        manifest: subManifest, destRoot: destPath,
+                        manifest: subManifest, destRoot: manifestRoot,
                         oldLabelPath: relDir, newLabelPath: newRelDir,
                         oldLabel: oldT, newLabel: newT,
                         sourceLabel: manifest.sourceVolume, fileManager: fm,

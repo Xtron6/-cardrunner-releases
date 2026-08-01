@@ -54,6 +54,39 @@ func loadManifest(destRoot: String, runID: String, fileManager: FileManager = .d
     return try? JSONDecoder().decode(CorrectionManifest.self, from: data)
 }
 
+/// Locate the run's manifest by walking UP the directory tree from `startDir` toward the
+/// filesystem/volume root, returning both the decoded manifest AND the directory that actually
+/// contains `.cardrunner/manifests/{runID}.json`.
+///
+/// The manifest is written by CardRunner.sh under the destination ROOT (the drive/volume root),
+/// e.g. `/Volumes/Gallo 8TB/.cardrunner/manifests/{runID}.json`, NOT under the specific
+/// {date}/{label} clip folder that `ActiveIngest.destPath` points at. Callers therefore cannot
+/// pass the clip folder as `destRoot` — they must discover the ancestor that holds the manifest.
+/// That ancestor is also the correct `destRoot` for `relativeLabelDir` / `performManifestCorrection`,
+/// because manifest entries carry FULL absolute `destPath` values whose relative math is anchored
+/// at the drive root.
+///
+/// Starts at `startDir`; at each level tries `loadManifest(destRoot: dir, runID:)`. On success
+/// returns `(manifest, dir)`. Otherwise ascends to the parent via `deletingLastPathComponent`
+/// (which works on non-existent paths too). Stops when the parent equals the current dir (reached
+/// "/"), or after a sane cap of 12 levels to guarantee termination. Returns nil if never found.
+func locateManifest(startDir: String, runID: String, fileManager: FileManager = .default) -> (manifest: CorrectionManifest, root: String)? {
+    guard !startDir.isEmpty, !runID.isEmpty else { return nil }
+    var dir = startDir
+    var levels = 0
+    let maxLevels = 12
+    while levels <= maxLevels {
+        if let manifest = loadManifest(destRoot: dir, runID: runID, fileManager: fileManager) {
+            return (manifest, dir)
+        }
+        let parent = (dir as NSString).deletingLastPathComponent
+        if parent == dir || parent.isEmpty { break } // reached filesystem root
+        dir = parent
+        levels += 1
+    }
+    return nil
+}
+
 // MARK: - Collision resolution
 
 enum CollisionOutcome: Equatable {
