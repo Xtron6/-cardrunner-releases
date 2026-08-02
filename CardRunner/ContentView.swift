@@ -4871,6 +4871,7 @@ struct ContentView: View {
                 currentCardInserted     = false
                 currentCardMatchedName  = ""
                 currentInsertedCardUUID = nil
+                if useCustomCardName { skipNextNicknameSave = true; useCustomCardName = false; customCardName = "" }
                 cardNameIsFromMemory    = false
                 lastAutoFilledUUID      = nil   // re-inserting the same card should re-fill its name
                 refreshDestinations()
@@ -6682,6 +6683,13 @@ struct ContentView: View {
         // detectedMode (per-card content sniff) wins over the global importMode toggle.
         let currentMode = detectedMode ?? importMode
         let currentDateMode = dateFilterMode
+        let capturedUseCustomCardName = useCustomCardName
+        let capturedProjectName = projectName
+        let capturedDateStr: String = {
+            let fmt = DateFormatter(); fmt.dateFormat = strftimeToICU(dateFolderFormat)
+            return fmt.string(from: Date())
+        }()
+        let capturedDestForLabel: Destination? = destination ?? defaultDestination
 
         // Always scan first — even for today-only — so we can detect wrong-clock cameras
         // before deciding whether to start ingest or show a picker.
@@ -6712,6 +6720,32 @@ struct ContentView: View {
                 if analysis.dates.isEmpty && analysis.reels.isEmpty {
                     try? await Task.sleep(nanoseconds: 500_000_000) // 500 ms
                     analysis = await self.analyzeCard(at: card.path, mode: currentMode)
+                }
+
+                if let dest = capturedDestForLabel {
+                    let needsLabel = await MainActor.run {
+                        self.pendingCardLabels[card.path] == nil && !capturedUseCustomCardName
+                    }
+                    if needsLabel {
+                        let prefix = extractCardFilePrefix(at: card.path, mode: currentMode)
+                        let sub = (dest.subfolder.isEmpty || dest.subfolder == "Default") ? "clips" : dest.subfolder
+                        let project = resolveProjectFolder(destProject: dest.projectFolder, globalProject: capturedProjectName)
+                        let dateFolderPath = "\(dest.path)/\(project)/\(sub)/\(capturedDateStr)"
+                        let hasSubs = dateFolderHasSubdirectories(at: dateFolderPath)
+                        let label: String
+                        if !hasSubs {
+                            label = ""
+                        } else if let p = prefix {
+                            label = p
+                        } else {
+                            label = "CARD_\(capturedDateStr.suffix(4))"
+                        }
+                        await MainActor.run {
+                            if self.pendingCardLabels[card.path] == nil {
+                                self.pendingCardLabels[card.path] = label
+                            }
+                        }
+                    }
                 }
 
                 // ── Tier 1: Wrong-clock detection → reel picker ───────────────

@@ -802,6 +802,92 @@ func resolveProjectFolder(destProject: String, globalProject: String) -> String 
     return d.isEmpty ? globalProject.trimmingCharacters(in: .whitespacesAndNewlines) : d
 }
 
+func extractCardFilePrefix(at cardPath: String, mode: String) -> String? {
+    let fm      = FileManager.default
+    let cardURL = URL(fileURLWithPath: cardPath)
+
+    func findDir(_ name: String, under root: URL, maxDepth: Int) -> URL? {
+        guard let contents = try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for item in contents {
+            guard (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { continue }
+            if item.lastPathComponent.uppercased() == name { return item }
+            if maxDepth > 1, let found = findDir(name, under: item, maxDepth: maxDepth - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    var scanRoot = cardPath
+    if findDir("M4ROOT", under: cardURL, maxDepth: 5) != nil ||
+       findDir("XDROOT", under: cardURL, maxDepth: 5) != nil {
+    } else if let dcimURL = findDir("DCIM", under: cardURL, maxDepth: 4) {
+        scanRoot = dcimURL.path
+    }
+
+    let photoExts: Set<String> = [
+        "jpg","jpeg","png","tif","tiff","heic","heif",
+        "dng","cr2","cr3","nef","arw","raf","rw2","orf","sr2"
+    ]
+    let videoExts: Set<String> = [
+        "mp4","mov","mxf","crm","r3d","braw","ari","arx","mts","m2ts"
+    ]
+    let mediaExts: Set<String> = mode == "photo" ? photoExts : videoExts
+
+    guard let enumerator = fm.enumerator(
+        at: URL(fileURLWithPath: scanRoot),
+        includingPropertiesForKeys: nil,
+        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+    ) else { return nil }
+
+    var names: [String] = []
+    while let rawURL = enumerator.nextObject() as? URL {
+        if names.count >= 30 { break }
+        if rawURL.path.contains("/THMBNL/") { continue }
+        let ext = rawURL.pathExtension.lowercased()
+        guard mediaExts.contains(ext) else { continue }
+        names.append(rawURL.deletingPathExtension().lastPathComponent)
+    }
+
+    guard !names.isEmpty else { return nil }
+
+    var prefix = names[0]
+    for name in names.dropFirst() {
+        var i = prefix.startIndex
+        var j = name.startIndex
+        while i < prefix.endIndex && j < name.endIndex && prefix[i] == name[j] {
+            prefix.formIndex(after: &i)
+            name.formIndex(after: &j)
+        }
+        prefix = String(prefix[..<i])
+        if prefix.isEmpty { return nil }
+    }
+
+    let separators: Set<Character> = ["_", "-", "."]
+    while let last = prefix.last, last.isNumber || separators.contains(last) {
+        prefix.removeLast()
+    }
+
+    let blocklist: Set<String> = ["MVI","IMG","DSC","VID","MOV","FILE","CLIP","VIDEO","PHOTO"]
+    if blocklist.contains(prefix.uppercased()) { return nil }
+
+    return prefix.count >= 3 ? prefix : nil
+}
+
+func dateFolderHasSubdirectories(at path: String) -> Bool {
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(
+        at: URL(fileURLWithPath: path),
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    ) else { return false }
+    return items.contains { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+}
+
 /// Lightweight per-card media-type detector. Reuses the same scan-root logic as
 /// `scanCardDatesSync` (M4ROOT/XDROOT/DCIM detection), then does a top-2-level walk from the
 /// effective media directory, stopping at 500 files total. Returns "video" if video-extension
