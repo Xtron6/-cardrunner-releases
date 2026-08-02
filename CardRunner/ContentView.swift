@@ -1822,7 +1822,15 @@ struct ContentView: View {
     @AppStorage("pref_remoteNotifyEnabled")    private var remoteNotifyEnabled: Bool = false
     @AppStorage("pref_remoteIdleThresholdMin") private var remoteIdleThresholdMin: Int = 2
     @AppStorage("pref_remoteImessageTo")       private var remoteImessageTo: String = ""
-    @AppStorage("pref_remoteSlackWebhook")     private var remoteSlackWebhook: String = ""
+    // Slack Bot API credentials (replaces legacy pref_remoteSlackWebhook webhook).
+    // Migration note: the old webhook key is simply abandoned — fields show empty on first
+    // launch after update, and the user re-enters bot token + channel. Intentional, not
+    // accidental: the new fields require different values and silent auto-fill would silently fail.
+    @AppStorage("pref_remoteSlackBotToken")    private var remoteSlackBotToken: String = ""
+    @AppStorage("pref_remoteSlackChannelId")   private var remoteSlackChannelId: String = ""
+    // Per-lane Slack live sessions, keyed by processID (same key as activeIngests).
+    // One session per in-flight card so concurrent two-card ingests never alias each other's ts.
+    @State private var slackLiveSessions: [UUID: SlackLiveSession] = [:]
     @State private var remoteTestResult: String? = nil
     // Manual "I'm away from keyboard" override — the GUARANTEED remote-alert path. When ON,
     // every card completion texts you regardless of idle time. Session-scoped (@State, not
@@ -7750,11 +7758,12 @@ struct ContentView: View {
                                                   body: failBody,
                                                   category: NotificationCategory.failed)
                     }
+                    let hasSlackDest = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
                     if shouldDeliverRemoteAlert(afkMode: self.afkMode,
                                                 awayEnabled: self.remoteNotifyEnabled,
                                                 idleSeconds: systemIdleSeconds(),
                                                 thresholdMinutes: self.remoteIdleThresholdMin,
-                                                hasDestination: !self.remoteImessageTo.isEmpty || !self.remoteSlackWebhook.isEmpty) {
+                                                hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDest) {
                         let rbody = remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
@@ -7762,7 +7771,17 @@ struct ContentView: View {
                                                     failed: true)
                         RemoteNotifier.send(body: rbody,
                                             imessageTo: self.remoteImessageTo,
-                                            slackWebhook: self.remoteSlackWebhook)
+                                            slackBotToken: self.remoteSlackBotToken,
+                                            slackChannelId: self.remoteSlackChannelId)
+                    }
+                    if !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty,
+                       let session = self.slackLiveSessions.removeValue(forKey: processID) {
+                        session.finish(
+                            token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
+                            cardName: card.name, newFiles: newFiles, destRel: relDest,
+                            durationSec: durationSec, avgMBps: Double(avgMBps), peakMBps: Double(ingest.peakMBps),
+                            hardwarePath: "", verified: false, failed: true
+                        )
                     }
                 } else if newFiles == 0 {
                     AudioEngine.shared.upToDate()
@@ -7842,11 +7861,12 @@ struct ContentView: View {
                                                   category: NotificationCategory.complete,
                                                   userInfo: destPath.isEmpty ? [:] : [kNotificationDestPathKey: destPath])
                     }
+                    let hasSlackDestSuccess = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
                     if shouldDeliverRemoteAlert(afkMode: self.afkMode,
                                                 awayEnabled: self.remoteNotifyEnabled,
                                                 idleSeconds: systemIdleSeconds(),
                                                 thresholdMinutes: self.remoteIdleThresholdMin,
-                                                hasDestination: !self.remoteImessageTo.isEmpty || !self.remoteSlackWebhook.isEmpty) {
+                                                hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDestSuccess) {
                         let rbody = remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
@@ -7854,7 +7874,17 @@ struct ContentView: View {
                                                     failed: false)
                         RemoteNotifier.send(body: rbody,
                                             imessageTo: self.remoteImessageTo,
-                                            slackWebhook: self.remoteSlackWebhook)
+                                            slackBotToken: self.remoteSlackBotToken,
+                                            slackChannelId: self.remoteSlackChannelId)
+                    }
+                    if !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty,
+                       let session = self.slackLiveSessions.removeValue(forKey: processID) {
+                        session.finish(
+                            token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
+                            cardName: card.name, newFiles: newFiles, destRel: relDest,
+                            durationSec: durationSec, avgMBps: Double(avgMBps), peakMBps: Double(ingest.peakMBps),
+                            hardwarePath: "", verified: ingest.verifyEnabled && newFiles > 0, failed: false
+                        )
                     }
                 }
 
@@ -8302,6 +8332,7 @@ struct ContentView: View {
         guard var ingest = activeIngests[processID] else { return }
 
         let lines = chunk.split(whereSeparator: \.isNewline)
+        var sawMeta = false
 
         for rawLine in lines {
             let line = String(rawLine)
@@ -8309,10 +8340,30 @@ struct ContentView: View {
             applyIngestProgressLine(line, to: &ingest)
             // UI: sounds, status text, alerts, and logging layered on top.
             handleProgressLineUI(line, ingest: &ingest)
+            if line.hasPrefix("PROGRESS_META") { sawMeta = true }
         }
 
         activeIngests[processID] = ingest
         publishMenuBarStatus()
+
+        guard !remoteSlackBotToken.isEmpty && !remoteSlackChannelId.isEmpty else { return }
+
+        // Slack live-progress START — fires once when PROGRESS_META arrives with new files.
+        // Keyed by processID so each concurrent card gets its own session (no ts aliasing).
+        if sawMeta && ingest.newFiles > 0 && slackLiveSessions[processID] == nil {
+            let session = SlackLiveSession()
+            slackLiveSessions[processID] = session
+            session.start(token: remoteSlackBotToken, channel: remoteSlackChannelId,
+                          cardName: ingest.cardName, totalFiles: ingest.newFiles)
+        }
+
+        // Slack live-progress UPDATE — throttled inside SlackLiveSession (≥10% change gate).
+        if ingest.totalBytesNew > 0, let session = slackLiveSessions[processID] {
+            let pct = Int(min(Double(ingest.doneBytes) / Double(ingest.totalBytesNew), 1.0) * 100)
+            session.update(token: remoteSlackBotToken, channel: remoteSlackChannelId,
+                           cardName: ingest.cardName, totalFiles: ingest.newFiles,
+                           percent: pct, mbps: ingest.liveMBps)
+        }
     }
 
     /// Push a live snapshot of ingest state to the menu-bar status item (MenuBarStatus.swift).
@@ -8338,6 +8389,8 @@ struct ContentView: View {
                 }
                 checkDiskSpace(ingest: &ingest)
             }
+            // Slack live-progress: start a pinned message when there are files to copy
+            // and both bot token and channel are configured.
 
         } else if line.hasPrefix("VERIFY_PASS") {
             AudioEngine.shared.verifyPassed()
@@ -13711,17 +13764,30 @@ extension ContentView {
                 .padding(.horizontal, 18).padding(.vertical, 12)
                 v3SettingDivider()
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Slack webhook URL").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-                    TextField("https://hooks.slack.com/services/…", text: $remoteSlackWebhook)
+                    Text("Slack bot token").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                    TextField("xoxb-…", text: $remoteSlackBotToken)
                         .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    Text("Create a Slack app with chat:write scope and copy its Bot User OAuth Token.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                v3SettingDivider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Slack channel ID").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                    TextField("C0123456789", text: $remoteSlackChannelId)
+                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    Text("Right-click the channel in Slack → Copy link — the last segment is the channel ID.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
                 v3SettingDivider()
                 HStack(spacing: 10) {
                     Button("Send test") {
-                        RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackWebhook: remoteSlackWebhook) { ok, err in
+                        RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackBotToken: remoteSlackBotToken, slackChannelId: remoteSlackChannelId) { ok, err in
                             remoteTestResult = ok ? "Sent \u{2713}" : (err ?? "Failed")
                         }
                     }
@@ -14189,7 +14255,7 @@ extension ContentView {
             // preset control. ON = every finished card texts you (iMessage/Slack) even while you're
             // at the Mac, bypassing the automatic idle gate. Flip it when you step away. If nothing
             // is configured to send to, it routes you into Settings to set it up.
-            let afkConfigured = !remoteImessageTo.isEmpty || !remoteSlackWebhook.isEmpty
+            let afkConfigured = !remoteImessageTo.isEmpty || (!remoteSlackBotToken.isEmpty && !remoteSlackChannelId.isEmpty)
             Button {
                 afkMode.toggle()
                 AudioEngine.shared.modeSwitch()

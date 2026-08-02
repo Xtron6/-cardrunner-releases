@@ -1988,3 +1988,109 @@ struct RemoteAlertsTests {
                                          thresholdMinutes: 2, hasDestination: true) == false)
     }
 }
+
+// MARK: - Slack live-progress formatter tests
+
+@Suite struct SlackFormatterTests {
+
+    // MARK: slackStartText
+
+    @Test func startTextMultipleFiles() {
+        let text = slackStartText(cardName: "A003", totalFiles: 47)
+        #expect(text.contains("A003"))
+        #expect(text.contains("47 files"))
+        #expect(text.contains("░░░░░░░░░░"))
+        #expect(text.contains("0%"))
+        #expect(text.contains("starting..."))
+    }
+
+    @Test func startTextSingularFile() {
+        let text = slackStartText(cardName: "B001", totalFiles: 1)
+        #expect(text.contains("1 file"))
+        #expect(!text.contains("1 files"))
+    }
+
+    // MARK: slackProgressText
+
+    @Test func progressTextAt50Percent() {
+        let text = slackProgressText(cardName: "A003", totalFiles: 47, percent: 50, mbps: 120.0)
+        #expect(text.contains("A003"))
+        #expect(text.contains("50%"))
+        // 5 filled blocks at 50%
+        #expect(text.contains("█████░░░░░"))
+        #expect(text.contains("120 MB/s"))
+    }
+
+    @Test func progressTextAt0Percent() {
+        let text = slackProgressText(cardName: "A003", totalFiles: 10, percent: 0, mbps: 0)
+        #expect(text.contains("░░░░░░░░░░"))
+        #expect(text.contains("0%"))
+        #expect(text.contains("—"))   // zero mbps shows dash
+    }
+
+    @Test func progressTextAt100Percent() {
+        let text = slackProgressText(cardName: "A003", totalFiles: 10, percent: 100, mbps: 200)
+        #expect(text.contains("██████████"))
+        #expect(text.contains("100%"))
+    }
+
+    @Test func progressTextClampsBeyond100() {
+        let text = slackProgressText(cardName: "A003", totalFiles: 10, percent: 150, mbps: 50)
+        #expect(text.contains("100%"))
+        #expect(text.contains("██████████"))
+    }
+
+    @Test func progressTextSingularFile() {
+        let text = slackProgressText(cardName: "A003", totalFiles: 1, percent: 30, mbps: 80)
+        #expect(text.contains("1 file"))
+        #expect(!text.contains("1 files"))
+    }
+
+    // MARK: slackFinishText
+
+    @Test func finishTextVerifiedSuccess() {
+        let text = slackFinishText(cardName: "A003", newFiles: 47,
+                                   destRel: "Gallo8TB/260801",
+                                   durationSec: 125, avgMBps: 310, peakMBps: 420,
+                                   hardwarePath: "USB 3.1 Gen 2", verified: true, failed: false)
+        #expect(text.hasPrefix("✅"))
+        #expect(text.contains("A003"))
+        #expect(text.contains("47 files"))
+        #expect(text.contains("Gallo8TB/260801"))
+        #expect(text.contains("310 MB/s"))
+        #expect(text.contains("420 MB/s"))
+        #expect(text.contains("USB 3.1 Gen 2"))
+        #expect(text.contains("Verified"))
+        #expect(text.contains("2m 5s"))
+    }
+
+    @Test func finishTextUnverified() {
+        let text = slackFinishText(cardName: "B001", newFiles: 5,
+                                   destRel: "SSD/260801",
+                                   durationSec: 30, avgMBps: 200, peakMBps: 250,
+                                   hardwarePath: "", verified: false, failed: false)
+        #expect(text.hasPrefix("✅"))
+        #expect(!text.contains("Verified"))
+        #expect(!text.contains("🔗"))   // empty hardware path omitted
+        #expect(text.contains("30s"))
+    }
+
+    @Test func finishTextFailed() {
+        let text = slackFinishText(cardName: "C002", newFiles: 0,
+                                   destRel: "SSD/260801",
+                                   durationSec: 10, avgMBps: 0, peakMBps: 0,
+                                   hardwarePath: "", verified: false, failed: true)
+        #expect(text.hasPrefix("⚠️"))
+        #expect(text.contains("C002"))
+        #expect(text.contains("Do not format"))
+    }
+
+    @Test func finishTextSingularFile() {
+        let text = slackFinishText(cardName: "D004", newFiles: 1,
+                                   destRel: "SSD/260801",
+                                   durationSec: 5, avgMBps: 150, peakMBps: 180,
+                                   hardwarePath: "", verified: false, failed: false)
+        #expect(text.contains("1 file"))
+        #expect(!text.contains("1 files"))
+    }
+}
