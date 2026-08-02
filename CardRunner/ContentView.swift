@@ -1829,6 +1829,7 @@ struct ContentView: View {
     // persisted): it means "I'm stepping away right now", so it resets on relaunch rather
     // than silently staying armed forever.
     @State private var afkMode: Bool = false
+    @State private var showAFKPopover: Bool = false
     @AppStorage("winterOlympicsMode") private var winterOlympicsMode: Bool = false
     @AppStorage("pref_olympicsCode") private var olympicsCode: String = "TUWE"
     @AppStorage("copyXML") private var copyXML: Bool = false
@@ -14193,8 +14194,7 @@ extension ContentView {
                 afkMode.toggle()
                 AudioEngine.shared.modeSwitch()
                 if afkMode && !afkConfigured {
-                    v3SettingsCat = .general
-                    withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true }
+                    showAFKPopover = true
                 }
             } label: {
                 let warn = afkMode && !afkConfigured
@@ -14208,15 +14208,41 @@ extension ContentView {
                 .padding(.horizontal, 12).frame(height: 32)
                 .background(afkMode ? tint.opacity(warn ? 0.18 : 0.22) : .white.opacity(0.05), in: Capsule())
                 .overlay(Capsule().strokeBorder(afkMode ? tint.opacity(0.7) : .white.opacity(0.12)))
-                .shadow(color: afkMode ? tint.opacity(0.6) : .clear, radius: afkMode ? 10 : 0)   // loud glow when armed
+                .shadow(color: afkMode ? tint.opacity(0.6) : .clear, radius: afkMode ? 10 : 0)
                 .contentShape(Capsule())
             }.buttonStyle(.plain)
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: afkMode)
                 .help(afkMode
                       ? (afkConfigured ? "Hands-free ON — every finished card texts you, even at the Mac. Tap to turn off."
-                                       : "AFK needs a phone number or Slack webhook — tap to set it up in Settings.")
+                                       : "Add a destination to receive alerts.")
                       : "Hands-free alerts — a guaranteed text when each card finishes. Flip it when you step away.")
                 .accessibilityLabel("Hands-free remote alerts")
+                .popover(isPresented: $showAFKPopover, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "figure.walk.departure")
+                                .foregroundStyle(Color(hex: "#f5a623"))
+                            Text("AFK mode armed").font(.system(size: 13, weight: .semibold))
+                        }
+                        Text("Add a phone number or Slack webhook to receive alerts when a card finishes.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button {
+                            showAFKPopover = false
+                            v3SettingsCat = .general
+                            withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true }
+                        } label: {
+                            Text("Open Remote Alerts Settings")
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(Color(hex: "#f5a623").opacity(0.18), in: RoundedRectangle(cornerRadius: 7))
+                                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color(hex: "#f5a623").opacity(0.5)))
+                        }.buttonStyle(.plain)
+                    }
+                    .padding(16)
+                    .frame(width: 260)
+                }
             // Auto-ingest toggle lives ONLY in the center console now (Xavier's call — it used to
             // appear here, below the ring, AND in the footer). See v3Ring.
             }
