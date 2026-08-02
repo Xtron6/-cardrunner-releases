@@ -1940,6 +1940,7 @@ struct ContentView: View {
     // Cache volumeLooksLikeCard results so the expensive filesystem scan only
     // runs once per volume per mount cycle, not every 2 seconds.
     @State private var volumeCardCache: [String: Bool] = [:]
+    @State private var _refreshGeneration: UInt = 0
     // Track active ingest processes so we can cancel them
     @State private var activeProcesses: [UUID: Process] = [:]
     // IDs explicitly cancelled by the user — used in the termination handler instead of
@@ -2410,10 +2411,10 @@ struct ContentView: View {
 
     /// Human-readable destination preview shown inside the ring during copy.
     /// Example: "MYSSD › ProjectX › 260413 › A001"
+    private static let _predictedDestDF = DateFormatter()
     private var predictedDestPreview: String {
-        let df = DateFormatter()
-        df.dateFormat = strftimeToICU(dateFolderFormat)
-        let dateStr = df.string(from: Date())
+        Self._predictedDestDF.dateFormat = strftimeToICU(dateFolderFormat)
+        let dateStr = Self._predictedDestDF.string(from: Date())
 
         if useCustomDest {
             guard !customDestPath.isEmpty else { return "" }
@@ -5579,67 +5580,93 @@ struct ContentView: View {
     }
 
     private func refreshDestinations() {
+        _refreshGeneration &+= 1
+        let gen = _refreshGeneration
         let fm = FileManager.default
         let volumesURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
-
-        guard let contents = try? fm.contentsOfDirectory(at: volumesURL,
-                                                         includingPropertiesForKeys: nil,
-                                                         options: [.skipsHiddenFiles]) else {
-            return
-        }
-
-        var dests: [Volume] = []
-
-        for url in contents {
-            let name = url.lastPathComponent
-            let path = url.path
-            let lower = name.lowercased()
-
-            // Skip obvious system volumes
-            if ["preboot", "recovery", "vm", "update"].contains(lower) { continue }
-            if lower.contains("macintosh hd") { continue }
-
-            // Treat any camera card (including CFexpress) as a source, not a destination.
-            // Use the shared cache so volumeLooksLikeCard's filesystem enumeration only
-            // runs once per volume per mount cycle across both this function and the scan loop.
-            let isCard: Bool
-            if let cached = volumeCardCache[path] {
-                isCard = cached
+        let cachedValues = volumeCardCache
+        let capturedPrev = selectedPrimary
+        let capturedPrimaryPath: String? = {
+            if useCustomDest && !customDestPath.isEmpty {
+                let comps = URL(fileURLWithPath: customDestPath).pathComponents
+                return comps.count >= 3 && comps[1] == "Volumes" ? "/Volumes/\(comps[2])" : nil
             } else {
-                isCard = volumeLooksLikeCard(url)
-                volumeCardCache[path] = isCard
+                return selectedPrimary?.path
             }
-            if isCard { continue }
+        }()
+        let capturedSecondaryPath = secondaryPath
+        let capturedImportMode    = importMode
 
-            dests.append(Volume(name: name, path: path))
+        DispatchQueue.global().async {
+            guard let contents = try? fm.contentsOfDirectory(at: volumesURL,
+                                                             includingPropertiesForKeys: nil,
+                                                             options: [.skipsHiddenFiles]) else {
+                return
+            }
+
+            var dests: [Volume] = []
+            var newCacheEntries: [String: Bool] = [:]
+
+            for url in contents {
+                let name = url.lastPathComponent
+                let path = url.path
+                let lower = name.lowercased()
+
+                // Skip obvious system volumes
+                if ["preboot", "recovery", "vm", "update"].contains(lower) { continue }
+                if lower.contains("macintosh hd") { continue }
+
+                // Treat any camera card (including CFexpress) as a source, not a destination.
+                // Use the shared cache so volumeLooksLikeCard's filesystem enumeration only
+                // runs once per volume per mount cycle across both this function and the scan loop.
+                let isCard: Bool
+                if let cached = cachedValues[path] {
+                    isCard = cached
+                } else {
+                    isCard = self.volumeLooksLikeCardStatic(url, primaryPath: capturedPrimaryPath,
+                                                            secondaryPath: capturedSecondaryPath,
+                                                            importMode: capturedImportMode)
+                    newCacheEntries[path] = isCard
+                }
+                if isCard { continue }
+
+                dests.append(Volume(name: name, path: path))
+            }
+
+            DispatchQueue.main.async {
+                guard self._refreshGeneration == gen else { return }
+                for (path, val) in newCacheEntries {
+                    self.volumeCardCache[path] = val
+                }
+
+                self.availableDestinations = dests
+
+                if let prev = capturedPrev {
+                    // Keep current selection if still mounted; otherwise try saved pref, then first available
+                    self.selectedPrimary = dests.first(where: { $0.path == prev.path })
+                        ?? dests.first(where: { $0.path == self.primarySSDPath })
+                        ?? dests.first
+                } else {
+                    // On launch (selectedPrimary is nil): restore from saved pref first, then fall back
+                    self.selectedPrimary = dests.first(where: { $0.path == self.primarySSDPath })
+                        ?? dests.first
+                }
+                // Only persist the path when the saved drive was actually found — don't clobber the
+                // preference with a fallback drive while the preferred SSD happens to be unmounted.
+                if let sel = self.selectedPrimary, sel.path == self.primarySSDPath || self.primarySSDPath.isEmpty {
+                    self.primarySSDPath = sel.path
+                }
+
+                // Restore secondary selection if it's still mounted
+                if !self.secondaryPath.isEmpty {
+                    self.selectedSecondary = dests.first(where: { $0.path == self.secondaryPath })
+                }
+
+                self.refreshProjectFolders()
+                self.updateSSDInfo()
+                self.reconcileDestinations()
+            }
         }
-
-        availableDestinations = dests
-
-        if let prev = selectedPrimary {
-            // Keep current selection if still mounted; otherwise try saved pref, then first available
-            selectedPrimary = dests.first(where: { $0.path == prev.path })
-                ?? dests.first(where: { $0.path == primarySSDPath })
-                ?? dests.first
-        } else {
-            // On launch (selectedPrimary is nil): restore from saved pref first, then fall back
-            selectedPrimary = dests.first(where: { $0.path == primarySSDPath })
-                ?? dests.first
-        }
-        // Only persist the path when the saved drive was actually found — don't clobber the
-        // preference with a fallback drive while the preferred SSD happens to be unmounted.
-        if let sel = selectedPrimary, sel.path == primarySSDPath || primarySSDPath.isEmpty {
-            primarySSDPath = sel.path
-        }
-
-        // Restore secondary selection if it's still mounted
-        if !secondaryPath.isEmpty {
-            selectedSecondary = dests.first(where: { $0.path == secondaryPath })
-        }
-
-        refreshProjectFolders()
-        updateSSDInfo()
-        reconcileDestinations()
     }
 
     /// Scans every mounted destination volume for `.cardrunner_partial` dirs
@@ -7490,6 +7517,27 @@ struct ContentView: View {
             let exitStatus = proc.terminationStatus
             let signalled  = (proc.terminationReason == .uncaughtSignal)
 
+            // Read hardware connection fields from the shell's Status= log line.
+            // The shell writes SourceProtocol / SourceLink / DestProtocol / DestLink / DestMedia
+            // to the log file (not stdout), and it writes that line before emitting PHASE done,
+            // so by process-exit time the entry is guaranteed to be on disk.
+            let hwFields: (srcProto: String, srcLink: String, dstProto: String, dstLink: String, dstMedia: String) = {
+                let dayDf = DateFormatter(); dayDf.dateFormat = "yyyyMMdd"
+                let logPath = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Logs/CardRunner/cardrunner_\(dayDf.string(from: Date())).log")
+                guard let contents = try? String(contentsOf: logPath, encoding: .utf8) else {
+                    return ("", "", "", "", "")
+                }
+                // Walk lines in reverse to find the most recent Status= line for this card.
+                let cardKey = "Card=\(card.name.replacingOccurrences(of: "|", with: "-"))"
+                for line in contents.components(separatedBy: "\n").reversed() {
+                    if line.contains("Status=") && line.contains(cardKey) && line.contains("SourceProtocol=") {
+                        return parseHardwareFields(from: line)
+                    }
+                }
+                return ("", "", "", "", "")
+            }()
+
             DispatchQueue.main.async {
                 // cancelledProcessIDs is @State — only safe on main.
                 // process.terminate() sends SIGTERM; the shell's TERM trap exits normally,
@@ -7676,27 +7724,6 @@ struct ContentView: View {
                 let speedRunID = ingest.runID ?? processID.uuidString
                 let sustainedSpeed = sustainedMBps(ingest.speedSamples)
                 self.persistLogLine("SPEED_DETAIL runID=\(speedRunID) peak=\(ingest.peakMBps) sustained=\(sustainedSpeed) avg=\(avgMBps) samples=\(ingest.speedSamples.count)")
-
-                // Read hardware connection fields from the shell's Status= log line.
-                // The shell writes SourceProtocol / SourceLink / DestProtocol / DestLink / DestMedia
-                // to the log file (not stdout), and it writes that line before emitting PHASE done,
-                // so by process-exit time the entry is guaranteed to be on disk.
-                let hwFields: (srcProto: String, srcLink: String, dstProto: String, dstLink: String, dstMedia: String) = {
-                    let dayDf = DateFormatter(); dayDf.dateFormat = "yyyyMMdd"
-                    let logPath = FileManager.default.homeDirectoryForCurrentUser
-                        .appendingPathComponent("Library/Logs/CardRunner/cardrunner_\(dayDf.string(from: Date())).log")
-                    guard let contents = try? String(contentsOf: logPath, encoding: .utf8) else {
-                        return ("", "", "", "", "")
-                    }
-                    // Walk lines in reverse to find the most recent Status= line for this card.
-                    let cardKey = "Card=\(card.name.replacingOccurrences(of: "|", with: "-"))"
-                    for line in contents.components(separatedBy: "\n").reversed() {
-                        if line.contains("Status=") && line.contains(cardKey) && line.contains("SourceProtocol=") {
-                            return parseHardwareFields(from: line)
-                        }
-                    }
-                    return ("", "", "", "", "")
-                }()
 
                 let entry = IngestHistoryEntry(
                     cardName: card.name,

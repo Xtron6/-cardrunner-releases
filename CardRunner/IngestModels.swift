@@ -179,11 +179,20 @@ nonisolated struct CardDateInfo: Identifiable {
     let totalBytes: Int64
     let isToday: Bool
 
+    private static let _parseDF: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd"
+        return df
+    }()
+    private static let _displayDF: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .long
+        df.timeStyle = .none
+        return df
+    }()
     var displayDate: String {
-        let parse = DateFormatter(); parse.dateFormat = "yyyyMMdd"
-        guard let d = parse.date(from: yyyymmdd) else { return yyyymmdd }
-        let fmt = DateFormatter(); fmt.dateStyle = .long; fmt.timeStyle = .none
-        return fmt.string(from: d)
+        guard let d = Self._parseDF.date(from: yyyymmdd) else { return yyyymmdd }
+        return Self._displayDF.string(from: d)
     }
 
     var displaySize: String {
