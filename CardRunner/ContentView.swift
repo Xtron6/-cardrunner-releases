@@ -14983,7 +14983,13 @@ extension ContentView {
                 Text("Flushing to disk — keep card inserted").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)) }
         case .verifying:
             HStack(spacing: 7) { ProgressView().controlSize(.small).tint(v3Green)
-                Text("Verifying checksums…").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9)) }
+                let pct = ing.verifyTotal > 0 ? Int(Double(ing.verifyChecked) / Double(ing.verifyTotal) * 100) : 0
+                if ing.verifyTotal > 0 && pct >= 1 && pct <= 99 {
+                    Text("Verifying checksums… \(pct)%").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9)).monospacedDigit()
+                } else {
+                    Text("Verifying checksums…").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9))
+                }
+            }
         case .done:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
