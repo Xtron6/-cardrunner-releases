@@ -1802,6 +1802,7 @@ struct ContentView: View {
     @State private var isShowingSettings = false
     @State private var isShowingSupportBundle = false
     @State private var supportBundleText = ""
+    @State private var isBuildingBundle  = false
     @State private var lastIngestSummary: IngestHistoryEntry? = nil
     @State private var showSkipDetail: Bool = false
 
@@ -4369,15 +4370,24 @@ struct ContentView: View {
                     // present the sheet (same anti-stacking pattern used for the preset editor).
                     // Previously reachable only from the Help menu.
                     Button {
-                        supportBundleText = generateSupportBundle()
-                        isShowingSettings = false   // close settings so we don't stack sheets
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            isShowingSupportBundle = true
+                        isBuildingBundle  = true
+                        isShowingSettings = false
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let bundle = generateSupportBundle()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                supportBundleText = bundle
+                                isBuildingBundle  = false
+                                isShowingSupportBundle = true
+                            }
                         }
                     } label: {
                         HStack(spacing: 5) {
-                            Image(systemName: "ladybug")
-                                .font(.system(size: 11))
+                            if isBuildingBundle {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "ladybug")
+                                    .font(.system(size: 11))
+                            }
                             Text("Report an Issue…")
                                 .font(.system(size:12).weight(.medium))
                         }
@@ -4792,8 +4802,15 @@ struct ContentView: View {
             }
             // Help → Report an Issue…
             .onReceive(NotificationCenter.default.publisher(for: .menuReportIssue)) { _ in
-                supportBundleText = generateSupportBundle()
-                isShowingSupportBundle = true
+                isBuildingBundle = true
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let bundle = generateSupportBundle()
+                    DispatchQueue.main.async {
+                        supportBundleText  = bundle
+                        isBuildingBundle   = false
+                        isShowingSupportBundle = true
+                    }
+                }
             }
             // Help → View Log Files
             .onReceive(NotificationCenter.default.publisher(for: .menuViewLogFiles)) { _ in
