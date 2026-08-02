@@ -2179,6 +2179,7 @@ struct ContentView: View {
     @State private var v3HoveredRailCat: V3SettingsCat? = nil   // settings rail icon under the cursor (blue glow)
     @State private var v3GearHovered = false          // top-bar settings gear hover (blue glow)
     @State private var v3HistHovered = false          // top-bar history button hover (blue glow)
+    @State private var v3AFKHovered  = false          // top-bar AFK button hover
     // Dynamic drag of a destination tile onto the default box (make-default swap).
     @State private var v3DraggingDestID: UUID? = nil  // the tile being dragged
     @State private var v3DragOffset: CGSize = .zero    // follows the cursor
@@ -14265,18 +14266,22 @@ extension ContentView {
             } label: {
                 let warn = afkMode && !afkConfigured
                 let tint: Color = warn ? Color(hex: "#f5a623") : v3Cyan
+                let hoverTint: Color = v3AFKHovered && !afkMode ? v3Cyan : tint
                 HStack(spacing: 6) {
                     Image(systemName: afkMode ? "figure.walk.departure" : "figure.walk")
                     Text("AFK")
                 }
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(afkMode ? (warn ? tint : .white) : .white.opacity(0.6))
+                .foregroundStyle(afkMode ? (warn ? tint : .white) : (v3AFKHovered ? v3Cyan : .white.opacity(0.6)))
                 .padding(.horizontal, 12).frame(height: 32)
-                .background(afkMode ? tint.opacity(warn ? 0.18 : 0.22) : .white.opacity(0.05), in: Capsule())
-                .overlay(Capsule().strokeBorder(afkMode ? tint.opacity(0.7) : .white.opacity(0.12)))
-                .shadow(color: afkMode ? tint.opacity(0.6) : .clear, radius: afkMode ? 10 : 0)
+                .background(afkMode ? tint.opacity(warn ? 0.18 : 0.22) : .white.opacity(v3AFKHovered ? 0.08 : 0.05), in: Capsule())
+                .overlay(Capsule().strokeBorder(afkMode ? tint.opacity(0.7) : (v3AFKHovered ? v3Cyan.opacity(0.5) : .white.opacity(0.12))))
+                .shadow(color: afkMode ? tint.opacity(0.6) : (v3AFKHovered ? v3Cyan.opacity(0.5) : .clear), radius: afkMode ? 10 : (v3AFKHovered ? 10 : 0))
+                .scaleEffect(v3AFKHovered && !afkMode ? 1.05 : 1)
                 .contentShape(Capsule())
             }.buttonStyle(.plain)
+                .onHover { v3AFKHovered = $0 }
+                .animation(.spring(response: 0.3, dampingFraction: 0.65), value: v3AFKHovered)
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: afkMode)
                 .help(afkMode
                       ? (afkConfigured ? "Hands-free ON — every finished card texts you, even at the Mac. Tap to turn off."
