@@ -1819,6 +1819,16 @@ struct ContentView: View {
     @AppStorage("pref_transferReportEnabled") private var transferReportEnabled: Bool = false
     @AppStorage("pref_renameOnIngest")        private var renameOnIngestEnabled: Bool = false
     @AppStorage("pref_renameTemplate")        private var renameTemplate: String = "{cardname}_{original}"
+    @AppStorage("pref_remoteNotifyEnabled")    private var remoteNotifyEnabled: Bool = false
+    @AppStorage("pref_remoteIdleThresholdMin") private var remoteIdleThresholdMin: Int = 2
+    @AppStorage("pref_remoteImessageTo")       private var remoteImessageTo: String = ""
+    @AppStorage("pref_remoteSlackWebhook")     private var remoteSlackWebhook: String = ""
+    @State private var remoteTestResult: String? = nil
+    // Manual "I'm away from keyboard" override — the GUARANTEED remote-alert path. When ON,
+    // every card completion texts you regardless of idle time. Session-scoped (@State, not
+    // persisted): it means "I'm stepping away right now", so it resets on relaunch rather
+    // than silently staying armed forever.
+    @State private var afkMode: Bool = false
     @AppStorage("winterOlympicsMode") private var winterOlympicsMode: Bool = false
     @AppStorage("pref_olympicsCode") private var olympicsCode: String = "TUWE"
     @AppStorage("copyXML") private var copyXML: Bool = false
@@ -7739,6 +7749,20 @@ struct ContentView: View {
                                                   body: failBody,
                                                   category: NotificationCategory.failed)
                     }
+                    if shouldDeliverRemoteAlert(afkMode: self.afkMode,
+                                                awayEnabled: self.remoteNotifyEnabled,
+                                                idleSeconds: systemIdleSeconds(),
+                                                thresholdMinutes: self.remoteIdleThresholdMin,
+                                                hasDestination: !self.remoteImessageTo.isEmpty || !self.remoteSlackWebhook.isEmpty) {
+                        let rbody = remoteAlertBody(cardName: card.name,
+                                                    newFiles: newFiles,
+                                                    destRel: relDest,
+                                                    verified: false,
+                                                    failed: true)
+                        RemoteNotifier.send(body: rbody,
+                                            imessageTo: self.remoteImessageTo,
+                                            slackWebhook: self.remoteSlackWebhook)
+                    }
                 } else if newFiles == 0 {
                     AudioEngine.shared.upToDate()
                     // Tier 0: date filter excluded ALL clips and none were previously ingested
@@ -7816,6 +7840,20 @@ struct ContentView: View {
                                                   body: notifBody,
                                                   category: NotificationCategory.complete,
                                                   userInfo: destPath.isEmpty ? [:] : [kNotificationDestPathKey: destPath])
+                    }
+                    if shouldDeliverRemoteAlert(afkMode: self.afkMode,
+                                                awayEnabled: self.remoteNotifyEnabled,
+                                                idleSeconds: systemIdleSeconds(),
+                                                thresholdMinutes: self.remoteIdleThresholdMin,
+                                                hasDestination: !self.remoteImessageTo.isEmpty || !self.remoteSlackWebhook.isEmpty) {
+                        let rbody = remoteAlertBody(cardName: card.name,
+                                                    newFiles: newFiles,
+                                                    destRel: relDest,
+                                                    verified: ingest.verifyEnabled && newFiles > 0,
+                                                    failed: false)
+                        RemoteNotifier.send(body: rbody,
+                                            imessageTo: self.remoteImessageTo,
+                                            slackWebhook: self.remoteSlackWebhook)
                     }
                 }
 
@@ -13644,6 +13682,55 @@ extension ContentView {
                             "Clips shot between midnight and your day-start hour file under the previous calendar day.",
                             $broadcastDayFolders)
             }
+            v3RemoteAlertsSection
+        }
+    }
+
+    @ViewBuilder private var v3RemoteAlertsSection: some View {
+        v3SettingsSection("REMOTE ALERTS") {
+            v3ToggleRow("Notify my phone when I'm away",
+                        "Text you an alert when a card finishes, but only if you've stepped away from the Mac.",
+                        $remoteNotifyEnabled)
+            if remoteNotifyEnabled {
+                v3SettingDivider()
+                v3SliderRow("Away after", "How many idle minutes before you count as away.",
+                            value: Binding(get: { Double(remoteIdleThresholdMin) },
+                                           set: { remoteIdleThresholdMin = Int($0) }),
+                            range: 1...30, step: 1, valueLabel: "\(remoteIdleThresholdMin) min")
+                v3SettingDivider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("iMessage to").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                    TextField("Phone number or Apple ID email", text: $remoteImessageTo)
+                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                    Text("First send will ask macOS for permission to control Messages.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                v3SettingDivider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Slack webhook URL").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                    TextField("https://hooks.slack.com/services/…", text: $remoteSlackWebhook)
+                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                v3SettingDivider()
+                HStack(spacing: 10) {
+                    Button("Send test") {
+                        RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackWebhook: remoteSlackWebhook) { ok, err in
+                            remoteTestResult = ok ? "Sent \u{2713}" : (err ?? "Failed")
+                        }
+                    }
+                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
+                    if let result = remoteTestResult {
+                        Text(result).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+            }
         }
     }
 
@@ -14097,6 +14184,39 @@ extension ContentView {
                 }.menuStyle(.borderlessButton).fixedSize().v3Hover(glow: v3Cyan).help("Switch ingest preset")
             }
             Spacer()
+            // AFK / hands-free toggle — the GUARANTEED remote-alert path, sitting opposite the
+            // preset control. ON = every finished card texts you (iMessage/Slack) even while you're
+            // at the Mac, bypassing the automatic idle gate. Flip it when you step away. If nothing
+            // is configured to send to, it routes you into Settings to set it up.
+            let afkConfigured = !remoteImessageTo.isEmpty || !remoteSlackWebhook.isEmpty
+            Button {
+                afkMode.toggle()
+                AudioEngine.shared.modeSwitch()
+                if afkMode && !afkConfigured {
+                    v3SettingsCat = .general
+                    withAnimation(.easeInOut(duration: 0.18)) { isShowingSettings = true }
+                }
+            } label: {
+                let warn = afkMode && !afkConfigured
+                let tint: Color = warn ? Color(hex: "#f5a623") : v3Cyan
+                HStack(spacing: 6) {
+                    Image(systemName: afkMode ? "figure.walk.departure" : "figure.walk")
+                    Text("AFK")
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(afkMode ? (warn ? tint : .white) : .white.opacity(0.6))
+                .padding(.horizontal, 12).frame(height: 32)
+                .background(afkMode ? tint.opacity(warn ? 0.18 : 0.22) : .white.opacity(0.05), in: Capsule())
+                .overlay(Capsule().strokeBorder(afkMode ? tint.opacity(0.7) : .white.opacity(0.12)))
+                .shadow(color: afkMode ? tint.opacity(0.6) : .clear, radius: afkMode ? 10 : 0)   // loud glow when armed
+                .contentShape(Capsule())
+            }.buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: afkMode)
+                .help(afkMode
+                      ? (afkConfigured ? "Hands-free ON — every finished card texts you, even at the Mac. Tap to turn off."
+                                       : "AFK needs a phone number or Slack webhook — tap to set it up in Settings.")
+                      : "Hands-free alerts — a guaranteed text when each card finishes. Flip it when you step away.")
+                .accessibilityLabel("Hands-free remote alerts")
             // Auto-ingest toggle lives ONLY in the center console now (Xavier's call — it used to
             // appear here, below the ring, AND in the footer). See v3Ring.
             }
