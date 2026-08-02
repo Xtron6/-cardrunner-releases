@@ -95,17 +95,22 @@ enum RemoteNotifier {
         DispatchQueue.global(qos: .utility).async {
             var errors: [String] = []
             var anySuccess = false
+            // iMessage (background async) and Slack (URLSession callback queue) both report
+            // back concurrently — serialize every read/write of the shared result state through
+            // this lock so the Array append and Bool write can't race.
+            let lock = NSLock()
+            func record(ok: Bool, channel: String, err: String?) {
+                lock.lock(); defer { lock.unlock() }
+                if ok { anySuccess = true }
+                else { errors.append("\(channel): \(err ?? "failed")") }
+            }
             let group = DispatchGroup()
 
             if !trimmedPhone.isEmpty {
                 group.enter()
                 DispatchQueue.global(qos: .utility).async {
                     let (ok, err) = sendIMessage(to: trimmedPhone, body: testBody)
-                    if ok {
-                        anySuccess = true
-                    } else {
-                        errors.append("iMessage: \(err ?? "failed")")
-                    }
+                    record(ok: ok, channel: "iMessage", err: err)
                     group.leave()
                 }
             }
@@ -113,21 +118,21 @@ enum RemoteNotifier {
             if !trimmedSlack.isEmpty {
                 group.enter()
                 sendSlack(webhook: trimmedSlack, body: testBody) { ok, err in
-                    if ok {
-                        anySuccess = true
-                    } else {
-                        errors.append("Slack: \(err ?? "failed")")
-                    }
+                    record(ok: ok, channel: "Slack", err: err)
                     group.leave()
                 }
             }
 
             group.wait()
+            lock.lock()
+            let (success, collectedErrors) = (anySuccess, errors)
+            lock.unlock()
 
-            let success = anySuccess
-            let message: String? = errors.isEmpty ? nil : errors.joined(separator: "; ")
+            let message: String? = collectedErrors.isEmpty ? nil : collectedErrors.joined(separator: "; ")
             DispatchQueue.main.async {
-                completion(success, success ? (errors.isEmpty ? nil : message) : (message ?? "Failed to send"))
+                // On success, surface partial-channel failures too (e.g. "Slack: …") so a
+                // half-working config isn't reported as a clean pass.
+                completion(success, success ? message : (message ?? "Failed to send"))
             }
         }
     }
@@ -173,7 +178,13 @@ enum RemoteNotifier {
     }
 
     private static func escapeForAppleScript(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
+        // Collapse any newline / control character to a space FIRST: AppleScript string
+        // literals can't span a raw newline, so an unescaped one would break the parse and
+        // silently drop the alert. (Not a security issue — the script is argv-passed, never
+        // shell-evaluated — purely robustness against odd card/folder names.) Then escape the
+        // two literal-significant characters, backslash before quote so the order is stable.
+        let cleaned = String(s.map { ($0.isNewline || ($0.unicodeScalars.first.map { CharacterSet.controlCharacters.contains($0) } ?? false)) ? " " : $0 })
+        return cleaned.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
