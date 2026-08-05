@@ -546,6 +546,7 @@ nonisolated struct ActiveIngest {
     var recoveredFiles: Int = 0     // files that mismatched but were re-copied and now match — NOT a failure
     var quarantinedFiles: Int = 0   // files still mismatched after re-copy — unrecoverable, trips hasCopyError
     var friendlyName: String = ""   // card label / shooter name, stored so termination handler can access it
+    var labelIsOperatorGiven: Bool = false   // true only when friendlyName came from an operator edit — gates nickname learning
 
     // Verification tier — honest badge reflecting what actually ran
     var verificationTier: VerificationTier = .sizeChecked

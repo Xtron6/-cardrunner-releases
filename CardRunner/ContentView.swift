@@ -2164,6 +2164,9 @@ struct ContentView: View {
     // Per-card folder names (--cardlabel) entered on a lane, keyed by source mount path.
     // Read by startIngest at launch; survives the async analysis/picker chain.
     @State private var pendingCardLabels: [String: String] = [:]
+    // Paths whose pendingCardLabels entry was set by an OPERATOR edit (not the auto-label
+    // feature). Only these are eligible to be learned into knownCardNicknames on termination.
+    @State private var operatorNamedPaths: Set<String> = []
     // Drag-to-link node UI state (bodyV3) — ported from the demo.
     @State private var destFrames: [UUID: CGRect] = [:]
     @State private var dragLine: DragLine? = nil
@@ -4874,6 +4877,7 @@ struct ContentView: View {
                 if let url = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
                     v3FreeSpaceCache.removeValue(forKey: url.path)   // drop the ejected drive's stale label
                     pendingCardLabels.removeValue(forKey: url.path)  // a name set but never Started leaves with the card
+                    operatorNamedPaths.remove(url.path)
                 }
                 refreshFreeSpaceCache()
                 revalidateCustomDest()   // drive holding custom dest may have been ejected
@@ -6164,22 +6168,12 @@ struct ContentView: View {
             // keystrokes persist via onChange (which also updates the stored nickname),
             // and the matching UUID guard below leaves their edit untouched.
             if foundUUID != lastAutoFilledUUID {
-                skipNextNicknameSave = true   // programmatic write — don't re-save to UUID store
-                useCustomCardName = true
-                customCardName    = nickname
                 lastAutoFilledUUID = foundUUID
             }
             cardNameIsFromMemory = true
         } else {
-            // Unknown card. If the field currently shows a name that was auto-filled
-            // from a previous card's memory, clear it — we don't want Card A's name
-            // to accidentally be stamped onto Card B. If the name came from a preset
-            // or the user explicitly typed it, leave it alone.
-            if cardNameIsFromMemory {
-                skipNextNicknameSave = true   // don't treat the clear as a user keystroke
-                useCustomCardName = false
-                customCardName    = ""
-            }
+            // Unknown card. Display-only state resets; the shared global is no
+            // longer touched here, so it can't be stamped onto a different card.
             cardNameIsFromMemory   = false
             currentCardIsKnown     = false
             currentCardMatchedName = ""
@@ -6621,6 +6615,7 @@ struct ContentView: View {
         seenCardPaths.insert(item.card.path)
         if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
         pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        operatorNamedPaths.insert(item.card.path)
         // Keep the awaiting lane VISIBLE (as "Starting…") through the async scan instead of removing
         // it here — it's handed off to the live lane atomically when startIngest creates it, so the
         // card is never in neither list. Removing it up-front is exactly what made it vanish.
@@ -6649,6 +6644,7 @@ struct ContentView: View {
             seenCardPaths.insert(item.card.path)
             if let uuid = item.card.volumeUUID { seenCardUUIDs.insert(uuid) }
             pendingCardLabels[item.card.path] = item.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+            operatorNamedPaths.insert(item.card.path)
             withAnimation(v3Anim(.easeInOut(duration: 0.15))) { _ = v3StartingPaths.insert(item.card.path) }
             routeCardsForIngest([item.card], destination: dest, detectedMode: item.detectedMode)
         }
@@ -6721,6 +6717,7 @@ struct ContentView: View {
                 if let dest = capturedDestForLabel {
                     let needsLabel = await MainActor.run {
                         self.pendingCardLabels[card.path] == nil && !capturedUseCustomCardName
+                            && (card.volumeUUID.flatMap { self.knownCardNicknames[$0] } == nil)
                     }
                     if needsLabel {
                         let prefix = extractCardFilePrefix(at: card.path, mode: currentMode)
@@ -6993,6 +6990,7 @@ struct ContentView: View {
         // Resolve once: a per-card label overrides the global custom-card-name pref.
         let perCardLabel: String? = pendingCardLabels[card.path]
         let effectiveCardLabel = resolveCardLabel(perCard: perCardLabel,
+                                                  knownNickname: card.volumeUUID.flatMap { knownCardNicknames[$0] },
                                                   globalEnabled: useCustomCardName, globalName: customCardName)
         // The onboarding demo owns the engine exclusively — queue real cards behind it.
         if demoTask != nil {
@@ -7169,10 +7167,12 @@ struct ContentView: View {
         // cardLabel is retained so a during-transfer rename knows the original folder name.
         activeIngests[processID]?.friendlyName = effectiveCardLabel
         activeIngests[processID]?.cardLabel = effectiveCardLabel
+        activeIngests[processID]?.labelIsOperatorGiven = operatorNamedPaths.contains(card.path)
         // Single-use: consume the per-card label now that THIS ingest has committed (past all
         // early-return guards). Prevents a stale entry from shadowing the global pref for a
         // DIFFERENT card later mounted at the same path (e.g. two "Untitled" cards).
         pendingCardLabels.removeValue(forKey: card.path)
+        operatorNamedPaths.remove(card.path)
         activeIngests[processID]?.volumeUUID = card.volumeUUID
         activeIngests[processID]?.sourcePath = card.path
         activeIngests[processID]?.runMode = effectiveMode   // per-card detected mode, not global toggle
@@ -7729,10 +7729,11 @@ struct ContentView: View {
                     }
                     self.clearFailedRecords(cardName: card.name, volumeUUID: card.volumeUUID,
                                             friendlyName: ingest.friendlyName, projectName: self.projectName)
-                    // Persist card nickname: if the operator labelled this card, remember the
-                    // UUID → label mapping so future inserts auto-fill the field.
-                    if self.useCustomCardName, let uuid = card.volumeUUID {
-                        let nickname = self.customCardName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Persist card nickname: only when THIS card's own resolved label was
+                    // operator-given (never the shared global) — an auto-label or preset-only
+                    // label must never be written into the per-UUID store.
+                    if ingest.labelIsOperatorGiven, let uuid = card.volumeUUID {
+                        let nickname = ingest.friendlyName.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !nickname.isEmpty {
                             self.knownCardNicknames[uuid] = nickname
                             self.persistCardNicknames()

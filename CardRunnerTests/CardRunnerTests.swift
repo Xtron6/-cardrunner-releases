@@ -520,24 +520,36 @@ struct CardRunnerTests {
 
     @Test func cardLabelPerCardOverridesGlobal() {
         // A name typed on the lane wins over the global custom-card-name pref.
-        #expect(resolveCardLabel(perCard: "A006", globalEnabled: true, globalName: "GLOBAL") == "A006")
+        #expect(resolveCardLabel(perCard: "A006", knownNickname: nil, globalEnabled: true, globalName: "GLOBAL") == "A006")
     }
 
     @Test func cardLabelPerCardTrimmed() {
-        #expect(resolveCardLabel(perCard: "  A007 ", globalEnabled: false, globalName: "") == "A007")
+        #expect(resolveCardLabel(perCard: "  A007 ", knownNickname: nil, globalEnabled: false, globalName: "") == "A007")
     }
 
     @Test func cardLabelEmptyPerCardMeansNoSubfolder() {
         // An explicitly-cleared per-card name → no --cardlabel, even if the global toggle is on.
-        #expect(resolveCardLabel(perCard: "   ", globalEnabled: true, globalName: "GLOBAL") == "")
+        #expect(resolveCardLabel(perCard: "   ", knownNickname: nil, globalEnabled: true, globalName: "GLOBAL") == "")
     }
 
     @Test func cardLabelNilFallsBackToGlobalWhenEnabled() {
-        #expect(resolveCardLabel(perCard: nil, globalEnabled: true, globalName: "GLOBAL") == "GLOBAL")
+        #expect(resolveCardLabel(perCard: nil, knownNickname: nil, globalEnabled: true, globalName: "GLOBAL") == "GLOBAL")
     }
 
     @Test func cardLabelNilWithGlobalDisabledIsEmpty() {
-        #expect(resolveCardLabel(perCard: nil, globalEnabled: false, globalName: "GLOBAL") == "")
+        #expect(resolveCardLabel(perCard: nil, knownNickname: nil, globalEnabled: false, globalName: "GLOBAL") == "")
+    }
+
+    @Test func cardLabelOwnNicknameBeatsGlobal() {
+        #expect(resolveCardLabel(perCard: nil, knownNickname: "xavier", globalEnabled: true, globalName: "OTHER") == "xavier")
+    }
+
+    @Test func cardLabelExplicitEmptyPerCardBeatsNickname() {
+        #expect(resolveCardLabel(perCard: "", knownNickname: "xavier", globalEnabled: true, globalName: "OTHER") == "")
+    }
+
+    @Test func cardLabelNicknameWhenGlobalDisabled() {
+        #expect(resolveCardLabel(perCard: nil, knownNickname: "drew", globalEnabled: false, globalName: "") == "drew")
     }
 
     // MARK: - --ignore-manifest (deliberate re-ingest of an already-offloaded card)

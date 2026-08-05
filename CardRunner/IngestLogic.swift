@@ -788,8 +788,15 @@ func cardIsAlreadyTracked(cardPath: String,
 /// pref; nil means "no per-card name, use the global setting". The result is trimmed — empty
 /// means NO per-card subfolder (footage lands directly under the date). Used for both the
 /// emitted --cardlabel and the lane's display name so they never diverge.
-func resolveCardLabel(perCard: String?, globalEnabled: Bool, globalName: String) -> String {
-    let candidate = perCard ?? (globalEnabled ? globalName : "")
+func resolveCardLabel(perCard: String?, knownNickname: String?, globalEnabled: Bool, globalName: String) -> String {
+    if let perCard = perCard {
+        return perCard.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if let knownNickname = knownNickname {
+        let trimmed = knownNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+    }
+    let candidate = globalEnabled ? globalName : ""
     return candidate.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
