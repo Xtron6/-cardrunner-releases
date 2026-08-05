@@ -5027,9 +5027,8 @@ struct ContentView: View {
                     // NOTE: do NOT stop the scan loop here — detection must keep running
                     // so plugged cards still surface as "waiting to route" while OFF.
                     // (Card routing/auto-start is already gated on autoIngest in the scan.)
-                    if runningCount > 0 {
-                        cancelAllIngests()
-                    }
+                    // Turning Auto-Ingest OFF only stops auto-STARTING new cards — it must
+                    // never cancel an in-flight transfer. Use Stop Transfer (⌘.) for that.
                     if runningCount == 0 {
                         statusText = "Waiting for cards…"
                     }
