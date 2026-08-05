@@ -545,7 +545,7 @@ nonisolated func bottleneckDescriptor(
     }
     let lowerCap = [sourceCap, destCap].compactMap { $0 }.min()
     if let lower = lowerCap, Double(peakMBps) < Double(lower) * 0.60 {
-        return "Below expected — check connection"
+        return "Speed below expected for this link"
     }
     if avgMBps > 0 && peakMBps > avgMBps * 2 {
         return "Verify phase slowed avg"

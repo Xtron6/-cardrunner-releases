@@ -1820,8 +1820,6 @@ struct ContentView: View {
     @AppStorage("pref_transferReportEnabled") private var transferReportEnabled: Bool = false
     @AppStorage("pref_renameOnIngest")        private var renameOnIngestEnabled: Bool = false
     @AppStorage("pref_renameTemplate")        private var renameTemplate: String = "{cardname}_{original}"
-    @AppStorage("pref_remoteNotifyEnabled")    private var remoteNotifyEnabled: Bool = false
-    @AppStorage("pref_remoteIdleThresholdMin") private var remoteIdleThresholdMin: Int = 2
     @AppStorage("pref_remoteImessageTo")       private var remoteImessageTo: String = ""
     // Slack Bot API credentials (replaces legacy pref_remoteSlackWebhook webhook).
     // Migration note: the old webhook key is simply abandoned — fields show empty on first
@@ -4751,11 +4749,9 @@ struct ContentView: View {
             // FOLDERSYNC_START), not the destination root. Falls back to the default destination
             // root only when no transfer has completed yet.
             .onReceive(NotificationCenter.default.publisher(for: .menuOpenDestination)) { _ in
-                let exact = finderDestPath
-                if !exact.isEmpty {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: exact))
-                } else if let p = defaultDestination?.path ?? selectedPrimary?.path, !p.isEmpty {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: p))
+                let dest = finderRevealPath()
+                if !dest.isEmpty {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: dest))
                 }
             }
             // File → Open Last Ingested Folder  (⌘⇧L)
@@ -6732,18 +6728,31 @@ struct ContentView: View {
                         let project = resolveProjectFolder(destProject: dest.projectFolder, globalProject: capturedProjectName)
                         let dateFolderPath = "\(dest.path)/\(project)/\(sub)/\(capturedDateStr)"
                         let hasSubs = dateFolderHasSubdirectories(at: dateFolderPath)
-                        let label: String
-                        if !hasSubs {
-                            label = ""
-                        } else if let p = prefix {
-                            label = p
-                        } else {
-                            label = "CARD_\(capturedDateStr.suffix(4))"
-                        }
+                        let hhmm: String = {
+                            let f = DateFormatter(); f.dateFormat = "HHmm"
+                            return f.string(from: Date())
+                        }()
+                        // The CARD_ fallback's uniqueness check + the pendingCardLabels assignment
+                        // must happen as one atomic main-actor step — otherwise two concurrent
+                        // routeCardsForIngest invocations could both read "free" before either writes.
                         await MainActor.run {
-                            if self.pendingCardLabels[card.path] == nil {
-                                self.pendingCardLabels[card.path] = label
+                            guard self.pendingCardLabels[card.path] == nil else { return }
+                            let label: String
+                            if !hasSubs {
+                                label = ""
+                            } else if let p = prefix {
+                                label = p
+                            } else {
+                                var candidate = "CARD_\(hhmm)"
+                                var suffix = 2
+                                while FileManager.default.fileExists(atPath: "\(dateFolderPath)/\(candidate)")
+                                        || self.pendingCardLabels.values.contains(candidate) {
+                                    candidate = "CARD_\(hhmm)_\(suffix)"
+                                    suffix += 1
+                                }
+                                label = candidate
                             }
+                            self.pendingCardLabels[card.path] = label
                         }
                     }
                 }
@@ -7838,11 +7847,8 @@ struct ContentView: View {
                                                   category: NotificationCategory.failed)
                     }
                     let hasSlackDest = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
-                    if shouldDeliverRemoteAlert(afkMode: self.afkMode,
-                                                awayEnabled: self.remoteNotifyEnabled,
-                                                idleSeconds: systemIdleSeconds(),
-                                                thresholdMinutes: self.remoteIdleThresholdMin,
-                                                hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDest) {
+                    if shouldDeliverRemoteAlert(hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDest,
+                                                afkMode: self.afkMode) {
                         let rbody = remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
@@ -7853,8 +7859,8 @@ struct ContentView: View {
                                             slackBotToken: self.remoteSlackBotToken,
                                             slackChannelId: self.remoteSlackChannelId)
                     }
-                    if !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty,
-                       let session = self.slackLiveSessions.removeValue(forKey: processID) {
+                    if let session = self.slackLiveSessions.removeValue(forKey: processID),
+                       self.afkMode, !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
                         session.finish(
                             token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
                             cardName: card.name, newFiles: newFiles, destRel: relDest,
@@ -7941,11 +7947,8 @@ struct ContentView: View {
                                                   userInfo: destPath.isEmpty ? [:] : [kNotificationDestPathKey: destPath])
                     }
                     let hasSlackDestSuccess = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
-                    if shouldDeliverRemoteAlert(afkMode: self.afkMode,
-                                                awayEnabled: self.remoteNotifyEnabled,
-                                                idleSeconds: systemIdleSeconds(),
-                                                thresholdMinutes: self.remoteIdleThresholdMin,
-                                                hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDestSuccess) {
+                    if shouldDeliverRemoteAlert(hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDestSuccess,
+                                                afkMode: self.afkMode) {
                         let rbody = remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
@@ -7956,8 +7959,8 @@ struct ContentView: View {
                                             slackBotToken: self.remoteSlackBotToken,
                                             slackChannelId: self.remoteSlackChannelId)
                     }
-                    if !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty,
-                       let session = self.slackLiveSessions.removeValue(forKey: processID) {
+                    if let session = self.slackLiveSessions.removeValue(forKey: processID),
+                       self.afkMode, !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
                         session.finish(
                             token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
                             cardName: card.name, newFiles: newFiles, destRel: relDest,
@@ -8246,6 +8249,25 @@ struct ContentView: View {
                             : (d.path as NSString).appendingPathComponent(proj)
     }
 
+    /// Single source of truth for "where should F / Open-in-Finder land."
+    /// Resolves the live transfer folder first, falls back through finderDestPath to the
+    /// default/primary destination, then walks up to the nearest existing ancestor directory
+    /// so NSWorkspace.open never silently no-ops on a stale/renamed exact folder.
+    private func finderRevealPath() -> String {
+        var path = v3LiveTransferFolder() ?? finderDestPath
+        if path.isEmpty {
+            path = defaultDestination?.path ?? selectedPrimary?.path ?? ""
+        }
+        guard !path.isEmpty else { return "" }
+        var url = URL(fileURLWithPath: path)
+        while !FileManager.default.fileExists(atPath: url.path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { return "" }   // hit filesystem root, nothing exists
+            url = parent
+        }
+        return url.path
+    }
+
     private func handleShortcutAction(_ action: ShortcutAction) {
         switch action {
         case .toggleAutoIngest:
@@ -8268,8 +8290,9 @@ struct ContentView: View {
             if !isShowingSettings { v3PresentModal($showV3History, !showV3History) }
         case .openInFinder:
             // During a transfer, jump to the folder footage is landing in RIGHT NOW; otherwise the
-            // last-ingested / default destination.
-            let dest = v3LiveTransferFolder() ?? finderDestPath
+            // last-ingested / default destination. finderRevealPath() also walks up to the nearest
+            // existing ancestor so a stale/renamed folder never makes this silently no-op.
+            let dest = finderRevealPath()
             if !dest.isEmpty {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dest))
             }
@@ -8425,10 +8448,11 @@ struct ContentView: View {
         activeIngests[processID] = ingest
         publishMenuBarStatus()
 
-        guard !remoteSlackBotToken.isEmpty && !remoteSlackChannelId.isEmpty else { return }
+        guard afkMode, !remoteSlackBotToken.isEmpty && !remoteSlackChannelId.isEmpty else { return }
 
         // Slack live-progress START — fires once when PROGRESS_META arrives with new files.
         // Keyed by processID so each concurrent card gets its own session (no ts aliasing).
+        // Gated on afkMode: nothing posts to Slack unless AFK is armed at this moment.
         if sawMeta && ingest.newFiles > 0 && slackLiveSessions[processID] == nil {
             let session = SlackLiveSession()
             slackLiveSessions[processID] = session
@@ -13820,63 +13844,54 @@ extension ContentView {
     }
 
     @ViewBuilder private var v3RemoteAlertsSection: some View {
+        // AFK (top-bar toggle) is the sole trigger for remote alerts — there is no
+        // separate away/idle gate to configure here, only where alerts land.
         v3SettingsSection("REMOTE ALERTS") {
-            v3ToggleRow("Notify my phone when I'm away",
-                        "Text you an alert when a card finishes, but only if you've stepped away from the Mac.",
-                        $remoteNotifyEnabled)
-            if remoteNotifyEnabled {
-                v3SettingDivider()
-                v3SliderRow("Away after", "How many idle minutes before you count as away.",
-                            value: Binding(get: { Double(remoteIdleThresholdMin) },
-                                           set: { remoteIdleThresholdMin = Int($0) }),
-                            range: 1...30, step: 1, valueLabel: "\(remoteIdleThresholdMin) min")
-                v3SettingDivider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("iMessage to").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-                    TextField("Phone number or Apple ID email", text: $remoteImessageTo)
-                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    Text("First send will ask macOS for permission to control Messages.")
-                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 18).padding(.vertical, 12)
-                v3SettingDivider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Slack bot token").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-                    TextField("xoxb-…", text: $remoteSlackBotToken)
-                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    Text("Create a Slack app with chat:write scope and copy its Bot User OAuth Token.")
-                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 18).padding(.vertical, 12)
-                v3SettingDivider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Slack channel ID").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-                    TextField("C0123456789", text: $remoteSlackChannelId)
-                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                    Text("Right-click the channel in Slack → Copy link — the last segment is the channel ID.")
-                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 18).padding(.vertical, 12)
-                v3SettingDivider()
-                HStack(spacing: 10) {
-                    Button("Send test") {
-                        RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackBotToken: remoteSlackBotToken, slackChannelId: remoteSlackChannelId) { ok, err in
-                            remoteTestResult = ok ? "Sent \u{2713}" : (err ?? "Failed")
-                        }
-                    }
-                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
-                    if let result = remoteTestResult {
-                        Text(result).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-                    }
-                }
-                .padding(.horizontal, 18).padding(.vertical, 12)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("iMessage to").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                TextField("Phone number or Apple ID email", text: $remoteImessageTo)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                Text("First send will ask macOS for permission to control Messages.")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
             }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            v3SettingDivider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Slack bot token").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                TextField("xoxb-…", text: $remoteSlackBotToken)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                Text("Create a Slack app with chat:write scope and copy its Bot User OAuth Token.")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            v3SettingDivider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Slack channel ID").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                TextField("C0123456789", text: $remoteSlackChannelId)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                Text("Right-click the channel in Slack → Copy link — the last segment is the channel ID.")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            v3SettingDivider()
+            HStack(spacing: 10) {
+                Button("Send test") {
+                    RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackBotToken: remoteSlackBotToken, slackChannelId: remoteSlackChannelId) { ok, err in
+                        remoteTestResult = ok ? "Sent \u{2713}" : (err ?? "Failed")
+                    }
+                }
+                .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
+                if let result = remoteTestResult {
+                    Text(result).font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                }
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
         }
     }
 

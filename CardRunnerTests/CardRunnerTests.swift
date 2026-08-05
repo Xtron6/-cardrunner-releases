@@ -1901,7 +1901,7 @@ struct BottleneckDescriptorTests {
     func bottleneckDetectsBelowExpected() {
         let result = bottleneckDescriptor(sourceLink: "10Gb/s", destLink: "5Gb/s",
                                           avgMBps: 80, peakMBps: 100)
-        #expect(result?.contains("Below expected") == true)
+        #expect(result?.contains("Speed below expected") == true)
     }
 
     @Test("Returns nil when peak is in an inconclusive middle range")
@@ -1914,24 +1914,6 @@ struct BottleneckDescriptorTests {
 
 @Suite("Remote alerts")
 struct RemoteAlertsTests {
-
-    @Test func remoteGateOffWhenDisabled() {
-        #expect(shouldSendRemoteAlert(enabled: false, idleSeconds: 99999, thresholdMinutes: 0) == false)
-        #expect(shouldSendRemoteAlert(enabled: false, idleSeconds: 0, thresholdMinutes: 5) == false)
-    }
-
-    @Test func remoteGateRespectsThreshold() {
-        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 90, thresholdMinutes: 2) == false)
-        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 130, thresholdMinutes: 2) == true)
-    }
-
-    @Test func remoteGateZeroThresholdAlwaysFires() {
-        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 5, thresholdMinutes: 0) == true)
-    }
-
-    @Test func remoteGateExactBoundary() {
-        #expect(shouldSendRemoteAlert(enabled: true, idleSeconds: 120, thresholdMinutes: 2) == true)
-    }
 
     @Test func remoteBodySuccessVerified() {
         let body = remoteAlertBody(cardName: "A003", newFiles: 142, destRel: "Gallo 8TB/260801", verified: true, failed: false)
@@ -1960,32 +1942,21 @@ struct RemoteAlertsTests {
         #expect(!body.contains("1 files"))
     }
 
-    // MARK: Composite delivery gate (AFK override + away gate + destination guard)
+    // MARK: Composite delivery gate (AFK is the sole trigger, gated by destination)
 
     @Test func deliverNeverWithoutDestination() {
-        // AFK on, away on, long idle — but nothing configured → never send.
-        #expect(shouldDeliverRemoteAlert(afkMode: true, awayEnabled: true, idleSeconds: 9999,
-                                         thresholdMinutes: 2, hasDestination: false) == false)
+        // AFK on but nothing configured → never send.
+        #expect(shouldDeliverRemoteAlert(hasDestination: false, afkMode: true) == false)
     }
 
-    @Test func deliverAFKBypassesIdle() {
-        // AFK guarantees a send even with zero idle and the away toggle OFF.
-        #expect(shouldDeliverRemoteAlert(afkMode: true, awayEnabled: false, idleSeconds: 0,
-                                         thresholdMinutes: 2, hasDestination: true) == true)
+    @Test func deliverTrueWhenAFKAndDestination() {
+        // AFK on + destination configured → send.
+        #expect(shouldDeliverRemoteAlert(hasDestination: true, afkMode: true) == true)
     }
 
-    @Test func deliverFallsBackToAwayGate() {
-        // AFK off → behaves like the automatic idle gate.
-        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: true, idleSeconds: 30,
-                                         thresholdMinutes: 2, hasDestination: true) == false)
-        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: true, idleSeconds: 130,
-                                         thresholdMinutes: 2, hasDestination: true) == true)
-    }
-
-    @Test func deliverOffWhenNothingEnabled() {
-        // AFK off, away off → never, even when idle and configured.
-        #expect(shouldDeliverRemoteAlert(afkMode: false, awayEnabled: false, idleSeconds: 9999,
-                                         thresholdMinutes: 2, hasDestination: true) == false)
+    @Test func deliverOffWhenAFKOff() {
+        // AFK off → never, regardless of any away/idle state.
+        #expect(shouldDeliverRemoteAlert(hasDestination: true, afkMode: false) == false)
     }
 }
 

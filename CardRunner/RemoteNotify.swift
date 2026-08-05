@@ -4,27 +4,11 @@ import IOKit
 
 // MARK: - Pure gating logic
 
-/// Returns true only when remote alerts are enabled AND the Mac has been idle at least
-/// `thresholdMinutes`. thresholdMinutes <= 0 means "always when enabled".
-nonisolated func shouldSendRemoteAlert(enabled: Bool, idleSeconds: TimeInterval, thresholdMinutes: Int) -> Bool {
-    guard enabled else { return false }
-    if thresholdMinutes <= 0 { return true }
-    let thresholdSeconds = TimeInterval(thresholdMinutes) * 60
-    return idleSeconds >= thresholdSeconds
-}
-
-/// Composite delivery gate. Fires only when a destination is configured, and then either:
-///   • `afkMode` is ON — the manual "I'm away" override, a GUARANTEED send that bypasses idle, or
-///   • the automatic away gate passes (`awayEnabled` && idle >= threshold).
-/// Keeps `shouldSendRemoteAlert` intact (AFK is layered on top, not folded in).
-nonisolated func shouldDeliverRemoteAlert(afkMode: Bool,
-                                          awayEnabled: Bool,
-                                          idleSeconds: TimeInterval,
-                                          thresholdMinutes: Int,
-                                          hasDestination: Bool) -> Bool {
-    guard hasDestination else { return false }
-    if afkMode { return true }
-    return shouldSendRemoteAlert(enabled: awayEnabled, idleSeconds: idleSeconds, thresholdMinutes: thresholdMinutes)
+/// Composite delivery gate. Fires only when a destination is configured AND the manual
+/// "I'm away" AFK toggle is armed. The automatic idle/away gate has been removed —
+/// AFK is now the sole trigger for remote alerts.
+nonisolated func shouldDeliverRemoteAlert(hasDestination: Bool, afkMode: Bool) -> Bool {
+    return hasDestination && afkMode
 }
 
 // MARK: - Pure message formatter

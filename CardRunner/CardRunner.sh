@@ -1287,9 +1287,10 @@ resolve_dest_dir_for_file() {
 # -----------------------------------------------------------
 # Transfer verification (MD5 spot-check or full)
 # -----------------------------------------------------------
-# Spot-check mode: samples up to 10 random files.
-# Full mode (FULL_VERIFY=yes): checksums every file in new_list and emits
-#   VERIFY_PROGRESS current=N total=N  after each file so the GUI can animate.
+# Spot-check mode: samples a size-scaled random subset of files.
+# Full mode (FULL_VERIFY=yes): checksums every file in new_list.
+# Both modes emit VERIFY_PROGRESS current=N total=N after each file (N/total
+#   scoped to the sampled set in spot-check mode) so the GUI can animate.
 # Both modes emit VERIFY_PASS or VERIFY_FAIL as a final summary line.
 verify_transfer() {
   local src="$1"       # card root (e.g. /Volumes/Untitled)
@@ -1371,10 +1372,8 @@ verify_transfer() {
       fi
     fi
 
-    # Emit progress for full-verify so the GUI can animate
-    if [[ "$FULL_VERIFY" == "yes" ]]; then
-      echo "VERIFY_PROGRESS current=${checked} total=${total}"
-    fi
+    # Emit progress so the GUI can animate (spot-check and full mode alike)
+    echo "VERIFY_PROGRESS current=${checked} total=${total}"
   done
 
   if (( checked == 0 )); then
