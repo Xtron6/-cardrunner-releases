@@ -5552,23 +5552,6 @@ struct ContentView: View {
     /// drop drive destinations whose volume is no longer present (custom folders are
     /// kept regardless, since they may live on the internal disk or a remount-later
     /// drive). Does NOT auto-add every mounted drive — destinations are added explicitly.
-    private func reconcileDestinations() {
-        let fm = FileManager.default
-        var kept: [Destination] = []
-        for d in destinations {
-            if d.isCustomFolder { kept.append(d); continue }
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue {
-                kept.append(d)
-            }
-        }
-        if kept.count != destinations.count {
-            destinations = kept
-            if defaultDestination == nil { defaultDestIDString = destinations.first?.id.uuidString ?? "" }
-            saveDestinations()
-        }
-    }
-
     /// Resolve the on-disk root and the per-card project root for a destination.
     /// Custom folders write directly under their path; drives nest under the project name.
     private func resolvedPaths(for dest: Destination) -> (destRoot: String, projectRoot: String) {
@@ -5664,7 +5647,6 @@ struct ContentView: View {
 
                 self.refreshProjectFolders()
                 self.updateSSDInfo()
-                self.reconcileDestinations()
             }
         }
     }
