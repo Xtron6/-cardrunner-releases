@@ -2002,12 +2002,49 @@ PYEOF
     # never shows an asymmetric or empty-timestamp PHASE_START copying.
     echo "PROGRESS_SUMMARY avg_mb=0 duration_sec=0 new_files=0"
     echo "PROGRESS_DEST $open_dest"
+    # Resume-after-verify-interruption: all files are already at the destination
+    # (copy completed before the interruption) but verify never finished. Without
+    # this block the early return silently exits with Status=NoNewFiles and no
+    # integrity check. Run verify against list_all (the full source media set) so
+    # the card gets a real checksum pass before the checkpoint is deleted.
+    local _rv_failed=0 _rv_effective=0 _rv_secs=0
+    local _run_verify_nf=no _forced_spotcheck_nf=no
+    if [[ "$VERIFY" == "yes" ]]; then
+      _run_verify_nf=yes
+    elif [[ "$AUTO_EJECT" == "yes" ]]; then
+      _run_verify_nf=yes; _forced_spotcheck_nf=yes
+    fi
+    if [[ "$_run_verify_nf" == "yes" && "$DRY_RUN" != "yes" && -f "$list_all" ]]; then
+      echo "PHASE verifying"
+      local _rv_t0=$(date +%s)
+      local _rv_out
+      if [[ "$_forced_spotcheck_nf" == "yes" ]]; then
+        local _saved_fv="$FULL_VERIFY"
+        FULL_VERIFY=no
+        _rv_out="$(verify_transfer "$src" "$list_all")"
+        FULL_VERIFY="$_saved_fv"
+      else
+        _rv_out="$(verify_transfer "$src" "$list_all")"
+      fi
+      echo "$_rv_out"
+      echo "$_rv_out" | grep -q "^VERIFY_FAIL" && _rv_failed=1
+      echo "$_rv_out" | grep -q "^VERIFY_PASS" && _rv_effective=1
+      _rv_secs=$(( $(date +%s) - _rv_t0 ))
+    fi
     rm -f "$list_all" "$new_list"
     local _now _tid
     _now="$(date '+%Y-%m-%d %H:%M:%S')"
     _tid="${$}_$(date +%s)"
     local _log_cardname="${cardname//|/-}" _log_friendly="${friendly//|/-}" _log_project="${PROJECT_NAME//|/-}"
-    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=NoNewFiles | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest | CopySec=0 | VerifySec=0 | EjectSec=0 | SourceProtocol=unknown | SourceLink=unknown | DestProtocol=unknown | DestLink=unknown | DestMedia=unknown"
+    local _nf_status="NoNewFiles"
+    (( _rv_failed ))    && _nf_status="NoNewFiles+VerifyFail"
+    (( _rv_effective )) && _nf_status="NoNewFiles+Verified"
+    log_line "$_now | ID=$_tid | Version=$CARDRUNNER_VERSION | macOS=$macos_ver | Status=$_nf_status | Mode=$MODE | Card=$_log_cardname | Friendly=$_log_friendly | Project=$_log_project | Subfolder=$SUBFOLDER | MediaTotal=$media_count | NewFiles=0 | NewMB=0 | DurationSec=0 | AvgMBps=0 | TodayOnly=$TODAY_ONLY | Dest=$open_dest | CopySec=0 | VerifySec=$_rv_secs | EjectSec=0 | SourceProtocol=unknown | SourceLink=unknown | DestProtocol=unknown | DestLink=unknown | DestMedia=unknown"
+    if (( _rv_failed )); then
+      echo "PHASE failed groups=0 verify=1 mirror=0"
+      return 1
+    fi
+    echo "PHASE done"
     return 0
   fi
 
