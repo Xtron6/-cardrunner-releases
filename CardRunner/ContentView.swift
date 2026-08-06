@@ -15074,32 +15074,6 @@ extension ContentView {
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.30))
                     }
-                    // Mini sparkline — shown only during active copying when enough samples exist.
-                    if ing.phase == .copying, ing.speedSamples.count >= 4 {
-                        Canvas { ctx, size in
-                            let s = Array(ing.speedSamples.suffix(60))
-                            guard s.count >= 2 else { return }
-                            let maxVal = max(s.max() ?? 1.0, 1.0)
-                            let w = size.width
-                            let h = size.height
-                            let step = w / CGFloat(s.count - 1)
-                            var linePath = Path()
-                            for (i, val) in s.enumerated() {
-                                let x = CGFloat(i) * step
-                                let y = h - CGFloat(val / maxVal) * h * 0.85
-                                if i == 0 { linePath.move(to: CGPoint(x: x, y: y)) }
-                                else       { linePath.addLine(to: CGPoint(x: x, y: y)) }
-                            }
-                            var fillPath = linePath
-                            fillPath.addLine(to: CGPoint(x: CGFloat(s.count - 1) * step, y: h))
-                            fillPath.addLine(to: CGPoint(x: 0, y: h))
-                            fillPath.closeSubpath()
-                            ctx.fill(fillPath, with: .color(Color(hex: "#0dcff5").opacity(0.15)))
-                            ctx.stroke(linePath, with: .color(Color(hex: "#0dcff5").opacity(0.70)), lineWidth: 1.2)
-                        }
-                        .frame(width: 60, height: 18)
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
                 }
                 // Low-headroom heads-up — the destination is cutting it close (< 1.2× needed). The
                 // hard pre-flight abort already blocks a too-full drive; this is the early soft signal.
