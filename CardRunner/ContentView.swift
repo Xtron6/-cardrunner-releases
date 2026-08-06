@@ -2040,6 +2040,7 @@ struct ContentView: View {
     /// Per-card detected mode stored alongside datePickerCards so retryDateScan scans the right
     /// extension set (not the global importMode toggle, which may differ from this card's content).
     @State private var datePickerCardMode: String = "video"
+    @State private var datePickerNoTodayNote: Bool = false   // true when picker was opened from Tier 0 (no today footage)
 
     // Reel picker sheet state (Tier-1 wrong-clock detection)
     @State private var showReelPickerSheet: Bool = false
@@ -2904,6 +2905,7 @@ struct ContentView: View {
                     showDatePickerSheet = false
                     datePickerScanning = false
                     datePickerCards = []; datePickerDates = []; datePickerSelected = []
+                    datePickerNoTodayNote = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 18))
@@ -2914,6 +2916,12 @@ struct ContentView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
+
+            if datePickerNoTodayNote && !datePickerScanning && !datePickerDates.isEmpty {
+                Text("No footage from today on this card — choose which dates to ingest.")
+                    .font(.system(size: 11)).foregroundStyle(textMuted)
+                    .padding(.horizontal, 24).padding(.bottom, 6)
+            }
 
             Divider().opacity(0.3)
 
@@ -3047,6 +3055,7 @@ struct ContentView: View {
                     showDatePickerSheet = false
                     datePickerScanning = false
                     datePickerCards = []; datePickerDates = []; datePickerSelected = []
+                    datePickerNoTodayNote = false
                 }
                 .buttonStyle(.plain)
                 .font(.system(size:13).weight(.medium))
@@ -3065,6 +3074,7 @@ struct ContentView: View {
                     showDatePickerSheet = false
                     datePickerScanning = false
                     datePickerCards = []; datePickerDates = []; datePickerSelected = []
+                    datePickerNoTodayNote = false
 
                     let pickerMode = datePickerCardMode
                     for card in cards {
@@ -7857,10 +7867,36 @@ struct ContentView: View {
                     let allFilteredByDate = ingest.skipTodayFilter > 0
                         && ingest.skipManifest == 0 && ingest.skipDestExists == 0
                     if allFilteredByDate && NSApplication.shared.isActive {
-                        self.tier0Card          = card
-                        self.tier0SkippedCount  = ingest.skipTodayFilter
-                        self.tier0CardMode      = ingest.runMode
-                        self.showTier0Prompt    = true
+                        if FileManager.default.fileExists(atPath: card.path) {
+                            let capturedCard = card
+                            let capturedMode = ingest.runMode
+                            let capturedSkipped = ingest.skipTodayFilter
+                            Task {
+                                let dates = await self.scanCardDates(at: capturedCard.path, mode: capturedMode)
+                                await MainActor.run {
+                                    if dates.isEmpty {
+                                        // scan failed — fall back to the binary "ingest everything?" alert
+                                        self.tier0Card          = capturedCard
+                                        self.tier0SkippedCount  = capturedSkipped
+                                        self.tier0CardMode      = capturedMode
+                                        self.showTier0Prompt    = true
+                                    } else {
+                                        self.datePickerCards    = [capturedCard]
+                                        self.datePickerDates    = dates
+                                        self.datePickerSelected = Set(dates.map { $0.yyyymmdd })
+                                        self.datePickerCardMode  = capturedMode
+                                        self.datePickerNoTodayNote = true
+                                        self.datePickerScanning = false
+                                        self.showDatePickerSheet = true
+                                    }
+                                }
+                            }
+                        } else {
+                            self.tier0Card          = card
+                            self.tier0SkippedCount  = ingest.skipTodayFilter
+                            self.tier0CardMode      = ingest.runMode
+                            self.showTier0Prompt    = true
+                        }
                     } else if ingest.skipManifest > 0 && NSApplication.shared.isActive {
                         // The MANIFEST blocked the copy (this card's files were already offloaded
                         // on a previous run). Offer a deliberate re-ingest to THIS destination.
