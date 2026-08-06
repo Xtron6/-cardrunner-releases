@@ -4872,6 +4872,17 @@ struct ContentView: View {
                             activeIngests.removeValue(forKey: k)
                         }
                     }
+                    // Source card physically pulled during an active ingest — terminate the process.
+                    // cardcopy can't read from a gone source; without this it blocks on I/O until
+                    // the kernel times out, leaving the UI frozen on the progress view.
+                    var pulledAndCancelled = false
+                    for (id, ing) in activeIngests where ing.sourcePath == url.path && ing.phase != .done && ing.phase != .failed {
+                        guard let proc = activeProcesses[id], proc.isRunning else { continue }
+                        cancelledProcessIDs.insert(id)
+                        proc.terminate()
+                        pulledAndCancelled = true
+                    }
+                    if pulledAndCancelled { statusText = "Card pulled — transfer cancelled" }
                 } else {
                     seenCardPaths = seenCardPaths.filter { FileManager.default.fileExists(atPath: $0) }
                 }
@@ -5451,13 +5462,16 @@ struct ContentView: View {
     /// Re-checks whether `customDestPath` still exists as a directory and updates
     /// the `customDestIsValid` cache. Safe to call any time — does no I/O when path is empty.
     private func revalidateCustomDest() {
-        guard !customDestPath.isEmpty else {
-            customDestIsValid = false
-            return
+        guard !customDestPath.isEmpty else { customDestIsValid = false; return }
+        let path = customDestPath
+        Task.detached(priority: .utility) {
+            var isDir: ObjCBool = false
+            let valid = FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+            await MainActor.run { [self] in
+                guard self.customDestPath == path else { return }  // F1-5: discard stale result
+                self.customDestIsValid = valid
+            }
         }
-        var isDir: ObjCBool = false
-        customDestIsValid = FileManager.default.fileExists(atPath: customDestPath, isDirectory: &isDir)
-                            && isDir.boolValue
     }
 
     private func updateSSDInfo() {
@@ -5471,17 +5485,25 @@ struct ContentView: View {
             primaryTotalBytes = 0
             return
         }
-        let fm = FileManager.default
-        do {
-            let attrs = try fm.attributesOfFileSystem(forPath: probePath)
-            if let free = attrs[.systemFreeSize] as? NSNumber,
-               let total = attrs[.systemSize] as? NSNumber {
-                primaryFreeBytes = free.int64Value
-                primaryTotalBytes = total.int64Value
+        Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            do {
+                let attrs = try fm.attributesOfFileSystem(forPath: probePath)
+                if let free = attrs[.systemFreeSize] as? NSNumber,
+                   let total = attrs[.systemSize] as? NSNumber {
+                    await MainActor.run { [self] in
+                        guard self.useCustomDest ? self.customDestPath == probePath : self.selectedPrimary?.path == probePath else { return }  // F2-4: discard stale result
+                        self.primaryFreeBytes = free.int64Value
+                        self.primaryTotalBytes = total.int64Value
+                    }
+                }
+            } catch {
+                await MainActor.run { [self] in
+                    guard self.useCustomDest ? self.customDestPath == probePath : self.selectedPrimary?.path == probePath else { return }
+                    self.primaryFreeBytes = 0
+                    self.primaryTotalBytes = 0
+                }
             }
-        } catch {
-            primaryFreeBytes = 0
-            primaryTotalBytes = 0
         }
     }
 
