@@ -6151,6 +6151,75 @@ struct ContentView: View {
         return movedAny ? newT : oldLabel
     }
 
+    /// Move the files listed in `files` from `dateFolder` into a new subfolder named `newLabel`.
+    /// Used when `cardLabel` is empty (footage landed flat in the date folder) and the operator
+    /// typed a name during or after copy.
+    ///
+    /// - Returns: `newLabel` if at least one file was moved, `""` otherwise.
+    @MainActor @discardableResult
+    private func moveFilesIntoSubfolder(dateFolder: String, newLabel: String, files: [String]) -> String {
+        let fm = FileManager.default
+        let newT = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !dateFolder.isEmpty, !newT.isEmpty, !newT.contains("/"),
+              newT != ".", newT != ".." else {
+            appendLog("RENAME_MOVE_SKIP: invalid dateFolder or label\n"); return ""
+        }
+        let targetDir = "\(dateFolder)/\(newT)"
+        if fm.fileExists(atPath: targetDir) {
+            appendLog("RENAME_MOVE_SKIP: \(targetDir) already exists\n"); return ""
+        }
+        do {
+            try fm.createDirectory(atPath: targetDir, withIntermediateDirectories: true)
+        } catch {
+            appendLog("RENAME_MOVE_FAIL: could not create \(targetDir): \(error.localizedDescription)\n"); return ""
+        }
+        var movedCount = 0
+        var skippedCount = 0
+        for filename in files {
+            let src = "\(dateFolder)/\(filename)"
+            let dst = "\(targetDir)/\(filename)"
+            guard fm.fileExists(atPath: src) else { skippedCount += 1; continue }
+            do {
+                try fm.moveItem(atPath: src, toPath: dst); movedCount += 1
+            } catch {
+                appendLog("RENAME_MOVE_FAIL: \(filename): \(error.localizedDescription)\n")
+            }
+        }
+        appendLog("RENAME_MOVE_DONE: moved=\(movedCount) skipped=\(skippedCount) → \(targetDir)\n")
+        return movedCount > 0 ? newT : ""
+    }
+
+    /// After the per-file correction path moves footage out of an old label directory, the
+    /// empty directory tree is left on disk. This walks every date dir under `base`, finds any
+    /// `oldLabel` subdirectory whose tree contains no files, and removes it recursively.
+    @MainActor
+    private func removeEmptyLabelDirs(under base: String, oldLabel: String) {
+        let fm = FileManager.default
+        let oldT = oldLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty, !oldT.isEmpty else { return }
+        let dateDirs = (try? fm.contentsOfDirectory(atPath: base)) ?? []
+        for d in dateDirs {
+            let candidate = "\(base)/\(d)/\(oldT)"
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: candidate, isDirectory: &isDir), isDir.boolValue else { continue }
+            let hasFiles = fm.enumerator(atPath: candidate)?.contains { item in
+                guard let rel = item as? String else { return false }
+                var d2: ObjCBool = false
+                let full = "\(candidate)/\(rel)"
+                return fm.fileExists(atPath: full, isDirectory: &d2) && !d2.boolValue
+            } ?? false
+            guard !hasFiles else {
+                appendLog("RENAME_CLEANUP_SKIP: \(candidate) still has files\n"); continue
+            }
+            do {
+                try fm.removeItem(atPath: candidate)
+                appendLog("RENAME_CLEANUP: removed empty dir \(candidate)\n")
+            } catch {
+                appendLog("RENAME_CLEANUP_FAIL: \(candidate): \(error.localizedDescription)\n")
+            }
+        }
+    }
+
     /// Auto-fill the card label field when we recognise a card's UUID.
     /// Only fills if the field is currently empty or the toggle is off — never stomps
     /// a label the user has already typed or one applied by a preset.
@@ -7732,13 +7801,61 @@ struct ContentView: View {
                     // Done here — after the process has fully exited and released all handles —
                     // so it can never split an in-progress copy. Conflict-safe; footage already
                     // verified before this point.
-                    if let newLabel = ingest.pendingRename {
-                        // The lane entry was already removed at completion (10966), so there's
-                        // nothing to update in activeIngests here — the rename operates on the
-                        // verified folder on disk via the local `ingest` snapshot.
-                        self.applyPendingFolderRename(destPath: ingest.destPath,
-                                                      oldLabel: ingest.cardLabel, newLabel: newLabel,
-                                                      runID: ingest.runID, copiedFiles: ingest.copiedFiles)
+                    if let newLabel = ingest.pendingRename, !newLabel.isEmpty {
+                        if ingest.cardLabel.isEmpty {
+                            // No per-card subfolder — footage landed flat in the date folder.
+                            // destPath is the date folder (single-day); equals clipsRoot for
+                            // multi-day runs where files span multiple date dirs.
+                            if !ingest.copiedFiles.isEmpty && ingest.destPath != ingest.clipsRoot {
+                                self.appendLog("RENAME_QUEUED no_label new=\(newLabel) dateFolder=\(ingest.destPath)\n")
+                                let result = self.moveFilesIntoSubfolder(dateFolder: ingest.destPath,
+                                                                         newLabel: newLabel,
+                                                                         files: ingest.copiedFiles)
+                                if !result.isEmpty {
+                                    self.appendLog("RENAME_APPLIED no_label new=\(newLabel)\n")
+                                    if let uuid = card.volumeUUID {
+                                        self.knownCardNicknames[uuid] = newLabel
+                                        self.persistCardNicknames()
+                                    }
+                                    // Point Open-in-Finder at the newly created subfolder.
+                                    self.lastDestPath = "\(ingest.destPath)/\(result)"
+                                } else {
+                                    self.appendLog("RENAME_FAILED no_label new=\(newLabel)\n")
+                                }
+                            } else {
+                                self.appendLog("RENAME_SKIPPED no_label_multi_day_or_empty new=\(newLabel)\n")
+                            }
+                        } else {
+                            // Has a per-card subfolder — use the folder rename path.
+                            let renameBase = ingest.clipsRoot.isEmpty ? ingest.destPath : ingest.clipsRoot
+                            self.appendLog("RENAME_QUEUED old=\(ingest.cardLabel) new=\(newLabel) base=\(renameBase)\n")
+                            let effective = self.applyPendingFolderRename(destPath: renameBase,
+                                                                           oldLabel: ingest.cardLabel, newLabel: newLabel,
+                                                                           runID: ingest.runID, copiedFiles: ingest.copiedFiles)
+                            if effective == newLabel.trimmingCharacters(in: .whitespacesAndNewlines) {
+                                self.appendLog("RENAME_APPLIED old=\(ingest.cardLabel) new=\(newLabel)\n")
+                                // Update the per-UUID nickname so the next insert remembers the new name.
+                                if let uuid = card.volumeUUID {
+                                    self.knownCardNicknames[uuid] = effective
+                                    self.persistCardNicknames()
+                                }
+                                // Remove empty old-label dirs left behind by the per-file correction path.
+                                self.removeEmptyLabelDirs(under: renameBase, oldLabel: ingest.cardLabel)
+                                // Point Open-in-Finder at the renamed folder (old label folder is now gone).
+                                // destPath is the old label subfolder (clips/260806/test/); strip it to get
+                                // the date folder, then append the new label to land in clips/260806/xavier/.
+                                let dateFolder = (ingest.destPath as NSString).deletingLastPathComponent
+                                if !dateFolder.isEmpty && dateFolder != renameBase {
+                                    self.lastDestPath = "\(dateFolder)/\(effective)"
+                                } else {
+                                    self.lastDestPath = renameBase.isEmpty ? ingest.destPath : renameBase
+                                }
+                            } else {
+                                self.appendLog("RENAME_NOOP old=\(ingest.cardLabel) new=\(newLabel)\n")
+                            }
+                        }
+                    } else if !ingest.cardLabel.isEmpty {
+                        self.appendLog("RENAME_SKIPPED no_pending_rename label=\(ingest.cardLabel)\n")
                     }
                     self.clearFailedRecords(cardName: card.name, volumeUUID: card.volumeUUID,
                                             friendlyName: ingest.friendlyName, projectName: self.projectName)
@@ -8305,7 +8422,10 @@ struct ContentView: View {
             if parent.path == url.path { return "" }   // hit filesystem root, nothing exists
             url = parent
         }
-        return url.path
+        // Never reveal the filesystem root or /Volumes — neither is a useful footage folder.
+        let p = url.path
+        guard p != "/" && p != "/Volumes" else { return "" }
+        return p
     }
 
     private func handleShortcutAction(_ action: ShortcutAction) {
@@ -14393,8 +14513,20 @@ extension ContentView {
             Button {
                 afkMode.toggle()
                 AudioEngine.shared.modeSwitch()
-                if afkMode && !afkConfigured {
-                    showAFKPopover = true
+                if afkMode {
+                    if !afkConfigured { showAFKPopover = true }
+                    // AFK armed mid-transfer: start Slack live sessions for any in-flight card
+                    // that missed the PROGRESS_META gate (fired before AFK was ON).
+                    if !remoteSlackBotToken.isEmpty && !remoteSlackChannelId.isEmpty {
+                        for (pid, ingest) in activeIngests {
+                            guard ingest.newFiles > 0, slackLiveSessions[pid] == nil,
+                                  [IngestPhase.copying, .finalizing, .verifying].contains(ingest.phase) else { continue }
+                            let session = SlackLiveSession()
+                            slackLiveSessions[pid] = session
+                            session.start(token: remoteSlackBotToken, channel: remoteSlackChannelId,
+                                          cardName: ingest.cardName, totalFiles: ingest.newFiles)
+                        }
+                    }
                 }
             } label: {
                 let warn = afkMode && !afkConfigured
@@ -14697,6 +14829,9 @@ extension ContentView {
                             .focused($editingActiveID, equals: id)
                             .onSubmit { v3CommitActiveRename(id); editingActiveID = nil }   // Enter LOCKS (applies at completion)
                             .onExitCommand { activeIngests[id]?.pendingRename = nil; editingActiveID = nil }  // Esc reverts
+                            .onChange(of: editingActiveID) { _, new in
+                                if new == id { DispatchQueue.main.async { NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSResponder.selectAll(_:)), with: nil) } }
+                            }
                         if editing {
                             Button { v3CommitActiveRename(id); editingActiveID = nil } label: {
                                 Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).foregroundStyle(v3Green)
@@ -14778,19 +14913,46 @@ extension ContentView {
         guard !newName.isEmpty else { activeIngests[id]?.pendingRename = nil; return }
         if !ing.cardLabel.isEmpty {
             if ing.phase == .done {
-                let applied = applyPendingFolderRename(destPath: ing.destPath,
+                let renameBase = ing.clipsRoot.isEmpty ? ing.destPath : ing.clipsRoot
+                let applied = applyPendingFolderRename(destPath: renameBase,
                                                        oldLabel: ing.cardLabel, newLabel: newName,
                                                        runID: ing.runID, copiedFiles: ing.copiedFiles)
                 activeIngests[id]?.cardLabel = applied
                 activeIngests[id]?.friendlyName = applied
                 activeIngests[id]?.pendingRename = nil
+            } else {
+                // Still copying/verifying — folder rename must wait until after copy completes.
+                // pendingRename is already set by the binding; update display and save nickname now
+                // so future inserts remember the operator-typed name even if the app exits early.
+                activeIngests[id]?.friendlyName = newName
+                if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
             }
-            // else still copying → keep pendingRename; termination handler applies it.
         } else {
-            // No folder to rename — persist as a nickname so the display sticks.
-            activeIngests[id]?.friendlyName = newName
-            if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
-            activeIngests[id]?.pendingRename = nil
+            // No per-card subfolder exists for this card.
+            if ing.phase == .done {
+                // Card finished — move files into the requested subfolder now if possible.
+                if !ing.copiedFiles.isEmpty && ing.destPath != ing.clipsRoot {
+                    let moved = moveFilesIntoSubfolder(dateFolder: ing.destPath,
+                                                       newLabel: newName,
+                                                       files: ing.copiedFiles)
+                    if !moved.isEmpty {
+                        activeIngests[id]?.friendlyName = newName
+                        if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
+                    }
+                } else {
+                    // Multi-day or no file list: persist as nickname only.
+                    activeIngests[id]?.friendlyName = newName
+                    if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
+                }
+                activeIngests[id]?.pendingRename = nil
+            } else {
+                // Still copying/verifying — keep pendingRename for the termination handler.
+                // Update display name immediately so the lane shows the typed name.
+                activeIngests[id]?.friendlyName = newName
+                activeIngests[id]?.pendingRename = newName
+                // Save nickname now so future inserts remember the typed name.
+                if let uuid = ing.volumeUUID { knownCardNicknames[uuid] = newName; persistCardNicknames() }
+            }
         }
     }
 
@@ -15062,10 +15224,13 @@ extension ContentView {
                 }.frame(height: 4)
                 // Granular per-card progress: which file of how many + live speed.
                 HStack(alignment: .center, spacing: 8) {
-                    Text(ing.newFiles > 0
-                         ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
-                         : String(format: "%.0f MB/s", max(0, ing.liveMBps)))
-                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
+                    let allTransferred = ing.newFiles > 0 && ing.completedFiles >= ing.newFiles && ing.phase == .copying
+                    Text(allTransferred
+                         ? "Flushing to disk…"
+                         : (ing.newFiles > 0
+                            ? "Transferring \(min(ing.completedFiles + 1, ing.newFiles)) of \(ing.newFiles)  ·  \(String(format: "%.0f", max(0, ing.liveMBps))) MB/s"
+                            : String(format: "%.0f MB/s", max(0, ing.liveMBps))))
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(allTransferred ? .white.opacity(0.35) : .white.opacity(0.5))
                     // Peak speed label — shown only during active copying when live is
                     // meaningfully below peak (> 5% gap) and peak data is available.
                     if ing.phase == .copying, ing.peakMBps > 0,
@@ -15093,6 +15258,8 @@ extension ContentView {
                 let pct = ing.verifyTotal > 0 ? Int(Double(ing.verifyChecked) / Double(ing.verifyTotal) * 100) : 0
                 if ing.verifyTotal > 0 && pct >= 1 && pct <= 99 {
                     Text("Verifying checksums… \(pct)%").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9)).monospacedDigit()
+                } else if ing.verifyTotal > 0 {
+                    Text("Verifying \(ing.verifyTotal) file\(ing.verifyTotal == 1 ? "" : "s")…").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9))
                 } else {
                     Text("Verifying checksums…").font(.system(size: 11)).foregroundStyle(v3Green.opacity(0.9))
                 }
