@@ -34,6 +34,10 @@ final class LicenseManager: ObservableObject {
     /// True when the gate should show the "key revoked / needs replacing" variant.
     var isRevoked: Bool { status == .revoked }
 
+    /// True when a license key is present in the keychain.
+    /// Used by LicenseGateView to decide whether to show retry mode vs key-entry form.
+    var hasStoredKey: Bool { keychainRead(keyAccount) != nil }
+
     // MARK: - Constants
 
     private let service          = "com.xaviergallo.cardrunner"
@@ -72,6 +76,17 @@ final class LicenseManager: ObservableObject {
     }
 
     // MARK: - Launch check
+
+    /// Re-runs license validation unconditionally — skips the freshness check.
+    /// Call from "Try Again" UI actions where the user explicitly wants a network round-trip.
+    func retryValidation() async {
+        guard let key        = keychainRead(keyAccount),
+              let instanceId = keychainRead(instanceAccount) else {
+            status = .unlicensed; return
+        }
+        status = .checking
+        await revalidate(key: key, instanceId: instanceId)
+    }
 
     /// Call once in ContentView.onAppear. Makes no network call if recently validated.
     func checkOnLaunch() async {
@@ -242,16 +257,18 @@ final class LicenseManager: ObservableObject {
                 status = .licensed
 
             } else {
-                // 200 + valid:false — the ONLY authoritative rejection.
-                // Key was refunded, disabled, or belongs to a migrated/deleted store.
-                // This is the sole path that wipes the key and locks the app.
-                clearKeychain()
+                // 200 + valid:false — server says the key is inactive.
+                // Do NOT wipe the keychain on a single check: the response can be
+                // transient (captive portal returning a 200, LS hiccup, hotspot DNS).
+                // Keeping the key lets the user hit "Try Again" after reconnecting.
+                // Deliberate removal only happens via deactivate().
                 status = .revoked
             }
 
         case 404:
-            // LS "license_key not found" — authoritative: key doesn't exist in LS.
-            clearKeychain()
+            // LS "license_key not found". Store migrations produce 404s for old keys;
+            // keep the key in keychain so the user can see it and enter a replacement.
+            // clearKeychain() runs only on deliberate deactivate().
             status = .revoked
 
         default:
@@ -271,7 +288,16 @@ final class LicenseManager: ObservableObject {
             return
         }
         let left = max(0, graceDays - daysSince(last))
-        status = left > 0 ? .grace(daysLeft: left) : .unlicensed
+        status = LicenseManager.graceStatus(daysLeft: left, hasKey: keychainRead(keyAccount) != nil)
+    }
+
+    /// Pure decision: given days remaining and whether a key exists, return the correct Status.
+    /// Internal so tests can verify the daysLeft == 0 boundary without mocking keychain/network.
+    internal nonisolated static func graceStatus(daysLeft: Int, hasKey: Bool) -> Status {
+        if daysLeft > 0 { return .grace(daysLeft: daysLeft) }
+        // Grace expired but key is present: soft warning, app still usable.
+        // No key: true lockout (user has never activated on this Mac).
+        return hasKey ? .grace(daysLeft: 0) : .unlicensed
     }
 
     // MARK: - Private: helpers

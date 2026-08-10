@@ -4329,9 +4329,15 @@ struct ContentView: View {
                             .foregroundStyle(Color.white.opacity(0.3))
 
                         if case .grace(let days) = license.status {
-                            Text("Offline — \(days) day\(days == 1 ? "" : "s") remaining")
-                                .font(.system(size:10))
-                                .foregroundStyle(.orange.opacity(0.85))
+                            if days == 0 {
+                                Text("Verification required — connect to verify your license")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.red.opacity(0.85))
+                            } else {
+                                Text("Offline — \(days) day\(days == 1 ? "" : "s") remaining")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.orange.opacity(0.85))
+                            }
                         }
 
                         Button("Deactivate on this Mac") {
@@ -5095,11 +5101,17 @@ struct ContentView: View {
     /// face. Mounting here fixed that latent gap.
     @ViewBuilder
     private var licenseAndWelcomeOverlays: some View {
-        // ── License gate ─────────────────────────────────────────────────
-        // Show for both .unlicensed (never had a key) and .revoked (key
-        // rejected by server — store migration, refund, wrong product).
+        // ── Grace-expired soft banner (key present, network unreachable) ──
+        // App stays fully interactive. NOT a full gate — just a persistent
+        // top-of-window strip urging reconnect with a Try Again button.
+        if case .grace(let days) = license.status, days == 0 {
+            GraceExpiredBannerView()
+                .transition(.opacity)
+                .zIndex(90)
+        }
+        // ── Hard gate: truly unlicensed OR server-confirmed revoked ──
         // NOT shown during .checking to prevent a flash on every launch.
-        if license.status == .unlicensed || license.status == .revoked {
+        else if license.status == .unlicensed || license.status == .revoked {
             LicenseGateView()
                 .transition(.opacity)
                 .zIndex(90)
@@ -11563,6 +11575,12 @@ struct LicenseGateView: View {
     @State private var isActivating: Bool = false
     @State private var errorMessage: String? = nil
     @State private var activateHovered: Bool = false
+    @State private var showKeyEntryForm: Bool = false
+    @State private var isRetrying: Bool = false
+
+    /// Show retry mode when revoked + a key is still in the keychain and the user
+    /// hasn't manually asked to enter a different key.
+    private var isRetryMode: Bool { license.isRevoked && license.hasStoredKey && !showKeyEntryForm }
 
     private var useLightMode: Bool { false }   // light mode removed — dark-only
 
@@ -11612,21 +11630,23 @@ struct LicenseGateView: View {
 
                 Spacer().frame(height: 40)
 
-                // Key entry card
-                VStack(alignment: .leading, spacing: 12) {
-
-                    // Revoked / migration banner — only shown when a previous key was rejected
-                    if license.isRevoked {
+                // Card: retry mode (revoked + key still in keychain) or key-entry form
+                if isRetryMode {
+                    // ── Retry mode ─────────────────────────────────────────────
+                    // Network reached LS but got an ambiguous rejection (hotspot,
+                    // captive portal, transient LS error). The user can retry
+                    // without losing their stored key, or enter a different key.
+                    VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: "exclamationmark.triangle.fill")
+                            Image(systemName: "wifi.exclamationmark")
                                 .font(.system(size: 13))
                                 .foregroundStyle(Color(hex: "#F59E0B"))
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Your license key needs to be updated")
-                                    .font(.system(size:12).weight(.semibold))
+                                Text("Couldn't verify your license")
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(textPrimary)
-                                Text("We've moved our store. Please enter the new key from your purchase email or dashboard.")
-                                    .font(.system(size:11))
+                                Text("We couldn't confirm your license with the server. Check your connection and try again.")
+                                    .font(.system(size: 11))
                                     .foregroundStyle(textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -11638,99 +11658,169 @@ struct LicenseGateView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 9)
                                     .stroke(Color(hex: "#F59E0B").opacity(0.3), lineWidth: 1))
                         )
-                    }
 
-                    Text("LICENSE KEY")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(textSecondary.opacity(0.7))
-                        .kerning(1.2)
-
-                    HStack(spacing: 0) {
-                        TextField("XXXX-XXXX-XXXX-XXXX", text: $keyInput)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(textPrimary)
-                            .textFieldStyle(.plain)
-                            .onChange(of: keyInput) {
-                                keyInput = keyInput.uppercased()
-                                errorMessage = nil
+                        Button {
+                            isRetrying = true
+                            Task {
+                                await license.retryValidation()
+                                await MainActor.run { isRetrying = false }
                             }
-                            .onSubmit { activateKey() }
+                        } label: {
+                            HStack {
+                                if isRetrying { ProgressView().controlSize(.small).tint(.white) }
+                                Text(isRetrying ? "Checking…" : "Try Again")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(RoundedRectangle(cornerRadius: 9).fill(activateBtnColor))
+                            .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isRetrying)
 
-                        if keyInput.isEmpty {
-                            Button {
-                                if let str = NSPasteboard.general.string(forType: .string) {
-                                    keyInput = str.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                        Button("Enter a different key…") { showKeyEntryForm = true }
+                            .font(.system(size: 11))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(textSecondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.white.opacity(0.04))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(borderColor, lineWidth: 1))
+                    )
+                    .frame(maxWidth: 380)
+                } else {
+                    // ── Key entry form ─────────────────────────────────────────
+                    VStack(alignment: .leading, spacing: 12) {
+
+                        // Back button when arrived via "Enter a different key…"
+                        if license.isRevoked && showKeyEntryForm {
+                            Button("← Back") { showKeyEntryForm = false }
+                                .font(.system(size: 11))
+                                .buttonStyle(.plain)
+                                .foregroundStyle(textSecondary)
+                        }
+
+                        // Revoked / migration banner — only when truly no key (unlicensed path)
+                        if license.isRevoked && !showKeyEntryForm {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color(hex: "#F59E0B"))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Your license key needs to be updated")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(textPrimary)
+                                    Text("We've moved our store. Please enter the new key from your purchase email or dashboard.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(Color(hex: "#F59E0B").opacity(0.09))
+                                    .overlay(RoundedRectangle(cornerRadius: 9)
+                                        .stroke(Color(hex: "#F59E0B").opacity(0.3), lineWidth: 1))
+                            )
+                        }
+
+                        Text("LICENSE KEY")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(textSecondary.opacity(0.7))
+                            .kerning(1.2)
+
+                        HStack(spacing: 0) {
+                            TextField("XXXX-XXXX-XXXX-XXXX", text: $keyInput)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(textPrimary)
+                                .textFieldStyle(.plain)
+                                .onChange(of: keyInput) {
+                                    keyInput = keyInput.uppercased()
                                     errorMessage = nil
                                 }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "doc.on.clipboard")
-                                        .font(.system(size: 11))
-                                    Text("Paste")
-                                        .font(.system(size: 11, weight: .medium))
+                                .onSubmit { activateKey() }
+
+                            if keyInput.isEmpty {
+                                Button {
+                                    if let str = NSPasteboard.general.string(forType: .string) {
+                                        keyInput = str.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                                        errorMessage = nil
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "doc.on.clipboard")
+                                            .font(.system(size: 11))
+                                        Text("Paste")
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    .foregroundStyle(Color(hex: "#0eb0e9"))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(Color(hex: "#0eb0e9").opacity(0.12)))
                                 }
-                                .foregroundStyle(Color(hex: "#0eb0e9"))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(RoundedRectangle(cornerRadius: 5).fill(Color(hex: "#0eb0e9").opacity(0.12)))
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(fieldBg)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
-                    )
-
-                    if let err = errorMessage {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Button(action: activateKey) {
-                        HStack {
-                            if isActivating {
-                                ProgressView().controlSize(.small).tint(.white)
-                            }
-                            Text(isActivating ? "Activating…" : "Activate CardRunner")
-                                .font(.system(size:14).weight(.semibold))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                         .background(
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(activateBtnColor)
-                                .shadow(
-                                    color: activateHovered && canActivate
-                                        ? Color(hex: "#0eb0e9").opacity(0.55)
-                                        : .clear,
-                                    radius: 12, y: 4
-                                )
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(fieldBg)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor, lineWidth: 1))
                         )
-                        .scaleEffect(activateHovered && canActivate ? 1.015 : 1.0)
-                        .animation(.easeInOut(duration: 0.14), value: activateHovered)
-                        .foregroundStyle(.white)
+
+                        if let err = errorMessage {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Button(action: activateKey) {
+                            HStack {
+                                if isActivating {
+                                    ProgressView().controlSize(.small).tint(.white)
+                                }
+                                Text(isActivating ? "Activating…" : "Activate CardRunner")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(activateBtnColor)
+                                    .shadow(
+                                        color: activateHovered && canActivate
+                                            ? Color(hex: "#0eb0e9").opacity(0.55)
+                                            : .clear,
+                                        radius: 12, y: 4
+                                    )
+                            )
+                            .scaleEffect(activateHovered && canActivate ? 1.015 : 1.0)
+                            .animation(.easeInOut(duration: 0.14), value: activateHovered)
+                            .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canActivate)
+                        .onHover { over in
+                            withAnimation(.easeInOut(duration: 0.14)) { activateHovered = over }
+                            if over && canActivate { NSCursor.pointingHand.push() }
+                            else { NSCursor.pop() }
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canActivate)
-                    .onHover { over in
-                        withAnimation(.easeInOut(duration: 0.14)) { activateHovered = over }
-                        if over && canActivate { NSCursor.pointingHand.push() }
-                        else { NSCursor.pop() }
-                    }
+                    .padding(24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(useLightMode ? Color.white.opacity(0.7) : Color.white.opacity(0.04))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(borderColor, lineWidth: 1))
+                    )
+                    .frame(maxWidth: 380)
                 }
-                .padding(24)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(useLightMode ? Color.white.opacity(0.7) : Color.white.opacity(0.04))
-                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(borderColor, lineWidth: 1))
-                )
-                .frame(maxWidth: 380)
 
                 Spacer().frame(height: 24)
 
@@ -11759,6 +11849,64 @@ struct LicenseGateView: View {
             if let err { errorMessage = err }
             // On success, LicenseManager sets justActivated = true,
             // which ContentView observes and shows WelcomeCelebrationView.
+        }
+    }
+}
+
+// MARK: - Grace Expired Banner
+
+/// Non-blocking top-of-window strip shown when grace has expired but a key still
+/// exists in the keychain. The app stays fully interactive behind this banner.
+private struct GraceExpiredBannerView: View {
+    @ObservedObject private var license = LicenseManager.shared
+    @State private var isRetrying = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("License verification required")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("Connect to the internet to confirm your license.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+
+                Spacer()
+
+                Button {
+                    isRetrying = true
+                    Task {
+                        await license.retryValidation()
+                        await MainActor.run { isRetrying = false }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        if isRetrying { ProgressView().controlSize(.mini).tint(.white) }
+                        Text(isRetrying ? "Checking…" : "Try Again")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.3)))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.5), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(isRetrying)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                Color.orange.opacity(0.12)
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.3)), alignment: .bottom)
+            )
+            Spacer()
         }
     }
 }
