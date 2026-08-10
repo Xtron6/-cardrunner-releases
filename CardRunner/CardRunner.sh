@@ -1324,6 +1324,7 @@ verify_transfer() {
   fi
 
   local total=${#files[@]}
+  echo "VERIFY_PROGRESS current=0 total=${total}"
 
   for rel in "${files[@]}"; do
     local src_file="${src}/${rel}"
@@ -2017,18 +2018,18 @@ PYEOF
     if [[ "$_run_verify_nf" == "yes" && "$DRY_RUN" != "yes" && -f "$list_all" ]]; then
       echo "PHASE verifying"
       local _rv_t0=$(date +%s)
-      local _rv_out
+      local _rv_tmp; _rv_tmp="$(mktemp)"
       if [[ "$_forced_spotcheck_nf" == "yes" ]]; then
         local _saved_fv="$FULL_VERIFY"
         FULL_VERIFY=no
-        _rv_out="$(verify_transfer "$src" "$list_all")"
+        verify_transfer "$src" "$list_all" | tee "$_rv_tmp"
         FULL_VERIFY="$_saved_fv"
       else
-        _rv_out="$(verify_transfer "$src" "$list_all")"
+        verify_transfer "$src" "$list_all" | tee "$_rv_tmp"
       fi
-      echo "$_rv_out"
-      echo "$_rv_out" | grep -q "^VERIFY_FAIL" && _rv_failed=1
-      echo "$_rv_out" | grep -q "^VERIFY_PASS" && _rv_effective=1
+      grep -q "^VERIFY_FAIL" "$_rv_tmp" && _rv_failed=1
+      grep -q "^VERIFY_PASS" "$_rv_tmp" && _rv_effective=1
+      rm -f "$_rv_tmp"
       _rv_secs=$(( $(date +%s) - _rv_t0 ))
     fi
     rm -f "$list_all" "$new_list"
@@ -2559,20 +2560,21 @@ PYEOF
   if [[ "$_run_verify" == "yes" && "$DRY_RUN" != "yes" ]]; then
     echo "PHASE verifying"
     local _verify_t0=$(date +%s)
-    local _verify_out
+    local _verify_tmp; _verify_tmp="$(mktemp)"
     if [[ "$_forced_spotcheck" == "yes" ]]; then
       log_line "VERIFY FORCED: auto-eject is on with verification off — running a spot-check before eject"
       # Force spot-check mode regardless of any stale FULL_VERIFY state.
       local _saved_full_verify="$FULL_VERIFY"
       FULL_VERIFY=no
-      _verify_out="$(verify_transfer "$src" "$new_list")"
+      verify_transfer "$src" "$new_list" | tee "$_verify_tmp"
       FULL_VERIFY="$_saved_full_verify"
     else
-      _verify_out="$(verify_transfer "$src" "$new_list")"
+      verify_transfer "$src" "$new_list" | tee "$_verify_tmp"
     fi
-    echo "$_verify_out"   # re-emit for Swift UI parsing
-    echo "$_verify_out" | grep -q "^VERIFY_FAIL" && _verify_failed=1
-    echo "$_verify_out" | grep -q "^VERIFY_PASS" && _verify_effective=1
+    # VERIFY_PROGRESS lines streamed to stdout above; grep result file for pass/fail.
+    grep -q "^VERIFY_FAIL" "$_verify_tmp" && _verify_failed=1
+    grep -q "^VERIFY_PASS" "$_verify_tmp" && _verify_effective=1
+    rm -f "$_verify_tmp"
     _verify_secs=$(( $(date +%s) - _verify_t0 ))
   fi
   # Generate transfer report before temp files are cleaned up (skipped for dry runs)

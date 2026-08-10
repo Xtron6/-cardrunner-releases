@@ -1,164 +1,121 @@
-# CardRunner — Handoff & Next Steps
-_Last updated: 2026-08-02 · Current release: 1.8.2 (build 24)_
-
-**Owner:** Xavier Gallo · macOS SwiftUI app, Mac-only, direct-distribution (Sparkle, not App Store)
-**Repo:** `/Users/xaviergallo/Documents/The Everything/DIY Apps/Apps/CardRunner`
-**GitHub:** https://github.com/Xtron6/-cardrunner-releases
+# CardRunner — Session Handoff
+**Date:** 2026-08-06  
+**Branch:** main  
+**Last commit:** a8ac448
 
 ---
 
-## Current State
+## What Was Shipped This Session (10 commits)
 
-App is clean, shipped, and stable. 205 tests pass, 0 failures. 1.8.2 is live to users via Sparkle.
+### Performance
+**`8092687` — Main-thread blocking**
+- Log reads after each ingest moved off main thread
+- `refreshDestinations()` filesystem scan moved to `DispatchQueue.global()` + generation counter (prevents stale results from rapid mount/unmount races)
+- `DateFormatter` allocations promoted to `static let`
 
----
+**`7974264` — Unmount: filesystem I/O off main thread**
+- `revalidateCustomDest()` and `updateSSDInfo()` both did synchronous `fileExists` / `attributesOfFileSystem` on the main thread inside the unmount notification handler → potential UI freeze during drive removal
+- Both moved to `Task.detached(.utility)` with stale-result guards
+- `didUnmountNotification` now also terminates active ingests whose `sourcePath` matches the gone volume — when a card is physically pulled mid-copy, `cardcopy` was blocking on I/O until kernel timeout; now terminates immediately via `proc.isRunning` guard
 
-## What Shipped This Session (1.8.2)
+### Multi-Shooter Integrity
+**`9db8860` — Multi-card name crossing**
+- Root cause: shared `@AppStorage` global used as a per-card value; concurrent mounts overwrote it
+- Fix: names resolved per-UUID from `knownCardNicknames`; auto-labels can never be learned as a shooter name; per-ingest snapshot at termination
 
-### Slack Live Progress
-- Replaced fire-and-forget webhook with **bot token approach** (`xoxb-...` + channel ID)
-- Posts a message when a card transfer starts, edits it in place every 10% of progress
-- Final edit on completion: ✅ done / ⚠️ failed
-- Per-lane sessions keyed by UUID — concurrent ingests each get their own Slack message, no aliasing
-- Settings: two fields (bot token + channel ID) with helper text pointing to api.slack.com
-- **User setup:** api.slack.com → Create App → add `chat:write` scope → install → copy token (~3 min)
-- iMessage = easy (just a phone number); Slack = power users who create their own Slack app. Intentional product split — don't collapse them.
+**`17406aa` — Batch 1 production fixes**
+- **Verify %:** `VERIFY_PROGRESS` now emitted in spot-check AND full-verify modes (was full-verify only)
+- **AFK-only alerts:** `shouldDeliverRemoteAlert` reduced to `hasDestination && afkMode`; idle/away gate and its dead Settings controls removed
+- **CARD_HHMM:** fixed same-day collision — fallback was using date suffix (`CARD_0802` for every card same day); now uses resolution-time `CARD_HHmm` with atomic uniqueness check
+- **Bottleneck copy:** "Below expected — check connection" → "Speed below expected for this link"
+- **Open in Finder / F key:** unified through `finderRevealPath()`; walks to nearest existing ancestor; works after eject
 
-### iMessage / AFK Remote Alerts
-- iMessage fires when a card finishes and Mac has been idle ≥ threshold (default 2 min)
-- **AFK toggle** in top bar (opposite the preset control) — guarantees a text on every finished card, bypassing idle detection entirely
-- AFK is session-scoped (resets on relaunch — intentional, "stepping away right now" not persistent)
-- Tapping AFK with no destination shows an **inline popover** explaining what's needed + direct link to Remote Alerts settings
-- AFK button matches gear/history hover style: cyan glow, border, 1.05× scale, same spring animation
+### Transfer Control
+**`cea1421` — Auto-ingest OFF no longer cancels in-flight transfer**
+- `onChange(of: autoIngest)` OFF branch was calling `cancelAllIngests()` — killed any running copy
+- The "max moody error — only a few clips" was this bug
+- Fix: OFF branch no longer cancels; only Stop Transfer can abort a running ingest
 
-### Verify Progress %
-- "Verifying checksums…" now shows e.g. `Verifying checksums… 34%` live
-- Pure UI change — data was already flowing via `verifyChecked`/`verifyTotal` on `ActiveIngest`
-- Shows 1–99% only (no "0%" flash at start, no "100%" at end)
+**`a5f7728` — Destinations no longer deleted on drive unmount**
+- `reconcileDestinations()` permanently removed saved destinations whose drive was temporarily absent
+- Root cause of "Toronto Tennis vanished, Gallo 8TB became default"
+- Fix: function deleted entirely; unmounted destinations persist in config
 
-### Report an Issue Freeze Fix
-- `generateSupportBundle()` was blocking the main thread (reads 7 days of logs + up to 3 crash `.ips` files)
-- Fixed: dispatched to background queue, settings closes instantly, mini spinner shows, sheet opens when ready
+### Auto-Label Feature
+**`8ea6c75` — Smart auto-label for unknown cards**
+- Unknown cards get a smart subfolder: file prefix scan (e.g. `FV7A_XXXX.MP4` → `FV7A/`), fallback to `CARD_HHmm`, or land in date folder
+- Eject clears the global card name so it can't bleed to the next card
 
-### Tier 2 Speed Diagnostics (shipped in 1.8.1 build 23)
-- Live hardware path display: source/dest protocol + link speed + media type
-- Peak MB/s shown on live tile and in history
-- Bottleneck analysis: reader-limited / drive-limited / below-expected / verify-slowed
-- CSV export extended to 11 columns (Peak MB/s, Hardware path)
+### Date Picker
+**`a84a600` — Date picker when today-filter excludes all footage**
+- Old: binary "Ingest everything?" alert
+- New: shows a date picker — "footage found on other days, choose what to ingest"
+- Also triggers when no filter is set and footage spans multiple days
 
----
+### Verification
+**`1caa109` — Resume verify: run checksum pass when no new files to copy**
+- When interrupted during verify phase (after copy completed), resume found `new_count == 0` and exited early with `Status=NoNewFiles` — no verify ever ran, checkpoint deleted, card silently cleared
+- Fix: `new_count == 0` path now runs `verify_transfer` against `list_all` if `VERIFY=yes`
+- Pass → `PHASE done`, checkpoint deleted. Fail → `PHASE failed`, checkpoint kept, `FailedIngestRecord` written
+- `AUTO_EJECT` forces a spot-check on resume (never eject without sampling)
 
-## Next Steps (Priority Order)
-
-### 1. Performance Fixes — Ready to Build, No Design Needed
-
-**HIGH — Log read on main thread after every ingest**
-- Location: `ContentView.swift` ~line 7684
-- What: after every transfer, reads the entire day's log file synchronously on main thread (`String(contentsOf: logPath)`) to extract hardware fields
-- Fix: move log read into the background portion of the termination handler before the `DispatchQueue.main.async` hop, pass result in
-- Impact: removes a blocking main-thread disk read after every single card transfer
-
-**HIGH — `refreshDestinations()` blocks main thread on mount/unmount**
-- Location: `ContentView.swift` ~line 5581
-- What: called on every volume mount/unmount; does `fm.contentsOfDirectory(at: /Volumes)` + per-volume `fileExists` + `reconcileDestinations()` all synchronously on main thread
-- Fix: wrap in `DispatchQueue.global` + hop back to main for state writes
-- Impact: a wedged NAS or slow drive at mount time currently blocks the entire UI
-
-**MED — DateFormatter allocations on every render pass**
-- Location 1: `ContentView.swift` ~line 2413 (`predictedDestPreview`) — new `DateFormatter` on every render during active transfers (~4×/sec)
-- Location 2: `IngestModels.swift` ~line 182 (`CardDateInfo.displayDate`) — two new `DateFormatter` instances per date picker row per render
-- Fix: make them `static let` at type or module level
-- Impact: removes repeated expensive locale/calendar/timezone lookups during active transfers
-
-### 2. Wishlist (Parked)
-
-**Slack Ring Widget**
-- Render the CardRunner progress ring as PNG via `ImageRenderer`, upload to Slack via `files.getUploadURLExternal`, attach to live-updating message — ring swaps out each tick
-- **Why parked:** 3 API calls per tick (render + upload + update). Text-based live updates shipped first.
-- **When to revisit:** after Slack bot is stable and used in real shoots
-
-### 3. Longer-Term Engineering
-
-**Monolith split (Stage 1b/2)**
-- `ContentView.swift` still ~15k lines. Stage 1a done (extracted `IngestModels.swift` + `IngestLogic.swift`)
-- Stage 1b: extract self-contained top-level UI structs (~3–4k more lines out)
-- Stage 2: split `struct ContentView` across extension files
-- Landmines: shared `private` helpers must flip to `internal` in a prep commit first; `@State`/`@AppStorage` stored properties must stay in the primary struct body
-
-**Column scroll for many-card overflow**
-- 5+ simultaneous cards overflows the source lane column with no scroll
-- Design-sensitive (touches funnel geometry, ring alignment, destFrames anchors) — align on design before touching
-
-**Airtight VERIFIED badge**
-- Snapshot `verifyTransfer` state per-ingest at launch so verified cards show the badge correctly after relaunch
-- Low priority / low frequency
+### UI Cleanup
+**`a8ac448` — Remove per-card sparkline from ingest tile**
+- Mini waveform on each card tile was redundant with the full-UI speed graph
+- MB/s + peak + file count remain on tile; aggregate graph in main UI unaffected
 
 ---
 
-## Architecture Reference
+## Open Items
 
-**Card detection:**
-- Fires on `NSWorkspace.didMountNotification` (same event Finder uses) + 600ms filesystem settle delay
-- Hardware mount time (1–3s USB/SD enumeration) is the real latency — nothing to optimize there
-- 30s fallback scan loop catches edge cases (cards mounted before app launched, missed notifications)
-- We are as fast as it's possible to be
+### #3 — Auto-label typed rename not applying after ingest finishes — **FIXED (two separate bugs)**
 
-**Presets:**
-- Valuable for DITs switching between shows mid-day (saves mode, verify, scaffold, date filter, destination override in one tap)
-- Top-bar menu only appears when presets exist — zero clutter for users with none
-- Keep as-is
+**Bug 3a — Wrong base path (fixed Aug 6 morning):**
+- `OPEN_TARGET` emits the full label-folder path for single-destination runs, overwriting `destPath`. `applyPendingFolderRename` scanned for date dirs *inside* that label folder (video files), found nothing, silently no-oped.
+- Fix: Added `clipsRoot` field to `ActiveIngest` from `PROGRESS_DEST`; termination handler and `v3CommitActiveRename` now pass `clipsRoot` as the rename base. 2 tests added.
 
-**iMessage vs Slack:**
-- iMessage: zero config, any phone number, fire-and-forget (start + completion messages)
-- Slack: bot token setup (~3 min), live-updating single message per card
-- Do not collapse them — the split is intentional and correct
+**Bug 3b — No-label cards: footage flat in date folder (fixed Aug 6 evening, confirmed by live log):**
+- When `hasSubs = false` (first/only card of the day), auto-label assigns `cardLabel = ""` — no per-card subfolder created. Operator types "xavier" → `pendingRename = "xavier"` captured. `applyPendingFolderRename` guards on `!oldT.isEmpty` → silent no-op. Also: `v3CommitActiveRename` was clearing `pendingRename` when `cardLabel == ""` + Enter pressed during copy, making the termination handler a dead code path for that scenario.
+- Fix: New `moveFilesIntoSubfolder(dateFolder:newLabel:files:)` function. Termination handler now has a no-label branch: when `cardLabel == ""` + `copiedFiles` non-empty + `destPath ≠ clipsRoot` → creates subfolder, moves verified files into it, saves nickname. Multi-day guard: skips when `destPath == clipsRoot`. `v3CommitActiveRename` empty-label branch: still-copying keeps `pendingRename` and updates `friendlyName`; done path calls `moveFilesIntoSubfolder` immediately.
+- `RENAME_APPLIED` log now only fires after confirmed file movement.
+- Tests: 3 new discriminator tests; 207 total pass.
 
-**AFK session-scope:**
-- `@State`, not `@AppStorage` — intentional. "I'm stepping away right now" should not stay armed after relaunch silently.
+**Bug 3c — Empty old-label folder left on disk after has-label rename (fixed Aug 6):**
+- After `applyPendingFolderRename` moves files via the per-file manifest correction path (`CORRECTION MOVED`), the source directory tree (`260806/test/PRIVATE/M4ROOT/CLIP/`) is left fully empty on disk.
+- Fix: New `removeEmptyLabelDirs(under:oldLabel:)` helper. After a successful has-label rename, it walks every date dir under `clipsRoot`, finds the old-label directory, verifies it contains no files, and removes it (recursively, picking up empty subdir trees). Only removes when zero files remain — logs `RENAME_CLEANUP_SKIP` if any files are present.
 
----
+**Bug 3d — Per-UUID card nickname not updated after has-label rename (fixed Aug 6):**
+- When `applyPendingFolderRename` renamed `test → xavier`, the nickname for that card UUID was never updated. The `labelIsOperatorGiven` block after the rename saved `friendlyName = "test"` only when the operator set the label in the awaiting lane — not when the label came from a stored nickname. So the next insert re-resolved "test" from `knownCardNicknames`, creating an infinite rename loop.
+- Fix: Termination handler now captures the return value of `applyPendingFolderRename`. When `effective == newLabel` (rename succeeded), it saves `knownCardNicknames[uuid] = effective` immediately. `RENAME_APPLIED` log is also now conditional (was always emitted, even on failure — pre-existing false positive).
 
-## Test Suite
+### cardcopy Rename Failure (Aug 5 — watch only)
+- Two occurrences on XG_FX card: `rename failed .cardrunner_partial/XG_FX3_3964.MP4 → destination: No such file or directory (after 6 attempts)`
+- CardRunner handled correctly (manifest not updated, files retried)
+- Suspected flaky card reader or connection; not a code bug
+- **Watch:** if it recurs on future shoots, the reader hardware may need replacing
 
-205 tests, 0 failures. Swift Testing framework (`@Test` / `#expect`) — NOT XCTest.
-
-Notable suites:
-- `RemoteAlertsTests` — gating logic, composite gate, message formatting
-- `SlackFormatterTests` — start/progress/finish text (verified, unverified, failed, singular file)
-- `BottleneckTests` — parseLinkMBps, bottleneckDescriptor
-- Tier 2 speed/hardware field parsing
-
----
-
-## Release Process
-
-```bash
-# 1. Bump CURRENT_PROJECT_VERSION and MARKETING_VERSION in project.pbxproj
-# 2. Commit and push
-git add CardRunner.xcodeproj/project.pbxproj
-git commit -m "Bump version to X.Y.Z build N"
-git pull origin main --no-rebase && git push origin main
-
-# 3. Cut the release (notarize → sign → appcast → DMG → GitHub release)
-./release.sh X.Y.Z "Release notes here"
-```
-
-Sparkle auto-updates all existing users on next app launch.
+### Release — Not Yet Pushed
+- All 10 commits are local on `main`
+- Remote: `https://github.com/Xtron6/-cardrunner-releases`
+- No appcast.xml update yet for this build
 
 ---
 
-## Performance Findings — Full Detail
+## Log Health (Aug 1–6 Review)
+- **60 OK / 18 NoNewFiles / 7 PartialError / 3 MirrorFail (smoke tests) / 1 VerifyFail**
+- All PartialErrors: 4 user-cancelled, 2 cardcopy rename failures (watched above), 1 pre-fix auto-ingest-off bug
+- VerifyFail: empty src checksum (card pulled during verify) — safety system blocked eject correctly
+- Speeds healthy: 114–747 MB/s to Gallo 8TB
+- Auto-label `CARD_HHmm` firing correctly for no-today-footage cards
 
-From automated investigation (2026-08-02):
+---
 
-| # | Severity | Location | Issue |
-|---|----------|----------|-------|
-| 1 | HIGH | ContentView.swift ~7684 | `String(contentsOf:)` log read on main thread after every ingest |
-| 2 | HIGH | ContentView.swift ~5581 | `refreshDestinations()` does `contentsOfDirectory` + `fileExists` on main thread |
-| 3 | MED | ContentView.swift ~2413 | `predictedDestPreview` allocates new `DateFormatter` every render pass |
-| 4 | MED | IngestModels.swift ~182 | `CardDateInfo.displayDate` allocates two `DateFormatter` per row per render |
-| 5 | MED | ContentView.swift ~4866 | `seenCardPaths.filter { fileExists }` on main thread in unmount handler |
-| 6 | LOW | ContentView.swift ~2005 | `completionAnim` UserDefaults wrapper — negligible |
-| 7–9 | OK | Various | Timers and shell sleeps are intentional and correctly structured |
-
-Items 1, 2, 3, 4 are the ones worth fixing. Item 5 is low-frequency and low-impact. Items 6–9 leave as-is.
+## Architecture Notes
+- `CardRunner/ContentView.swift` — ~15k line monolith; all UI + Swift ingest logic
+- `CardRunner/IngestLogic.swift` — pure functions: label resolution, bottleneck, file prefix extraction
+- `CardRunner/IngestModels.swift` — `ActiveIngest` struct (added `labelIsOperatorGiven`)
+- `CardRunner/RemoteNotify.swift` — Slack + iMessage; AFK-only gating
+- `CardRunner/CardRunner.sh` — shell engine; `cardcopy` binary does the actual copy + verify
+- Tests: Swift Testing framework (`@Test` / `#expect`), 205 unit tests in `CardRunnerTests/CardRunnerTests.swift`
+- **Never run XCUITest targets** — use `-only-testing:CardRunnerTests` always
+- **Always clean build** (`⇧⌘K` + `⌘B`) after shell script changes — Xcode won't re-bundle `CardRunner.sh` without it

@@ -510,7 +510,8 @@ nonisolated struct ActiveIngest {
     // Summary (populated by PROGRESS_SUMMARY / PROGRESS_DEST)
     var avgMBps: Int = 0
     var durationSec: Int = 0
-    var destPath: String = ""
+    var destPath: String = ""   // F/Reveal target (may be label subfolder for single-day runs)
+    var clipsRoot: String = ""  // always the clips-root (project/clips/); used for folder rename
     var verifyEnabled: Bool = false  // snapshot of verifyTransfer at launch — immune to mid-transfer toggle changes
     var verified: Bool = false       // true once a successful copy has been checksum-verified (verifyEnabled on)
     var mirrorCount: Int = 0         // # of --secondary mirror targets; a .done card means ALL of them landed (a mirror fail → PHASE failed)

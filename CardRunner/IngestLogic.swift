@@ -312,9 +312,11 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
         if !p.isEmpty { ingest.destPath = p }
 
     } else if line.hasPrefix("PROGRESS_DEST ") {
-        // Fallback: clips-root path emitted at end. Only use when a more specific
-        // path (OPEN_TARGET / FOLDERSYNC_START) never set destPath (e.g. 0-new-file runs).
+        // Always the project clips-root (never a date or label subfolder). Captured
+        // as clipsRoot so applyPendingFolderRename can walk date dirs correctly even
+        // when OPEN_TARGET later sets destPath to a deeper label-subfolder path.
         let p = line.replacingOccurrences(of: "PROGRESS_DEST ", with: "")
+        if !p.isEmpty { ingest.clipsRoot = p }
         if ingest.destPath.isEmpty { ingest.destPath = p }
 
     } else if line.hasPrefix("SPEED_HARDWARE") {
