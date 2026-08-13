@@ -305,6 +305,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.4</title>
+            <pubDate>Sun, 10 Aug 2026 21:30:00 +0000</pubDate>
+            <sparkle:version>26</sparkle:version>
+            <sparkle:shortVersionString>1.8.4</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>New rename tokens:</b> {date}, {date:long}, {project}, {index}, {index:N} — auto-rename files on ingest with sequential numbering</li><li><b>Token cheat sheet</b> in Settings shows all available tokens with descriptions</li><li>Live preview updates for all new tokens</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.4/CardRunner-1.8.4.dmg"
+                sparkle:edSignature="TD43sonxjYegQd7ELArLF8TAhWKjF4osW3Pa5cjYoYqrSCjPMha7x5vSULwSVeO8T7GnOPRq4w3hwfcKuGj8Aw=="
+                length="14015812"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
