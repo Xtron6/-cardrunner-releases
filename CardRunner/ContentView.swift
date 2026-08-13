@@ -3601,7 +3601,7 @@ struct ContentView: View {
                             onColor: accentPurple)
 
                         presetToggleRow("Rename on ingest", "pencil", binding: draft.renameOnIngestEnabled,
-                            info: "Files are renamed as they land using a template. Tokens: {cardname} = card label or volume name, {original} = original filename. Extension is always preserved.",
+                            info: "Files are renamed as they land using a template. Extension is always preserved.\n{cardname} = card label  {original} = original filename\n{project} = project name  {date} = YYMMDD  {date:long} = YYYYMMDD\n{index} = 00001…  {index:3} = 001…",
                             onColor: accentBlue)
 
                         if presetEditorDraft.renameOnIngestEnabled {
@@ -8371,9 +8371,23 @@ struct ContentView: View {
     private func renameTemplatePreview(_ template: String) -> String {
         let tmpl = template.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tmpl.isEmpty else { return "⚠ Template is empty" }
-        var preview = tmpl
+        let df = DateFormatter()
+        df.dateFormat = "yyMMdd"
+        let shortDate = df.string(from: Date())
+        df.dateFormat = "yyyyMMdd"
+        let longDate = df.string(from: Date())
+        var preview = tmpl.lowercased()
         preview = preview.replacingOccurrences(of: "{cardname}", with: "CardA")
         preview = preview.replacingOccurrences(of: "{original}", with: "MVI_0001")
+        preview = preview.replacingOccurrences(of: "{project}", with: projectName.isEmpty ? "MyProject" : projectName)
+        preview = preview.replacingOccurrences(of: "{date:long}", with: longDate)
+        preview = preview.replacingOccurrences(of: "{date}", with: shortDate)
+        if let range = preview.range(of: #"\{index:\d+\}"#, options: .regularExpression) {
+            let token = String(preview[range])
+            let width = Int(token.filter(\.isNumber)) ?? 5
+            preview = preview.replacingCharacters(in: range, with: String(repeating: "0", count: max(width - 1, 0)) + "1")
+        }
+        preview = preview.replacingOccurrences(of: "{index}", with: "00001")
         return preview + ".mp4"
     }
 
@@ -14028,6 +14042,18 @@ extension ContentView {
         Divider().opacity(0.4).padding(.leading, 18)
     }
 
+    private func tokenHelpRow(_ token: String, _ desc: String) -> some View {
+        HStack(spacing: 8) {
+            Text(token)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(v3Cyan.opacity(0.85))
+                .frame(width: 90, alignment: .leading)
+            Text(desc)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.45))
+        }
+    }
+
     private func v3ToggleRow(_ title: String, _ subtitle: String, _ isOn: Binding<Bool>,
                              enabled: Bool = true, onChange: ((Bool) -> Void)? = nil) -> some View {
         HStack(spacing: 14) {
@@ -14237,20 +14263,37 @@ extension ContentView {
                 if renameOnIngestEnabled {
                     v3SettingDivider()
                     HStack(spacing: 10) {
-                        TextField("{cardname}_{original}", text: $renameTemplate)
+                        TextField("{date}_{project}_{index}", text: $renameTemplate)
                             .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).foregroundStyle(.white)
                             .padding(.horizontal, 12).padding(.vertical, 8)
                             .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                         Button("Reset") { renameTemplate = "{cardname}_{original}" }
                             .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
                     }.padding(.horizontal, 18).padding(.vertical, 12)
-                    // Live preview of the template against a sample clip (mirrors the preset editor).
+                    // Live preview
                     let renamePreview = renameTemplatePreview(renameTemplate)
                     HStack(spacing: 6) {
                         Image(systemName: "eye").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
                         Text(renamePreview)
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(renamePreview.hasPrefix("⚠") ? Color.orange : v3Cyan)
+                    }
+                    .padding(.horizontal, 18).padding(.bottom, 4)
+                    // Token reference
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("TOKENS")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.3))
+                            .kerning(1)
+                        Group {
+                            tokenHelpRow("{date}", "YYMMDD (e.g. 260718)")
+                            tokenHelpRow("{date:long}", "YYYYMMDD (e.g. 20260718)")
+                            tokenHelpRow("{project}", "Project name from settings")
+                            tokenHelpRow("{cardname}", "Card label or volume name")
+                            tokenHelpRow("{original}", "Original filename (no ext)")
+                            tokenHelpRow("{index}", "00001, 00002… per card")
+                            tokenHelpRow("{index:3}", "001, 002… (custom width)")
+                        }
                     }
                     .padding(.horizontal, 18).padding(.bottom, 12)
                 }

@@ -1393,29 +1393,49 @@ verify_transfer() {
 # Rename on ingest
 # -----------------------------------------------------------
 # Applies RENAME_TEMPLATE to each file in a destination group after copy.
-# Supported tokens: {cardname} {original}
+# Supported tokens:
+#   {cardname}  — card label or volume name
+#   {original}  — original filename stem (no extension)
+#   {project}   — PROJECT_NAME from settings
+#   {date}      — shoot date in DATE_FORMAT (default YYMMDD)
+#   {date:long} — shoot date as YYYYMMDD
+#   {index}     — 5-digit zero-padded sequential counter (per card, resets each card)
+#   {index:N}   — N-digit zero-padded counter (e.g. {index:3} → 001)
 # Populates _rename_map[$rel]=new_basename so verify_transfer can find files.
 apply_rename_group() {
   local dest_dir="$1"
   local rels_file="$2"
   local label="$3"   # CARDLABEL or cardname fallback
 
-  # Safety check: if the template has no {original} token, every file in the
-  # group would produce the same output name — the second mv silently overwrites
-  # the first, destroying data.  Abort the rename for this group with a clear
-  # error rather than silently clobbering files.
+  local _tpl_lower
+  _tpl_lower="$(echo "$RENAME_TEMPLATE" | tr '[:upper:]' '[:lower:]')"
+  local _has_uniqueness=0
+  [[ "$_tpl_lower" == *"{original}"* ]] && _has_uniqueness=1
+  [[ "$_tpl_lower" == *"{index"* ]]     && _has_uniqueness=1
+
   local _file_count
   _file_count=$(awk 'NF>0' "$rels_file" 2>/dev/null | wc -l | tr -d ' ')
-  if (( _file_count > 1 )) && [[ "$RENAME_TEMPLATE" != *"{original}"* ]]; then
-    log_line "RENAME ABORTED: template '$RENAME_TEMPLATE' has no {original} token — applying it to $_file_count files would overwrite all but the last. Add {original} to make filenames unique."
-    echo "RENAME_ERROR reason=no_original_token files=$_file_count template=$RENAME_TEMPLATE"
+  if (( _file_count > 1 )) && (( _has_uniqueness == 0 )); then
+    log_line "RENAME ABORTED: template '$RENAME_TEMPLATE' has no uniqueness token ({original} or {index}) — applying it to $_file_count files would overwrite all but the last."
+    echo "RENAME_ERROR reason=no_uniqueness_token files=$_file_count template=$RENAME_TEMPLATE"
     return 1
   fi
 
+  # Pre-compute date tokens once for the group
+  local _date_short _date_long
+  _date_short="$(date +"$DATE_FORMAT")"
+  _date_long="$(date +%Y%m%d)"
+  if [[ -n "$DATE_OVERRIDE" ]]; then
+    _date_short=$(date -j -f "%Y%m%d" "$DATE_OVERRIDE" +"$DATE_FORMAT" 2>/dev/null || echo "$DATE_OVERRIDE")
+    _date_long="$DATE_OVERRIDE"
+  fi
+
+  local _idx=0
+
   while IFS= read -r -d '' rel; do
     [[ -z "$rel" ]] && continue
-    # If cardcopy collision-renamed this file, start from the renamed basename;
-    # otherwise use the original basename from the card path.
+    (( _idx++ ))
+
     local base="${_rename_map[$rel]:-${rel##*/}}"
     local ext stem
     if [[ "$base" == *.* ]]; then
@@ -1429,20 +1449,32 @@ apply_rename_group() {
     local src_file="${dest_dir}/${base}"
     [[ ! -f "$src_file" ]] && continue
 
-    # Normalize template tokens to lowercase so {CardName}/{CARDNAME}/{Original} etc. all work
-    local _tpl_norm
-    _tpl_norm="$(echo "$RENAME_TEMPLATE" | tr '[:upper:]' '[:lower:]')"
-    local new_name="$_tpl_norm"
+    local new_name="$_tpl_lower"
     new_name="${new_name//\{cardname\}/$label}"
     new_name="${new_name//\{original\}/$stem}"
+    new_name="${new_name//\{project\}/$PROJECT_NAME}"
+    new_name="${new_name//\{date:long\}/$_date_long}"
+    new_name="${new_name//\{date\}/$_date_short}"
 
-    # Always preserve original extension
+    # {index:N} — custom-width zero-padded counter
+    if [[ "$new_name" == *"{index:"* ]]; then
+      local _iw
+      _iw=$(echo "$new_name" | grep -o '{index:[0-9]*}' | head -1 | grep -o '[0-9]*')
+      [[ -z "$_iw" ]] && _iw=5
+      local _padded
+      _padded=$(printf "%0${_iw}d" "$_idx")
+      new_name=$(echo "$new_name" | sed "s/{index:[0-9]*}/$_padded/g")
+    fi
+    # {index} — default 5-digit counter
+    if [[ "$new_name" == *"{index}"* ]]; then
+      local _padded5
+      _padded5=$(printf "%05d" "$_idx")
+      new_name="${new_name//\{index\}/$_padded5}"
+    fi
+
     [[ -n "$ext" ]] && new_name="${new_name}.${ext}"
 
-    # Guard: if the resolved name is still identical after substitution (e.g.
-    # unrecognised token left as a literal), skip rather than mv to same path.
     if [[ "$new_name" != "$base" && -n "$new_name" ]]; then
-      # Check for collision with an already-renamed file in this group
       if [[ -f "${dest_dir}/${new_name}" && "${dest_dir}/${new_name}" != "${dest_dir}/${base}" ]]; then
         log_line "RENAME SKIP: $new_name already exists in $dest_dir — keeping original name $base"
         continue
