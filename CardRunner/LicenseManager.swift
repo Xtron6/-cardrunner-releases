@@ -23,6 +23,10 @@ final class LicenseManager: ObservableObject {
     @Published private(set) var justActivated: Bool = false   // fires once after a successful activation
     /// Email address the license is registered to, as returned by Lemon Squeezy meta.customer_email.
     @Published private(set) var customerEmail: String? = nil
+    /// Count of consecutive `valid:false` responses. Requires 2 in a row before
+    /// hard-locking to .revoked — a single transient rejection (LS hiccup) should
+    /// not immediately gate the user out (M1).
+    @Published private(set) var consecutiveRejectCount: Int = 0
 
     var isLicensed: Bool {
         switch status {
@@ -61,6 +65,12 @@ final class LicenseManager: ObservableObject {
     //   992730 = real product, 992752 = beta/test product
     private let allowedProductIDs: Set<Int> = [992730, 992752]
 
+    /// In-flight validation task (M3). Guards against overlapping revalidate()
+    /// calls when retryValidation()/checkOnLaunch() are triggered in quick
+    /// succession (e.g. rapid "Try Again" taps, or launch check racing a
+    /// manual retry).
+    private var validationTask: Task<Void, Never>?
+
     private init() {
         // ── Optimistic precheck (synchronous, runs before any view renders) ──
         // If a key + instance ID are already in the keychain, immediately treat
@@ -85,7 +95,9 @@ final class LicenseManager: ObservableObject {
             status = .unlicensed; return
         }
         status = .checking
-        await revalidate(key: key, instanceId: instanceId)
+        validationTask?.cancel()
+        validationTask = Task { await self.revalidate(key: key, instanceId: instanceId) }
+        await validationTask?.value
     }
 
     /// Call once in ContentView.onAppear. Makes no network call if recently validated.
@@ -101,7 +113,9 @@ final class LicenseManager: ObservableObject {
             status = .licensed; return
         }
 
-        await revalidate(key: key, instanceId: instanceId)
+        validationTask?.cancel()
+        validationTask = Task { await self.revalidate(key: key, instanceId: instanceId) }
+        await validationTask?.value
     }
 
     // MARK: - Activate
@@ -115,7 +129,13 @@ final class LicenseManager: ObservableObject {
         let body     = encode(["license_key": cleaned,
                                "instance_name": "CardRunner \u{2013} \(macName)"])
 
-        guard let (data, http) = try? await request("POST", path: "activate", body: body) else {
+        let data: Data
+        let http: HTTPURLResponse
+        do {
+            (data, http) = try await request("POST", path: "activate", body: body, timeout: 20)
+        } catch let err as URLError where err.code == .timedOut {
+            return "Connection timed out — this can happen on slow hotspots. Try again."
+        } catch {
             return "Network error. Check your connection and try again."
         }
 
@@ -148,9 +168,19 @@ final class LicenseManager: ObservableObject {
 
             // Write to keychain — surface failure rather than silently proceeding
             // and then re-prompting for activation on the next launch.
-            guard keychainWrite(keyAccount, value: cleaned),
-                  keychainWrite(instanceAccount, value: instId) else {
+            guard keychainWrite(keyAccount, value: cleaned) else {
                 return "Failed to save license to keychain. Please try again or restart the app."
+            }
+            guard keychainWrite(instanceAccount, value: instId) else {
+                // Roll back the partial write so we don't burn an activation seat
+                // while leaving a half-written keychain state (L3b/H2).
+                let q: [String: Any] = [kSecClass as String:       kSecClassGenericPassword,
+                                        kSecAttrService as String: service,
+                                        kSecAttrAccount as String: keyAccount]
+                SecItemDelete(q as CFDictionary)
+                let deactBody = encode(["license_key": cleaned, "instance_id": instId])
+                _ = try? await request("DELETE", path: "deactivate", body: deactBody)
+                return "Failed to save license to keychain. The activation was rolled back — please try again."
             }
             saveValidatedNow()
             if let meta  = json["meta"] as? [String: Any],
@@ -222,7 +252,9 @@ final class LicenseManager: ObservableObject {
 
         guard let (data, http) = try? await request("POST", path: "validate", body: body) else {
             // Network failure (timeout, no connection, DNS error) — keep key, enter grace.
-            // Never wipe the key on a network error.
+            // Never wipe the key on a network error. Reset the reject counter — a
+            // network error is not a rejection, so it must not count toward lockout.
+            consecutiveRejectCount = 0
             applyGrace(); return
         }
 
@@ -254,6 +286,7 @@ final class LicenseManager: ObservableObject {
                     UserDefaults.standard.set(email, forKey: customerEmailUD)
                 }
                 saveValidatedNow()
+                consecutiveRejectCount = 0
                 status = .licensed
 
             } else {
@@ -262,7 +295,12 @@ final class LicenseManager: ObservableObject {
                 // transient (captive portal returning a 200, LS hiccup, hotspot DNS).
                 // Keeping the key lets the user hit "Try Again" after reconnecting.
                 // Deliberate removal only happens via deactivate().
-                status = .revoked
+                // Require 2 consecutive rejections before hard-locking (M1) — a
+                // single transient valid:false must not gate the user out.
+                consecutiveRejectCount += 1
+                if consecutiveRejectCount >= 2 {
+                    status = .revoked
+                }
             }
 
         case 404:
@@ -338,7 +376,7 @@ final class LicenseManager: ObservableObject {
     /// Performs a Lemon Squeezy API call. Returns `(Data, HTTPURLResponse)` on success.
     /// Uses a 10 s timeout — fails fast on a flaky shoot network rather than
     /// hanging for the default 60 s and blocking the launch check.
-    private func request(_ method: String, path: String, body: Data) async throws -> (Data, HTTPURLResponse) {
+    private func request(_ method: String, path: String, body: Data, timeout: TimeInterval = 10) async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: "\(apiBase)/\(path)") else {
             throw URLError(.badURL)
         }
@@ -346,7 +384,7 @@ final class LicenseManager: ObservableObject {
         req.httpMethod = method
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
-        req.timeoutInterval = 10   // fail fast on flaky networks (was 60 s default)
+        req.timeoutInterval = timeout   // fail fast on flaky networks (was 60 s default)
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)

@@ -396,6 +396,15 @@ func applyIngestProgressLine(_ line: String, to ingest: inout ActiveIngest) {
             ingest.verifyHashes[filename] = fullHash
         }
 
+    } else if line.hasPrefix("RENAME_MAP ") {
+        // Pre-rename filename → post-rename on-disk filename, emitted by CardRunner.sh's
+        // apply_rename_group() so the MHL builder can resolve the correct on-disk name.
+        let payload = String(line.dropFirst("RENAME_MAP ".count))
+        let parts = payload.components(separatedBy: "\t")
+        if parts.count >= 2 {
+            ingest.renameMap[parts[0]] = parts.dropFirst().joined(separator: "\t")
+        }
+
     } else if line.hasPrefix("EJECT_FAILED") || line.hasPrefix("EJECT_SKIPPED") {
         // Post-copy eject failure/skip — the copy already succeeded, so this must NOT
         // trip hasCopyError. Tracked separately so the UI can nudge the user to eject manually.

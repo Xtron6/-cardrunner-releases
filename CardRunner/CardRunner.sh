@@ -1205,6 +1205,22 @@ PYEOF
   [[ -n "$_new_entries" ]] && printf '%s' "$_new_entries" >> "$CARD_MANIFEST"
 }
 
+# Per-file variant of record_ingested_global, for partial-failure groups where
+# only some files in the group actually landed on disk. Thin wrapper: builds a
+# one-line .rels file and delegates to record_ingested_global so the manifest
+# key format (rel|size|mtime|timestamp|dest_dir) and in-batch dedup stay
+# identical to the bulk path.
+record_ingested_file() {
+  # $1 = src root, $2 = single relative path, $3 = dest dir
+  [[ -z "$CARD_MANIFEST" || "$DRY_RUN" == "yes" ]] && return
+  local src="$1" rel="$2" dest_dir="$3"
+  local tmp_rels
+  tmp_rels="$(mktemp /tmp/cardrunner_single_rel.XXXXXX)" || return
+  printf '%s\0' "$rel" > "$tmp_rels"
+  record_ingested_global "$src" "$tmp_rels" "$dest_dir"
+  rm -f "$tmp_rels"
+}
+
 # Idempotent path segment append.
 # If $cur already ends with /$seg, return it unchanged.
 # This prevents double-segments when the user re-picks a folder that is
@@ -1295,7 +1311,8 @@ resolve_dest_dir_for_file() {
 verify_transfer() {
   local src="$1"       # card root (e.g. /Volumes/Untitled)
   local list="$2"      # new_list file (relative paths)
-  local checked=0 passed=0 failed=0 recovered=0 quarantined=0
+  local mirror_root="${3:-}"   # optional: verify a secondary mirror instead of the primary dest
+  local checked=0 passed=0 failed=0 recovered=0 quarantined=0 unresolved=0
 
   # Build the list of files to verify
   local files=()
@@ -1333,11 +1350,20 @@ verify_transfer() {
     # Locate the copied file at its destination (account for rename-on-ingest)
     local dest_dir dest_file base_name
     dest_dir="$(resolve_dest_dir_for_file "$rel" "$src")"
+    # When verifying a secondary mirror, rewrite the resolved primary-dest path onto
+    # the mirror's root so we checksum the actual mirrored copy, not the primary (H7).
+    if [[ -n "$mirror_root" ]]; then
+      dest_dir="${mirror_root}${dest_dir#$PRIMARY_ROOT}"
+    fi
     # Use renamed filename if one was recorded, else fall back to original
     base_name="${_rename_map[$rel]:-${rel##*/}}"
     dest_file="${dest_dir}/${base_name}"
 
-    [[ ! -f "$dest_file" ]] && continue
+    if [[ ! -f "$dest_file" ]]; then
+      (( unresolved++ ))
+      log_line "VERIFY UNRESOLVED: $rel — expected copied file not found at ${dest_file}"
+      continue
+    fi
 
     local src_md5 dst_md5
     src_md5=$(md5 -q "$src_file"  2>/dev/null)
@@ -1376,6 +1402,11 @@ verify_transfer() {
     # Emit progress so the GUI can animate (spot-check and full mode alike)
     echo "VERIFY_PROGRESS current=${checked} total=${total}"
   done
+
+  if (( unresolved > 0 )); then
+    log_line "VERIFY UNRESOLVED: $unresolved file(s) could not be located at their expected destination"
+    echo "VERIFY_UNRESOLVED count=$unresolved"
+  fi
 
   if (( checked == 0 )); then
     echo "VERIFY_SKIP reason=no_files_sampled"
@@ -1476,13 +1507,24 @@ apply_rename_group() {
 
     if [[ "$new_name" != "$base" && -n "$new_name" ]]; then
       if [[ -f "${dest_dir}/${new_name}" && "${dest_dir}/${new_name}" != "${dest_dir}/${base}" ]]; then
-        log_line "RENAME SKIP: $new_name already exists in $dest_dir — keeping original name $base"
+        local _exist_size _src_size
+        _exist_size=$(stat -f %z "${dest_dir}/${new_name}" 2>/dev/null || echo -1)
+        _src_size=$(stat -f %z "$src_file" 2>/dev/null || echo -2)
+        if [[ "$_exist_size" == "$_src_size" && "$_exist_size" != "-1" ]]; then
+          rm -f "$src_file"
+          log_line "RENAME DEDUP: removed retry duplicate $base (matches existing $new_name)"
+          _rename_map[$rel]="$new_name"
+          printf 'RENAME_MAP %s\t%s\n' "$base" "$new_name"
+        else
+          log_line "RENAME SKIP: $new_name already exists in $dest_dir with different size — keeping original name $base"
+        fi
         continue
       fi
       local _mv_exit=0
       mv "$src_file" "${dest_dir}/${new_name}" 2>/dev/null || _mv_exit=$?
       if (( _mv_exit == 0 )); then
         _rename_map[$rel]="$new_name"
+        printf 'RENAME_MAP %s\t%s\n' "$base" "$new_name"
       else
         log_line "RENAME FAIL: $base → $new_name in $dest_dir (exit $_mv_exit) — original filename kept"
       fi
@@ -2223,6 +2265,12 @@ PYEOF
     _grp_dest="$(cat "$_dest_file")"
     _grp_srcs="${_key_base}.srcs"
     _grp_rels="${_key_base}.rels"
+    # Rels file in ACTUAL copy order for this group, used by the collision-attribution
+    # pass below. Defaults to _grp_rels; the tag-file block (H8) overrides this when the
+    # tag file was copied out-of-order (first, ahead of the rest) so Pass 2's per-occurrence
+    # collision-name attribution matches what cardcopy actually saw file-by-file.
+    local _pass2_rels="$_grp_rels"
+    local _copy_order_rels=""
     # Verify destination root still exists (could unmount between scan and copy)
     local _dest_check_root="${DEST_ROOT:-$PRIMARY_ROOT}"
     if [[ ! -d "$_dest_check_root" ]]; then
@@ -2282,6 +2330,20 @@ PYEOF
             _tag_src_file="$src/$_r"
           fi
         done < "$_grp_rels"
+
+        # The tag file is copied first, ahead of the rest, so build a rels file that
+        # matches this actual copy order. Without it, Pass 2's collision-name attribution
+        # (occurrence 1 = original name, 2/3/… = renamed) walks _grp_rels in its ORIGINAL
+        # order, misattributing collision renames whenever the tag file wasn't already
+        # first in that list (H8).
+        if [[ -n "${_tag_rel:-}" ]]; then
+          _copy_order_rels="$(mktemp /tmp/cardrunner_copyorder.XXXXXX)"
+          printf '%s\0' "$_tag_rel" > "$_copy_order_rels"
+          while IFS= read -r -d '' _r; do
+            [[ "$_r" != "$_tag_rel" ]] && printf '%s\0' "$_r" >> "$_copy_order_rels"
+          done < "$_grp_rels"
+          _pass2_rels="$_copy_order_rels"
+        fi
 
         # Rest = every file in the group except the tag file
         local _rest_src_files=()
@@ -2348,8 +2410,9 @@ PYEOF
               _newname="$(cut -d'|' -f"${_coll_used[$_cbn]}" <<< "${_coll_new_names[$_cbn]}")"
               [[ -n "$_newname" ]] && _rename_map[$_crel]="$_newname"
             fi
-          done < "$_grp_rels"
+          done < "$_pass2_rels"
         fi
+        [[ -n "$_copy_order_rels" ]] && rm -f "$_copy_order_rels"
 
         if echo "$_stderr_content" | grep -qi "no space left\|disk full\|ENOSPC"; then
           log_line "COPY ERROR: Destination full — no space left on $_grp_dest"
@@ -2442,6 +2505,7 @@ PYEOF
     # auto-eject) and sets _grp_sec_failed (→ withholds the manifest so the files retry).
     # The mirror copy reuses CARDCOPY_FLAGS, so --partial-dir atomicity AND inline verify
     # (when --verify is on) apply to each mirror just like the primary.
+    local _successful_mirrors=()
     if (( ${#SECONDARY_ROOTS[@]} > 0 )) && [[ "$DRY_RUN" != "yes" ]]; then
       if [[ -z "$PRIMARY_ROOT" || -n "$DEST_ROOT" ]]; then
         log_line "SECONDARY SKIPPED: mirror requires SSD mode (PRIMARY_ROOT set, DEST_ROOT empty)"
@@ -2470,6 +2534,7 @@ PYEOF
             if (( _sec_exit == 0 )); then
               echo "SECONDARY_PROGRESS dest=$_sec_dest"
               [[ -n "$RENAME_TEMPLATE" ]] && apply_rename_group "$_sec_dest" "$_grp_rels" "${CARDLABEL:-$cardname}"
+              _successful_mirrors+=("$_sec_root")
             else
               log_line "SECONDARY COPY ERROR: exit code $_sec_exit for dest $_sec_dest"
               echo "SECONDARY_ERROR reason=copy_failed exit=$_sec_exit root=$_sec_root"
@@ -2480,11 +2545,53 @@ PYEOF
       fi
     fi
 
+    # ── Verify each successful mirror ──────────────────────────────────────────
+    # A mirror that copied cleanly still deserves the same checksum verification
+    # the primary gets — otherwise a silently-corrupted secondary copy is never
+    # caught (H7). Runs only when verification is enabled for this ingest.
+    if (( ${#_successful_mirrors[@]} > 0 )) && [[ "$VERIFY" == "yes" || "$FULL_VERIFY" == "yes" ]]; then
+      # verify_transfer's list-reading loops are newline-delimited, but _grp_rels is
+      # NUL-delimited (like every other .rels file in this script) — convert once,
+      # up front, rather than per-mirror.
+      local _mirror_rels_nl; _mirror_rels_nl="$(mktemp)"
+      tr '\0' '\n' < "$_grp_rels" > "$_mirror_rels_nl"
+      local _m_dest
+      for _m_dest in "${_successful_mirrors[@]}"; do
+        local _mirror_verify_tmp; _mirror_verify_tmp="$(mktemp)"
+        verify_transfer "$src" "$_mirror_rels_nl" "$_m_dest" | tee "$_mirror_verify_tmp"
+        if grep -q "^VERIFY_FAIL\|^VERIFY_UNRESOLVED" "$_mirror_verify_tmp"; then
+          log_line "MIRROR VERIFY FAILED: $_m_dest"
+          echo "SECONDARY_VERIFY_FAIL dest=$_m_dest"
+          (( _failed_secondaries++ ))
+          _grp_sec_failed=1
+        fi
+        rm -f "$_mirror_verify_tmp"
+      done
+      rm -f "$_mirror_rels_nl"
+    fi
+
     # Manifest gate: record the per-card "ingested" entry ONLY when the primary AND every
     # mirror for this group succeeded. A failed mirror withholds the record so the files
     # re-copy (to all dests) on the next insert rather than being marked done.
     if [[ "$DRY_RUN" != "yes" ]] && (( _grp_primary_ok == 1 && _grp_sec_failed == 0 )); then
       record_ingested_global "$src" "$_grp_rels" "$_grp_dest"
+    fi
+
+    # Partial failure fallback: the group as a whole didn't succeed (so the bulk
+    # record above was withheld), but some individual files may still have landed
+    # on disk before the failure. Record only those, so a retry doesn't re-copy
+    # (and silently duplicate-rename) files that already made it across.
+    if [[ "$DRY_RUN" != "yes" ]] && (( _grp_primary_ok == 0 )); then
+      while IFS= read -r -d '' _prel; do
+        [[ -z "$_prel" ]] && continue
+        local _pbase="${_prel##*/}"
+        local _pdisk="${_rename_map[$_prel]:-$_pbase}"
+        local _pdest_dir
+        _pdest_dir="${_dest_dir_cache[$_prel]:-$(resolve_dest_dir_for_file "$_prel" "$src")}"
+        if [[ -f "${_pdest_dir}/${_pdisk}" ]]; then
+          record_ingested_file "$src" "$_prel" "$_pdest_dir"
+        fi
+      done < "$_grp_rels"
     fi
 
     # Olympics per-file manifest recording (real copies only).
@@ -2605,6 +2712,7 @@ PYEOF
     fi
     # VERIFY_PROGRESS lines streamed to stdout above; grep result file for pass/fail.
     grep -q "^VERIFY_FAIL" "$_verify_tmp" && _verify_failed=1
+    grep -q "^VERIFY_UNRESOLVED" "$_verify_tmp" && _verify_failed=1
     grep -q "^VERIFY_PASS" "$_verify_tmp" && _verify_effective=1
     rm -f "$_verify_tmp"
     _verify_secs=$(( $(date +%s) - _verify_t0 ))

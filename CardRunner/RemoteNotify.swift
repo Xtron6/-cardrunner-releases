@@ -30,20 +30,22 @@ nonisolated func remoteAlertBody(cardName: String, newFiles: Int, destRel: Strin
 // MARK: - Slack live-progress message formatters
 
 /// Initial message posted when ingest starts (before any bytes are copied).
-nonisolated func slackStartText(cardName: String, totalFiles: Int) -> String {
+nonisolated func slackStartText(cardName: String, totalFiles: Int, operatorName: String = "") -> String {
+    let prefix = operatorName.isEmpty ? "" : "\(operatorName) — "
     let fileWord = totalFiles == 1 ? "file" : "files"
-    return "⏳ *\(cardName)* — copying \(totalFiles) \(fileWord)\n░░░░░░░░░░ 0% · starting..."
+    return "\(prefix)⏳ *\(cardName)* — copying \(totalFiles) \(fileWord)\n░░░░░░░░░░ 0% · starting..."
 }
 
 /// Progress update message. Percent is 0–100; fills 0–10 blocks.
-nonisolated func slackProgressText(cardName: String, totalFiles: Int, percent: Int, mbps: Double) -> String {
+nonisolated func slackProgressText(cardName: String, totalFiles: Int, percent: Int, mbps: Double, operatorName: String = "") -> String {
+    let prefix  = operatorName.isEmpty ? "" : "\(operatorName) — "
     let clamped  = min(max(percent, 0), 100)
     let filled   = clamped / 10
     let empty    = 10 - filled
     let bar      = String(repeating: "█", count: filled) + String(repeating: "░", count: empty)
     let mbpsStr  = mbps > 0 ? String(format: "%.0f MB/s", mbps) : "—"
     let fileWord = totalFiles == 1 ? "file" : "files"
-    return "⏳ *\(cardName)* — copying \(totalFiles) \(fileWord)\n\(bar) \(clamped)% · \(mbpsStr)"
+    return "\(prefix)⏳ *\(cardName)* — copying \(totalFiles) \(fileWord)\n\(bar) \(clamped)% · \(mbpsStr)"
 }
 
 /// Finish message. Provides a complete ingest summary.
@@ -55,15 +57,17 @@ nonisolated func slackFinishText(cardName: String,
                                   peakMBps: Double,
                                   hardwarePath: String,
                                   verified: Bool,
-                                  failed: Bool) -> String {
+                                  failed: Bool,
+                                  operatorName: String = "") -> String {
+    let prefix = operatorName.isEmpty ? "" : "\(operatorName) — "
     if failed {
-        return "⚠️ *\(cardName)* — transfer failed. Do not format the card."
+        return "\(prefix)⚠️ *\(cardName)* — transfer failed. Do not format the card."
     }
     let fileWord = newFiles == 1 ? "file" : "files"
     let mins = durationSec / 60
     let secs = durationSec % 60
     let dur  = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
-    var lines = ["✅ *\(cardName)* — \(newFiles) \(fileWord) → \(destRel)"]
+    var lines = ["\(prefix)✅ *\(cardName)* — \(newFiles) \(fileWord) → \(destRel)"]
     lines.append("⏱ \(dur) · avg \(String(format: "%.0f", avgMBps)) MB/s · peak \(String(format: "%.0f", peakMBps)) MB/s")
     if !hardwarePath.isEmpty {
         lines.append("🔗 \(hardwarePath)")
@@ -183,10 +187,10 @@ final class SlackLiveSession {
 
     /// Post the initial message. If the post fails, `ts` stays nil and subsequent calls
     /// gracefully no-op. Does NOT block the main actor.
-    func start(token: String, channel: String, cardName: String, totalFiles: Int) {
+    func start(token: String, channel: String, cardName: String, totalFiles: Int, operatorName: String = "") {
         ts = nil
         lastUpdatePercent = -1
-        let text = slackStartText(cardName: cardName, totalFiles: totalFiles)
+        let text = slackStartText(cardName: cardName, totalFiles: totalFiles, operatorName: operatorName)
         Task {
             let (newTs, _) = await slackPostMessage(token: token, channel: channel, text: text)
             await MainActor.run { self.ts = newTs }
@@ -195,11 +199,11 @@ final class SlackLiveSession {
 
     /// Update the live message. No-ops if the initial post failed (`ts == nil`) or if
     /// percent hasn't changed by at least 10 points since the last update.
-    func update(token: String, channel: String, cardName: String, totalFiles: Int, percent: Int, mbps: Double) {
+    func update(token: String, channel: String, cardName: String, totalFiles: Int, percent: Int, mbps: Double, operatorName: String = "") {
         guard let currentTs = ts else { return }
         guard percent - lastUpdatePercent >= 10 else { return }
         lastUpdatePercent = percent
-        let text = slackProgressText(cardName: cardName, totalFiles: totalFiles, percent: percent, mbps: mbps)
+        let text = slackProgressText(cardName: cardName, totalFiles: totalFiles, percent: percent, mbps: mbps, operatorName: operatorName)
         Task {
             _ = await slackUpdateMessage(token: token, channel: channel, ts: currentTs, text: text)
         }
@@ -211,10 +215,10 @@ final class SlackLiveSession {
     func finish(token: String, channel: String,
                 cardName: String, newFiles: Int, destRel: String,
                 durationSec: Int, avgMBps: Double, peakMBps: Double,
-                hardwarePath: String, verified: Bool, failed: Bool) {
+                hardwarePath: String, verified: Bool, failed: Bool, operatorName: String = "") {
         let text = slackFinishText(cardName: cardName, newFiles: newFiles, destRel: destRel,
                                    durationSec: durationSec, avgMBps: avgMBps, peakMBps: peakMBps,
-                                   hardwarePath: hardwarePath, verified: verified, failed: failed)
+                                   hardwarePath: hardwarePath, verified: verified, failed: failed, operatorName: operatorName)
         if let currentTs = ts {
             let capturedTs = currentTs
             Task {
@@ -229,6 +233,19 @@ final class SlackLiveSession {
         ts = nil
         lastUpdatePercent = -1
     }
+
+    /// Posts (or updates) a cancellation message so the live progress message doesn't
+    /// get stranded mid-percentage when the operator aborts the transfer.
+    func cancel(token: String, channel: String, cardName: String) async {
+        let text = "❌ *\(cardName)* — Transfer cancelled"
+        if let existingTs = ts {
+            _ = await slackUpdateMessage(token: token, channel: channel, ts: existingTs, text: text)
+        } else {
+            _ = await slackPostMessage(token: token, channel: channel, text: text)
+        }
+        ts = nil
+        lastUpdatePercent = -1
+    }
 }
 
 // MARK: - Remote notifier
@@ -237,19 +254,40 @@ enum RemoteNotifier {
 
     /// Fire whichever channels are configured. Empty imessageTo skips iMessage.
     /// slackBotToken + slackChannelId together enable Slack (both must be non-empty).
-    /// Does not block the caller — work happens on a background queue.
-    static func send(body: String, imessageTo: String, slackBotToken: String, slackChannelId: String) {
-        DispatchQueue.global(qos: .utility).async {
-            if !imessageTo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                _ = sendIMessage(to: imessageTo, body: body)
-            }
-            let trimToken   = slackBotToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimChannel = slackChannelId.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimToken.isEmpty && !trimChannel.isEmpty {
-                Task {
-                    _ = await slackPostMessage(token: trimToken, channel: trimChannel, text: body)
+    /// Does not block the caller — work happens on a background queue. Errors from either
+    /// channel are reported (joined) via `completion`, called on an arbitrary background
+    /// queue — callers that touch UI state must hop back to main themselves.
+    static func send(body: String, imessageTo: String, slackBotToken: String, slackChannelId: String,
+                     completion: (@Sendable (String?) -> Void)? = nil) {
+        let trimPhone   = imessageTo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimToken   = slackBotToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimChannel = slackChannelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSlack    = !trimToken.isEmpty && !trimChannel.isEmpty
+
+        Task {
+            var errors: [String] = []
+
+            async let imessageResult: (Bool, String?)? = trimPhone.isEmpty ? nil : {
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .utility).async {
+                        let result = sendIMessage(to: trimPhone, body: body)
+                        continuation.resume(returning: result)
+                    }
                 }
+            }()
+
+            async let slackResult: (String?, String?)? = hasSlack
+                ? slackPostMessage(token: trimToken, channel: trimChannel, text: body)
+                : nil
+
+            if let (ok, err) = await imessageResult, !ok {
+                errors.append("iMessage: \(err ?? "failed")")
             }
+            if let (ts, err) = await slackResult, ts == nil {
+                errors.append("Slack: \(err ?? "failed")")
+            }
+
+            completion?(errors.isEmpty ? nil : errors.joined(separator: "; "))
         }
     }
 

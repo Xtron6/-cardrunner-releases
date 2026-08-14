@@ -318,6 +318,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.5</title>
+            <pubDate>Wed, 13 Aug 2026 12:00:00 +0000</pubDate>
+            <sparkle:version>27</sparkle:version>
+            <sparkle:shortVersionString>1.8.5</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li><b>Verify-fail alerts</b> — hash mismatches now surface an operator alert instead of failing silently</li><li><b>MHL accuracy</b> — sidecar files reference correct on-disk filenames after rename</li><li><b>Mirror verification</b> — backup drives verified with the same rigor as the primary</li><li><b>License hardening</b> — deactivation confirmation dialog, 2-strike revocation, activation timeout, keychain rollback on partial failure</li><li><b>Slack & AFK cleanup</b> — no duplicate notifications, cancellation posts to Slack, finish message always fires, failures logged</li><li><b>Operator name</b> — threads through Slack and iMessage notifications</li><li><b>Preset "(modified)" indicator</b> when settings drift from the saved preset</li><li>Temp-file leak fix, rename-token space handling, preset destination toast accuracy</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.5/CardRunner-1.8.5.dmg"
+                sparkle:edSignature="PLACEHOLDER"
+                length="0"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 

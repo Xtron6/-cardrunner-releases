@@ -1827,15 +1827,19 @@ struct ContentView: View {
     // accidental: the new fields require different values and silent auto-fill would silently fail.
     @AppStorage("pref_remoteSlackBotToken")    private var remoteSlackBotToken: String = ""
     @AppStorage("pref_remoteSlackChannelId")   private var remoteSlackChannelId: String = ""
+    // Optional operator attribution prepended to outbound Slack messages so a
+    // multi-shooter team can tell whose card is whose in a shared channel.
+    @AppStorage("pref_operatorName")           private var operatorName: String = ""
     // Per-lane Slack live sessions, keyed by processID (same key as activeIngests).
     // One session per in-flight card so concurrent two-card ingests never alias each other's ts.
     @State private var slackLiveSessions: [UUID: SlackLiveSession] = [:]
     @State private var remoteTestResult: String? = nil
     // Manual "I'm away from keyboard" override — the GUARANTEED remote-alert path. When ON,
-    // every card completion texts you regardless of idle time. Session-scoped (@State, not
-    // persisted): it means "I'm stepping away right now", so it resets on relaunch rather
-    // than silently staying armed forever.
-    @State private var afkMode: Bool = false
+    // every card completion texts you regardless of idle time. Persisted (@AppStorage):
+    // if the app is relaunched mid-shoot (crash, update, accidental quit) while the
+    // operator is still away from the keyboard, the guarantee must survive the restart
+    // rather than silently disarming.
+    @AppStorage("pref_afkMode") private var afkMode: Bool = false
     @State private var showAFKPopover: Bool = false
     @AppStorage("winterOlympicsMode") private var winterOlympicsMode: Bool = false
     @AppStorage("pref_olympicsCode") private var olympicsCode: String = "TUWE"
@@ -4370,6 +4374,17 @@ struct ContentView: View {
                     }
                 }
                 .padding(.vertical, 10)
+                .confirmationDialog("Deactivate CardRunner on this Mac?", isPresented: $showDeactivateConfirm, titleVisibility: .visible) {
+                    Button("Deactivate", role: .destructive) {
+                        Task {
+                            let warning = await license.deactivate()
+                            if let w = warning { deactivateError = w }
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will remove your license from this Mac and free the activation seat. You can re-activate later with the same key.")
+                }
 
                 Divider().opacity(0.35).padding(.horizontal, 20)
 
@@ -7733,6 +7748,16 @@ struct ContentView: View {
                         self.showIngestAlert    = true
                     }
                     AudioEngine.shared.transferCancelled()
+                    // A cancelled transfer must not leave a stuck "in progress" Slack
+                    // message stranded mid-percentage (H5).
+                    if let session = self.slackLiveSessions.removeValue(forKey: processID),
+                       !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
+                        Task { @MainActor in
+                            await session.cancel(token: self.remoteSlackBotToken,
+                                                channel: self.remoteSlackChannelId,
+                                                cardName: card.name)
+                        }
+                    }
                     if self.runningCount == 0 {
                         DockProgress.clear()
                         self.statusText = self.autoIngest ? "Searching for cards…" : "Waiting for cards…"
@@ -7836,6 +7861,7 @@ struct ContentView: View {
                                 }
                             } else {
                                 self.appendLog("RENAME_SKIPPED no_label_multi_day_or_empty new=\(newLabel)\n")
+                                self.statusText = "⚠️ Rename skipped — multi-day cards can't be auto-renamed"
                             }
                         } else {
                             // Has a per-card subfolder — use the folder rename path.
@@ -7990,25 +8016,37 @@ struct ContentView: View {
                                                   category: NotificationCategory.failed)
                     }
                     let hasSlackDest = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
+                    let hasLiveSession = self.slackLiveSessions[processID] != nil
                     if shouldDeliverRemoteAlert(hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDest,
                                                 afkMode: self.afkMode) {
-                        let rbody = remoteAlertBody(cardName: card.name,
+                        let opPrefix = self.operatorName.isEmpty ? "" : "\(self.operatorName) — "
+                        let rbody = opPrefix + remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
                                                     verified: false,
                                                     failed: true)
+                        // When a live Slack session exists, its own finish() below owns the
+                        // Slack side of this alert — blank the Slack creds here so we don't
+                        // post a second, duplicate Slack message (H4). iMessage still fires.
                         RemoteNotifier.send(body: rbody,
                                             imessageTo: self.remoteImessageTo,
-                                            slackBotToken: self.remoteSlackBotToken,
-                                            slackChannelId: self.remoteSlackChannelId)
+                                            slackBotToken: hasLiveSession ? "" : self.remoteSlackBotToken,
+                                            slackChannelId: hasLiveSession ? "" : self.remoteSlackChannelId) { err in
+                            if let err {
+                                DispatchQueue.main.async {
+                                    self.appendLog("AFK_ALERT_FAIL: \(err)\n")
+                                    self.statusText = "⚠️ AFK alert failed — check Settings"
+                                }
+                            }
+                        }
                     }
                     if let session = self.slackLiveSessions.removeValue(forKey: processID),
-                       self.afkMode, !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
+                       !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
                         session.finish(
                             token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
                             cardName: card.name, newFiles: newFiles, destRel: relDest,
                             durationSec: durationSec, avgMBps: Double(avgMBps), peakMBps: Double(ingest.peakMBps),
-                            hardwarePath: "", verified: false, failed: true
+                            hardwarePath: "", verified: false, failed: true, operatorName: self.operatorName
                         )
                     }
                 } else if newFiles == 0 {
@@ -8116,25 +8154,37 @@ struct ContentView: View {
                                                   userInfo: destPath.isEmpty ? [:] : [kNotificationDestPathKey: destPath])
                     }
                     let hasSlackDestSuccess = !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty
+                    let hasLiveSessionSuccess = self.slackLiveSessions[processID] != nil
                     if shouldDeliverRemoteAlert(hasDestination: !self.remoteImessageTo.isEmpty || hasSlackDestSuccess,
                                                 afkMode: self.afkMode) {
-                        let rbody = remoteAlertBody(cardName: card.name,
+                        let opPrefix = self.operatorName.isEmpty ? "" : "\(self.operatorName) — "
+                        let rbody = opPrefix + remoteAlertBody(cardName: card.name,
                                                     newFiles: newFiles,
                                                     destRel: relDest,
                                                     verified: ingest.verifyEnabled && newFiles > 0,
                                                     failed: false)
+                        // When a live Slack session exists, its own finish() below owns the
+                        // Slack side of this alert — blank the Slack creds here so we don't
+                        // post a second, duplicate Slack message (H4). iMessage still fires.
                         RemoteNotifier.send(body: rbody,
                                             imessageTo: self.remoteImessageTo,
-                                            slackBotToken: self.remoteSlackBotToken,
-                                            slackChannelId: self.remoteSlackChannelId)
+                                            slackBotToken: hasLiveSessionSuccess ? "" : self.remoteSlackBotToken,
+                                            slackChannelId: hasLiveSessionSuccess ? "" : self.remoteSlackChannelId) { err in
+                            if let err {
+                                DispatchQueue.main.async {
+                                    self.appendLog("AFK_ALERT_FAIL: \(err)\n")
+                                    self.statusText = "⚠️ AFK alert failed — check Settings"
+                                }
+                            }
+                        }
                     }
                     if let session = self.slackLiveSessions.removeValue(forKey: processID),
-                       self.afkMode, !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
+                       !self.remoteSlackBotToken.isEmpty && !self.remoteSlackChannelId.isEmpty {
                         session.finish(
                             token: self.remoteSlackBotToken, channel: self.remoteSlackChannelId,
                             cardName: card.name, newFiles: newFiles, destRel: relDest,
                             durationSec: durationSec, avgMBps: Double(avgMBps), peakMBps: Double(ingest.peakMBps),
-                            hardwarePath: "", verified: ingest.verifyEnabled && newFiles > 0, failed: false
+                            hardwarePath: "", verified: ingest.verifyEnabled && newFiles > 0, failed: false, operatorName: self.operatorName
                         )
                     }
                 }
@@ -8168,8 +8218,12 @@ struct ContentView: View {
                             let fm = FileManager.default
                             var mhlEntries: [MHLHashEntry] = []
                             for (filename, hash) in ingest.verifyHashes {
-                                // Find the file relative to destPath for the relative path
-                                let filePath = destURL.appendingPathComponent(filename)
+                                // Resolve through renameMap: filename is the pre-rename name the
+                                // hash was computed against, but a same-group RENAME_TEMPLATE (or
+                                // a retry dedup) may have moved the file to a different on-disk
+                                // name — the MHL must reference where the file actually lives.
+                                let diskName = ingest.renameMap[filename] ?? filename
+                                let filePath = destURL.appendingPathComponent(diskName)
                                 var fileSize: Int64 = 0
                                 var modDate = Date()
                                 if let attrs = try? fm.attributesOfItem(atPath: filePath.path) {
@@ -8177,7 +8231,7 @@ struct ContentView: View {
                                     modDate = attrs[.modificationDate] as? Date ?? Date()
                                 }
                                 mhlEntries.append(MHLHashEntry(
-                                    relativePath: filename,
+                                    relativePath: diskName,
                                     sha256Hex: hash,
                                     fileSize: fileSize,
                                     modificationDate: modDate
@@ -8643,7 +8697,7 @@ struct ContentView: View {
             let session = SlackLiveSession()
             slackLiveSessions[processID] = session
             session.start(token: remoteSlackBotToken, channel: remoteSlackChannelId,
-                          cardName: ingest.cardName, totalFiles: ingest.newFiles)
+                          cardName: ingest.cardName, totalFiles: ingest.newFiles, operatorName: operatorName)
         }
 
         // Slack live-progress UPDATE — throttled inside SlackLiveSession (≥10% change gate).
@@ -8651,7 +8705,7 @@ struct ContentView: View {
             let pct = Int(min(Double(ingest.doneBytes) / Double(ingest.totalBytesNew), 1.0) * 100)
             session.update(token: remoteSlackBotToken, channel: remoteSlackChannelId,
                            cardName: ingest.cardName, totalFiles: ingest.newFiles,
-                           percent: pct, mbps: ingest.liveMBps)
+                           percent: pct, mbps: ingest.liveMBps, operatorName: operatorName)
         }
     }
 
@@ -8690,13 +8744,24 @@ struct ContentView: View {
 
         } else if line.hasPrefix("VERIFY_FAIL") {
             AudioEngine.shared.verifyFailed()
+            let cardNameSnapshot = ingest.cardName
             switch parseVerifyFail(line) {
             case .named(let failName):
                 appendLog("❌ CHECKSUM MISMATCH: \(failName) — destination file may be corrupt\n")
                 DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(failName)" }
+                DispatchQueue.main.async {
+                    self.ingestAlertTitle = "⚠️ Checksum Mismatch"
+                    self.ingestAlertMessage = "One or more files failed verification on \(cardNameSnapshot). Check the log for details — do not format this card."
+                    self.showIngestAlert = true
+                }
             case .count(let n):
                 appendLog("⚠️ Verify FAILED — \(n) file(s) had checksum mismatches\n")
                 DispatchQueue.main.async { self.statusText = "⚠️ Checksum failed — \(n) file(s)" }
+                DispatchQueue.main.async {
+                    self.ingestAlertTitle = "⚠️ Checksum Mismatch"
+                    self.ingestAlertMessage = "One or more files failed verification on \(cardNameSnapshot). Check the log for details — do not format this card."
+                    self.showIngestAlert = true
+                }
             case .none:
                 break
             }
@@ -9240,6 +9305,9 @@ struct ContentView: View {
         // Destination
         useCustomDest            = preset.useCustomDest
         customDestPath           = preset.customDestPath
+        if preset.useCustomDest && !preset.customDestPath.isEmpty && !FileManager.default.fileExists(atPath: preset.customDestPath) {
+            v3ShowToast("Preset destination '\(preset.customDestPath)' not found — check Settings before ingesting.")
+        }
         // Advanced
         autoEject                = preset.autoEject
         copyXML                  = preset.copyXML
@@ -13908,8 +13976,23 @@ extension ContentView {
 
     // MARK: Top bar
     private var v3ActivePresetName: String {
-        if let id = activePresetID, let p = presets.first(where: { $0.id == id }) { return p.name }
+        if let id = activePresetID, let p = presets.first(where: { $0.id == id }) {
+            return activePresetIsModified(p) ? "\(p.name) (modified)" : p.name
+        }
         return "Preset"
+    }
+
+    /// True when the live @AppStorage-backed settings have drifted from the values
+    /// stored in `preset` — e.g. the operator tweaked verify/rename/destination after
+    /// selecting the preset, without saving those changes back into it (M4).
+    /// Compares a representative subset of preset-backed fields rather than every
+    /// field, since a full diff would also flag purely cosmetic/session state.
+    private func activePresetIsModified(_ preset: IngestPreset) -> Bool {
+        preset.useCustomDest != useCustomDest
+            || preset.customDestPath != customDestPath
+            || preset.verifyTransfer != verifyTransfer
+            || preset.renameOnIngestEnabled != renameOnIngestEnabled
+            || preset.renameTemplate != renameTemplate
     }
     /// The CardRunner logo lockup (SD-card mark + wordmark + tagline). Kept as one unit so it
     /// can be centered on the true window center — i.e. aligned with the Active-Zone ring below.
@@ -14214,10 +14297,23 @@ extension ContentView {
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
             v3SettingDivider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Operator name").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                TextField("Operator name (optional)", text: $operatorName)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                Text("Prepended to Slack alerts so a multi-shooter team can tell whose card is whose.")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            v3SettingDivider()
             HStack(spacing: 10) {
                 Button("Send test") {
                     RemoteNotifier.sendTest(imessageTo: remoteImessageTo, slackBotToken: remoteSlackBotToken, slackChannelId: remoteSlackChannelId) { ok, err in
-                        remoteTestResult = ok ? "Sent \u{2713}" : (err ?? "Failed")
+                        remoteTestResult = ok
+                            ? (self.afkMode ? "Sent \u{2713}" : "Sent \u{2713} (Note: AFK mode is off — alerts won't send during ingests)")
+                            : (err ?? "Failed")
                     }
                 }
                 .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(v3Cyan)
@@ -14715,7 +14811,7 @@ extension ContentView {
                             let session = SlackLiveSession()
                             slackLiveSessions[pid] = session
                             session.start(token: remoteSlackBotToken, channel: remoteSlackChannelId,
-                                          cardName: ingest.cardName, totalFiles: ingest.newFiles)
+                                          cardName: ingest.cardName, totalFiles: ingest.newFiles, operatorName: operatorName)
                         }
                     }
                 }

@@ -553,6 +553,8 @@ nonisolated struct ActiveIngest {
     var verificationTier: VerificationTier = .sizeChecked
     // SHA-256 hashes accumulated from VERIFY_OK lines (filename → full hex hash)
     var verifyHashes: [String: String] = [:]
+    // Pre-rename filename → post-rename on-disk filename, from RENAME_MAP lines
+    var renameMap: [String: String] = [:]
     var mhlWritten: Bool = false
     var mhlEnabled: Bool = false        // snapshot of toggle at launch
     var fullVerifyEnabled: Bool = false  // snapshot of toggle at launch
