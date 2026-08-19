@@ -331,6 +331,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.6</title>
+            <pubDate>Wed, 19 Aug 2026 20:47:21 +0000</pubDate>
+            <sparkle:version>28</sparkle:version>
+            <sparkle:shortVersionString>1.8.6</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Fix date picker re-open glitch when selecting dates</li><li>Date picker now forces all-media ingest — photo/video mode toggle no longer blocks picker selections</li><li>Fix single-date selection ingesting all files from that date onward (used wrong date filter)</li><li>Add ✓ Backed up indicator to date picker rows for already-ingested dates</li><li>Add camera brand and media type capsules to date picker rows (e.g. Sony · MP4)</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.6/CardRunner-1.8.6.dmg"
+                sparkle:edSignature="Q5AqY89LIudc7AvfoEpGXxzDpKUHO3Q/V3QNaHrvn7eYrFO0vXVaB4HgfoKGCkzj39jWhK+crJMfQPtbA3QBBQ=="
+                length="12625233"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
