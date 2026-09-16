@@ -344,6 +344,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.7</title>
+            <pubDate>Wed, 16 Sep 2026 19:04:56 +0000</pubDate>
+            <sparkle:version>29</sparkle:version>
+            <sparkle:shortVersionString>1.8.7</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Fixed Sony hybrid stills/video cameras (A7-series) getting misdetected as video-only, which could cause a photo-only shoot to show 'no footage found today'</li><li>Stop button and interrupted-transfer discard now require confirmation before cancelling a transfer or deleting partial footage</li><li>You can now drag the default destination box onto another drive to swap which one is default, not just the other way around</li><li>Slack messages got a full visual overhaul — color-coded cards, live progress, session wrap summaries, auto-mention, and a 'Simulate card run' test button in Settings</li><li>Onboarding now requires picking a destination, surfaces verification and Slack setup, and the demo shows verification actually happening</li><li>Redesigned Remote Alerts and Verification settings for clarity, with contextual help throughout</li><li>Removing a destination now asks for confirmation</li><li>Various settings screens got jargon cleanup and safer defaults</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.7/CardRunner-1.8.7.dmg"
+                sparkle:edSignature="0npC4W3H7vN+wlV6Co5KeVmwQdVme1Wqz8bFOPi2em6jxbMypfdKwSm1HCrpZW+rnLiho9vx+5IAf1OXlbA0BQ=="
+                length="13279170"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
