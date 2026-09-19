@@ -357,6 +357,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.7.4</title>
+            <pubDate>Sat, 19 Sep 2026 03:18:11 +0000</pubDate>
+            <sparkle:version>30</sparkle:version>
+            <sparkle:shortVersionString>1.7.4</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Fixed multi-card concurrent transfers — all cards now ingest simultaneously up to your configured limit</li><li>Fixed false-positive verify-failed messages after successful transfers</li><li>Fixed false-positive eject-failed on macOS Tahoe — cards eject reliably with automatic retry</li><li>Fixed Finder tag, scan, and stat failures on systems without Xcode Command Line Tools</li><li>Fixed card name/destination crossing when multiple shooters ingest simultaneously</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.7.4/CardRunner-1.7.4.dmg"
+                sparkle:edSignature="02D2yVii0QzcoH0+IJVF6rZcPjgQ3pLB/9jqGtcZyH7BihO36dcd9RKHSmv38dwpCgBuTlcrMPhjdW1nrXSACQ=="
+                length="13331529"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
