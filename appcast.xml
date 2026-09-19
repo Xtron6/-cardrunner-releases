@@ -370,6 +370,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.7.5</title>
+            <pubDate>Sat, 19 Sep 2026 20:16:04 +0000</pubDate>
+            <sparkle:version>31</sparkle:version>
+            <sparkle:shortVersionString>1.7.5</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Fixed multi-card concurrent transfers for real — the drive-speed probe was misreading every destination as a slow disk and forcing cards to run one at a time</li><li>Cards waiting because every slot was full now start automatically when a slot frees up under Auto-Ingest</li><li>The drive-speed decision is now written to the log so concurrency limits are visible</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.7.5/CardRunner-1.7.5.dmg"
+                sparkle:edSignature="JE2Xy8XWlxGsZakxYnL8hZU7lGNdF1lbEZYLSS09S9wPr4KSQPy7K1Mdk12V4cV6Oa38A3VruQlJvvH6mFzkBg=="
+                length="13335653"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
