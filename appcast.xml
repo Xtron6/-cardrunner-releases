@@ -383,6 +383,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.8</title>
+            <pubDate>Mon, 21 Sep 2026 18:34:17 +0000</pubDate>
+            <sparkle:version>32</sparkle:version>
+            <sparkle:shortVersionString>1.8.8</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>A failed or partial card now shows a persistent DO NOT FORMAT alert with the missing-file count and a one-click Re-run</li><li>Recovers from a brief destination drive dropout instead of failing the rest of the card</li><li>Interrupted-transfer prompts you dismiss no longer reappear on every launch</li><li>The log now records every failed file, not just the first</li><li>Version numbering restored after 1.7.4/1.7.5 were mislabeled</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.8/CardRunner-1.8.8.dmg"
+                sparkle:edSignature="6MRuoEMgmJsAxHCVOabAcd5xDPUHholzmQ2rtmg9OONbUfrDjHoUzpIncKe7jG7kej8VUpMXIZ5NnRhM2R/XDA=="
+                length="13402546"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
