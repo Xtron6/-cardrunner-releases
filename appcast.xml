@@ -396,6 +396,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.8.9</title>
+            <pubDate>Tue, 22 Sep 2026 18:47:05 +0000</pubDate>
+            <sparkle:version>33</sparkle:version>
+            <sparkle:shortVersionString>1.8.9</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Ingest no longer depends on Python being installed — scanning, file sizing, and Finder tagging now use built-in tools only</li><li>Fixes the green batch-start Finder tag failing to apply on Macs without Python</li><li>Removes a slower fallback scan path that ran on every ingest on affected machines</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.8.9/CardRunner-1.8.9.dmg"
+                sparkle:edSignature="J1h/M7Qv0/PTo/ZqQkGP8NsvvrP3KqDMeft7RYqsPWMB6P1LDrRBp2ysw7thqo0079IEoAvOuEvYr8LvG2aTDQ=="
+                length="13401700"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
