@@ -409,6 +409,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.0</title>
+            <pubDate>Sat, 26 Sep 2026 17:26:46 +0000</pubDate>
+            <sparkle:version>34</sparkle:version>
+            <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Dual destination — drag a card onto a second drive to copy to a working drive and a backup at the same time, each verified independently</li><li>A failed backup now keeps the card mounted instead of letting it eject</li><li>Mirroring now works with custom destination folders</li><li>Sony FX6 and XDCAM thumbnails are never copied — clips only</li><li>Fixed mirrored files being verified against the wrong path, which could block a card from ejecting</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.0/CardRunner-1.9.0.dmg"
+                sparkle:edSignature="YDxOlQUCkQMIS+SL23j/6f2hTIPj6PV738UOgvO+ve2t3DfMC9j7aaDOORSbYxjI9qeGjaqS9ceuwTQaMDCcBg=="
+                length="13425609"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
