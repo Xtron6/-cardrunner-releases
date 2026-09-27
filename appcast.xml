@@ -435,6 +435,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.2</title>
+            <pubDate>Sun, 27 Sep 2026 17:22:07 +0000</pubDate>
+            <sparkle:version>36</sparkle:version>
+            <sparkle:shortVersionString>1.9.2</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Smarter duplicate check: files are byte-compared before being skipped as already at the destination. The folder preview now matches exactly where files land. New options: turn the date folder off, nested year/date folders, and reel folder before date. Clearer message when a card has no new footage for today.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.2/CardRunner-1.9.2.dmg"
+                sparkle:edSignature="R4rau41V+Owb516tMsyMdW8HoMIb+2+OjHQAC2IWHmvPmucTr3gP/9ace1l5d7ek/ZjD7RXpS0V8Ay4Fjgc1Bw=="
+                length="14103241"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
