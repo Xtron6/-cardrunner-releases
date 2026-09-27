@@ -422,6 +422,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.1</title>
+            <pubDate>Sun, 27 Sep 2026 12:33:53 +0000</pubDate>
+            <sparkle:version>35</sparkle:version>
+            <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Backup SSDs no longer show up as card sources, and any waiting card can be dismissed</li><li>Unplugging a drive mid-copy no longer freezes the transfer — the card stays mounted and the failure is reported</li><li>Locked SD cards are detected and copied normally</li><li>First-run install from the disk image works properly, and offers to install a newer download over an old copy</li><li>Rename on ingest keeps capital letters; click a token to insert it; a same-size collision can no longer delete a clip</li><li>Add nested subfolders under a destination</li><li>Clicking a card's dot now disconnects it, with hover and animated lines; right-click a waiting card to send it, add a backup, or disconnect</li><li>Lines fan out with stable colours, percentages sit inside each card, destination names show in full, and the destinations list scrolls instead of pushing the window off-screen</li><li>Finder shadow files are never copied; Insta360 clips now copy</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.1/CardRunner-1.9.1.dmg"
+                sparkle:edSignature="qL2qHORfPKv0Ogpwz21A3RUQh4TI2SZ5FUJ2nNZw5SxgivO/Ucq8exX6sUrBKhXhEnbuunqJvHdsZxWUWUZ6Bg=="
+                length="14059414"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
