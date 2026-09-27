@@ -448,6 +448,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.3</title>
+            <pubDate>Sun, 27 Sep 2026 18:24:29 +0000</pubDate>
+            <sparkle:version>37</sparkle:version>
+            <sparkle:shortVersionString>1.9.3</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Drives now remember what's been ingested: if another Mac already copied a card to this drive, CardRunner skips those clips (only after proving every copy is byte-identical) and tells you who copied them and when. Fixed a false DO NOT FORMAT warning when re-plugging an already-ingested card under a different label or project folder.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.3/CardRunner-1.9.3.dmg"
+                sparkle:edSignature="Kxs4MfcVO+vapgA/l90eLVdU7wH1o5EMfLpLYBQNrBA+Xh+azE6z+5lnpItVna9MWUmNBbzZlyiUBe+Ks5jNCQ=="
+                length="14131096"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
