@@ -461,6 +461,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.4</title>
+            <pubDate>Mon, 28 Sep 2026 14:11:49 +0000</pubDate>
+            <sparkle:version>38</sparkle:version>
+            <sparkle:shortVersionString>1.9.4</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Subfolders now actually save: add as many levels as you need under clips with the new + subfolder button (clips / a / b / c), and the preview matches exactly where files land. Previously a typed subfolder was lost unless you pressed Return. The center ring now turns red when a card fails, matching the rest of the failure UI.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.4/CardRunner-1.9.4.dmg"
+                sparkle:edSignature="GStxiHzOuQQ5w/FiD0PqcmMb7xMjvc/zNVWyI1MnCM88vfpu8eZre0Dr5/SqFstirR4FGJ3CAjjw8FTQu23kBQ=="
+                length="14131473"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
