@@ -474,6 +474,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.5</title>
+            <pubDate>Tue, 29 Sep 2026 19:04:46 +0000</pubDate>
+            <sparkle:version>39</sparkle:version>
+            <sparkle:shortVersionString>1.9.5</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Smarter warnings: DO NOT FORMAT now only appears when footage is actually at risk. Backup-drive problems, low space before copying, and checksums that fixed themselves get calm, specific messages that say exactly what happened, with real clip counts. Pressing Stop is no longer treated as a failure. Safety: a clip that fails its checksum is never marked as already copied, so a re-run always copies it again.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.5/CardRunner-1.9.5.dmg"
+                sparkle:edSignature="UE7ZC/q5t4MdcpO50VKuvvN8BCyVy6FK7cYl3UymhjdhSZlI1kVJ1r30/aS/uPpuJ0KQ3vQxtG5vvQcBEVxwBQ=="
+                length="14394891"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
