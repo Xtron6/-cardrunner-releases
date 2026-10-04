@@ -487,6 +487,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.6</title>
+            <pubDate>Sun, 04 Oct 2026 19:09:52 +0000</pubDate>
+            <sparkle:version>40</sparkle:version>
+            <sparkle:shortVersionString>1.9.6</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Safer copying and faster checking. The copier never skips a clip on name, size and date alone and never overwrites a file; every clip is read back from the drive and matched to the card while the next one copies, so checking no longer adds a second pass (big cards finish in about half the time). Speed readouts now show real throughput in MB/s. Re-running a card now makes a missing backup, and a re-run after a drive was unplugged picks up where it left off. Fixes: a card with nothing new no longer re-ingests in a loop; one card can't start two ingests; Stop works in every phase; a full drive fails fast instead of hanging; label renames update the app's records; backup warnings are per drive and clear only after a complete backup; presets no longer silently turn checking off; the interrupted-transfer notice now explains itself; several false DO NOT FORMAT cases.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.6/CardRunner-1.9.6.dmg"
+                sparkle:edSignature="GUES2/DeqqMNqYx+2GctXGU0Z7kx94vJq8JRvIs9nkcsQ+4WDfXT8LQ4h7ccYY8RnkyGTXnvNVs4svWo5PnYCw=="
+                length="15831162"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
