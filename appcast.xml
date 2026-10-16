@@ -500,6 +500,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.7</title>
+            <pubDate>Fri, 16 Oct 2026 12:41:48 +0000</pubDate>
+            <sparkle:version>41</sparkle:version>
+            <sparkle:shortVersionString>1.9.7</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Footage safety first. A card pulled mid-copy, a clip that cannot be read, or a card folder CardRunner cannot open now ends red with DO NOT FORMAT and says what is missing; it is never shown as done. Clips moved on the drive only count as already copied on real proof, and never from a Trash or safety-net folder. Resume, Stop, clean-up and eject only touch the card they belong to. New: SD and CFexpress cards start by themselves and drives never do; if a card is not picked up, use Use a Drive as a Card in the CardRunner menu. On a card with old and new clips, the new clips copy first, and a re-plugged card gets one check. A card already copied to another project says so and offers to copy it there too. A slow card, reader or cable now gets a calm note. Start on a card with video and photos copies both. Fixes: no false DO NOT FORMAT on a re-plugged card with proxies; clips ending in S03 are copied; Today Only works before the late-night cutoff; project template folders are created; one finish sound per card, no overlaps. A transfer interrupted under 1.9.6 starts fresh instead of resuming.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.7/CardRunner-1.9.7.dmg"
+                sparkle:edSignature="a33Q3CknrkNEcasqR15eVReE+TeqWWCyKuqO0BLClaqc9gqRPcisFVJnW3wIngRgxxFH1iCuRH5CC7mbERHKCA=="
+                length="18237597"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
