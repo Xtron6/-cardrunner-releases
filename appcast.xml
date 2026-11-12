@@ -513,6 +513,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.8</title>
+            <pubDate>Thu, 12 Nov 2026 17:34:08 +0000</pubDate>
+            <sparkle:version>42</sparkle:version>
+            <sparkle:shortVersionString>1.9.8</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>New: Safe Erase. Turn it on in Settings. Once every clip on a card is copied and checked, CardRunner puts a READY TO FORMAT picture on the card that your camera shows in playback. CardRunner never erases anything. Tested on the Sony FX3.</li><li>Clearer messages everywhere: shorter, plain words, and always says whether your footage is safe.</li><li>Yesterday and custom dates copy only the day you pick.</li><li>A card with clips from other days says how many are left, and no longer counts clips copied on an earlier day.</li><li>Eject Card and Pull all ask before ejecting a card that isn't safe to pull.</li><li>The Space bar no longer switches Auto-Ingest on by accident.</li><li>Asks before quitting while a copy is running.</li><li>More reliable when macOS is slow to answer about a disk.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.8/CardRunner-1.9.8.dmg"
+                sparkle:edSignature="kn1The5ywSZrOf7DVPlkkiUTuJqxNp0UvktBV5Uld03niLV52QIqaOo+OX+vZAp6Ali/GwMHqccyXwx3AnmCCg=="
+                length="23449620"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
