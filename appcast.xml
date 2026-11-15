@@ -539,6 +539,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.9.10</title>
+            <pubDate>Sun, 15 Nov 2026 18:10:15 +0000</pubDate>
+            <sparkle:version>44</sparkle:version>
+            <sparkle:shortVersionString>1.9.10</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>A card where a date choice left clips behind now says how many are still on it, never Already up to date</li><li>Safe Erase now proves Sony cards with AVCHD and AVF_INFO system files</li><li>Older clips are always re-checked when the Safe Erase check can't read them</li><li>A USB stick with no footage no longer starts by itself or raises an alarm</li><li>A missing destination drive now says it isn't plugged in, and the copy starts when you plug it back in</li><li>Photo cards from a camera set to another time zone are no longer refused the ready-to-format picture</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.9.10/CardRunner-1.9.10.dmg"
+                sparkle:edSignature="tDVmH88/yCZIxSz18zUUzN7hGfXKIdp5baQg61tGBIgO7BddiZSiC4zkYXqZtevoP5bEA+jWmIkmzJXJfzc/BQ=="
+                length="25779198"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
