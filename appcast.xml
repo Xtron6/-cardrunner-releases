@@ -552,6 +552,19 @@
                 type="application/octet-stream" />
         </item>
 
+        <item>
+            <title>Version 1.10.0</title>
+            <pubDate>Sun, 22 Nov 2026 16:41:36 +0000</pubDate>
+            <sparkle:version>46</sparkle:version>
+            <sparkle:shortVersionString>1.10.0</sparkle:shortVersionString>
+            <description><![CDATA[<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;font-size:13px;color:#1c1c1e;background:#fff;margin:0;padding:14px 18px 10px;line-height:1.6}ul{margin:0;padding-left:18px}li{margin-bottom:6px}b{color:#6d28d9}</style></head><body><ul><li>Folder layouts: build the folders your footage goes into right in Add or Edit destination (Day 1, date, camera, shooter, video and photo, your project), see them as a live folder tree, and share them with your crew by link or file so everyone files footage the same way. Plus fixes: two cards with the same volume ID are told apart, a drive that was just plugged back in gets time to settle, the badge says CHECKED when clips were checked quickly, Proxies folders are copied, and clearer card, date picker and interrupted-copy wording.</li></ul></body></html>]]></description>
+            <enclosure
+                url="https://github.com/Xtron6/-cardrunner-releases/releases/download/v1.10.0/CardRunner-1.10.0.dmg"
+                sparkle:edSignature="VRSAorTTdkcdGxlXsERwmyndHa23QYpLOWjICATRfjv1WtzqHQ2r48dVKvsCog5no0rZ28beAqqNI501bRdMAQ=="
+                length="28307052"
+                type="application/octet-stream" />
+        </item>
+
         <!-- ── Each new release gets one <item> block added here ── -->
         <!-- The release.sh script does this automatically           -->
 
